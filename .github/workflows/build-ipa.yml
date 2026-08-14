@@ -22,11 +22,18 @@ jobs:
           set -x
           exec > >(tee ci.log) 2>&1
 
-          echo "### environment"
-          sw_vers
-          xcodebuild -version
           echo "### xcodes available"
           ls -d /Applications/Xcode*.app || true
+
+          echo "### select newest installed xcode"
+          NEWEST_XCODE=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)
+          echo "picked: $NEWEST_XCODE"
+          sudo xcode-select -s "$NEWEST_XCODE"
+
+          echo "### environment"
+          sw_vers
+          xcode-select -p
+          xcodebuild -version
 
           echo "### install xcodegen"
           brew install xcodegen
