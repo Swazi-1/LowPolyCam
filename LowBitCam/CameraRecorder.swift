@@ -391,7 +391,7 @@ final class CameraRecorder: NSObject, ObservableObject {
     private func audioSettings(for plan: EncodePlan) -> [String: Any]? {
         // Start from what the capture output actually produces, then just lower
         // the bitrate. Safer than guessing sample rates.
-        if var s = audioOutput.recommendedAudioSettingsForAssetWriter(writingTo: .mov) as? [String: Any] {
+        if var s = audioOutput.recommendedAudioSettingsForAssetWriter(writingTo: .mov) {
             s[AVEncoderBitRateKey] = plan.audioBitrate
             return s
         }

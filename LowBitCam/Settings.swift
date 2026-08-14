@@ -183,7 +183,7 @@ enum Encoder {
         }
 
         let preferred = build(plan.codec)
-        if AVAssetWriter.canApply(outputSettings: preferred, forMediaType: .video) {
+        if AVAssetWriterInput.canApply(outputSettings: preferred, forMediaType: .video) {
             return preferred
         }
         return build(.h264)
