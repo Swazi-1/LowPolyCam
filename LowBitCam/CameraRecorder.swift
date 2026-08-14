@@ -330,7 +330,7 @@ final class CameraRecorder: NSObject, ObservableObject {
             w.add(v)
 
             var a: AVAssetWriterInput?
-            if plan.hasAudio, let aSettings = audioSettings(for: plan) {
+            if plan.hasAudio, let aSettings = audioSettings(for: plan, writer: w) {
                 let ai = AVAssetWriterInput(mediaType: .audio, outputSettings: aSettings)
                 ai.expectsMediaDataInRealTime = true
                 if w.canAdd(ai) { w.add(ai); a = ai }
@@ -388,19 +388,35 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
     }
 
-    private func audioSettings(for plan: EncodePlan) -> [String: Any]? {
-        // Start from what the capture output actually produces, then just lower
-        // the bitrate. Safer than guessing sample rates.
-        if var s = audioOutput.recommendedAudioSettingsForAssetWriter(writingTo: .mov) {
-            s[AVEncoderBitRateKey] = plan.audioBitrate
-            return s
+    /// AVAssetWriterInput does not throw on invalid settings - it raises an
+    /// Objective-C exception, which crashes the app outright since Swift has no
+    /// way to catch it. Every candidate is checked with `canApply` before it is
+    /// ever handed to a real input, so a bad bitrate degrades quietly instead.
+    private func audioSettings(for plan: EncodePlan, writer w: AVAssetWriter) -> [String: Any]? {
+
+        func valid(_ s: [String: Any]) -> Bool {
+            w.canApply(outputSettings: s, forMediaType: .audio)
         }
-        return [
+
+        if var s = audioOutput.recommendedAudioSettingsForAssetWriter(writingTo: .mov) {
+            let recommended = s
+            s[AVEncoderBitRateKey] = plan.audioBitrate
+            if valid(s) { return s }
+            // Our bitrate override made it invalid - the untouched recommended
+            // settings are guaranteed valid, so use those instead of crashing.
+            if valid(recommended) { return recommended }
+        }
+
+        let fallback: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
             AVNumberOfChannelsKey: 1,
             AVSampleRateKey: 44100,
             AVEncoderBitRateKey: plan.audioBitrate
         ]
+        if valid(fallback) { return fallback }
+
+        // Nothing validated - record video-only rather than crash.
+        return nil
     }
 
     // MARK: Storage
