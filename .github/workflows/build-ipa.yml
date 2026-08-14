@@ -27,8 +27,10 @@ jobs:
           xcodebuild -version
           echo "### xcodes available"
           ls -d /Applications/Xcode*.app || true
-          echo "### xcodegen"
-          xcodegen --version || true
+
+          echo "### install xcodegen"
+          brew install xcodegen
+          xcodegen --version
 
           echo "### repo contents"
           ls -la
