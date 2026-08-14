@@ -21,18 +21,32 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
+      - name: Show targets and schemes
+        run: xcodebuild -list -project LowBitCam.xcodeproj
+
       - name: Build (no signing)
         run: |
+          set -o pipefail
           xcodebuild \
             -project LowBitCam.xcodeproj \
             -scheme LowBitCam \
             -configuration Release \
             -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
             -derivedDataPath build \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
-            build
+            build 2>&1 | tee xcodebuild.log
+
+      - name: Errors only (read this if the build failed)
+        if: failure()
+        run: |
+          echo "=================== COPY FROM HERE ==================="
+          grep -E "error:|does not contain a scheme|No such module|cannot find" xcodebuild.log \
+            | sed 's|/Users/runner/work/[^ ]*/LowBitCam/||' \
+            | sort -u | head -80
+          echo "==================== TO HERE ========================="
 
       - name: Package .ipa
         run: |

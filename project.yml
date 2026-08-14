@@ -6,6 +6,18 @@ options:
     iOS: "15.0"
   createIntermediateGroups: true
 
+# XcodeGen does not generate a scheme unless one is declared here, and
+# `xcodebuild -scheme` needs one to exist.
+schemes:
+  LowBitCam:
+    build:
+      targets:
+        LowBitCam: all
+    run:
+      config: Debug
+    archive:
+      config: Release
+
 targets:
   LowBitCam:
     type: application
