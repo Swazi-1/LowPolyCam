@@ -323,7 +323,7 @@ final class CameraRecorder: NSObject, ObservableObject {
             w.movieFragmentInterval = CMTime(seconds: Self.fragmentSeconds, preferredTimescale: 600)
 
             let v = AVAssetWriterInput(mediaType: .video,
-                                       outputSettings: Encoder.videoSettings(for: plan))
+                                       outputSettings: Encoder.videoSettings(for: plan, writer: w))
             v.expectsMediaDataInRealTime = true
             v.transform = clipTransform
             guard w.canAdd(v) else { throw RecorderError.cannotAddInput }

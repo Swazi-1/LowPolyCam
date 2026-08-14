@@ -160,8 +160,10 @@ enum Encoder {
     }
 
     /// Builds the AVAssetWriter video settings, quietly falling back to H.264
-    /// if this device cannot apply the HEVC settings.
-    static func videoSettings(for plan: EncodePlan) -> [String: Any] {
+    /// if this device cannot apply the HEVC settings. `canApply` is an instance
+    /// method on AVAssetWriter, so the writer the settings are headed for has
+    /// to already exist.
+    static func videoSettings(for plan: EncodePlan, writer: AVAssetWriter) -> [String: Any] {
 
         func build(_ codec: AVVideoCodecType) -> [String: Any] {
             var compression: [String: Any] = [
@@ -183,7 +185,7 @@ enum Encoder {
         }
 
         let preferred = build(plan.codec)
-        if AVAssetWriterInput.canApply(outputSettings: preferred, forMediaType: .video) {
+        if writer.canApply(outputSettings: preferred, forMediaType: .video) {
             return preferred
         }
         return build(.h264)
