@@ -10,45 +10,73 @@ jobs:
     runs-on: macos-14
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - name: Show Xcode version
-        run: xcodebuild -version
-
-      - name: Install XcodeGen
-        run: brew install xcodegen
-
-      - name: Generate Xcode project
-        run: xcodegen generate
-
-      - name: Show targets and schemes
-        run: xcodebuild -list -project LowBitCam.xcodeproj
-
-      - name: Build (no signing)
+      # Everything runs in one step and every byte of output lands in ci.log,
+      # so nothing gets lost between steps. Failures are surfaced afterwards as
+      # annotations, which are readable without repo admin rights.
+      - name: Build
+        id: build
+        continue-on-error: true
         run: |
-          set -o pipefail
+          set -x
+          exec > >(tee ci.log) 2>&1
+
+          echo "### environment"
+          sw_vers
+          xcodebuild -version
+          echo "### xcodes available"
+          ls -d /Applications/Xcode*.app || true
+          echo "### xcodegen"
+          xcodegen --version || true
+
+          echo "### repo contents"
+          ls -la
+
+          echo "### generate"
+          xcodegen generate
+
+          echo "### after generate"
+          ls -la
+          ls -la LowBitCam.xcodeproj || echo "NO LowBitCam.xcodeproj DIRECTORY"
+          ls -la LowBitCam.xcodeproj/project.pbxproj || echo "NO project.pbxproj"
+          ls -la LowBitCam.xcodeproj/xcshareddata/xcschemes || echo "NO shared schemes"
+
+          echo "### xcodebuild -list"
+          xcodebuild -list -project ./LowBitCam.xcodeproj || echo "LIST FAILED rc=$?"
+
+          echo "### build"
           xcodebuild \
-            -project LowBitCam.xcodeproj \
+            -project ./LowBitCam.xcodeproj \
             -scheme LowBitCam \
             -configuration Release \
             -sdk iphoneos \
-            -destination 'generic/platform=iOS' \
             -derivedDataPath build \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
-            build 2>&1 | tee xcodebuild.log
+            build
 
-      - name: Errors only (read this if the build failed)
-        if: failure()
+      # Turns the interesting lines into GitHub annotations. Those are exposed
+      # on the public check-runs API, so the log can be read from outside.
+      - name: Surface errors
+        if: always()
         run: |
-          echo "=================== COPY FROM HERE ==================="
-          grep -E "error:|does not contain a scheme|No such module|cannot find" xcodebuild.log \
-            | sed 's|/Users/runner/work/[^ ]*/LowBitCam/||' \
-            | sort -u | head -80
-          echo "==================== TO HERE ========================="
+          if [ ! -f ci.log ]; then echo "::error::no ci.log was produced"; exit 0; fi
+
+          strip() { sed "s|/Users/runner/work/[^/]*/[^/]*/||g"; }
+
+          echo "--- filtered errors ---"
+          grep -E "error:|xcodebuild: error|cannot be opened|does not contain|No such module|NO project.pbxproj|NO LowBitCam|LIST FAILED|Reason:" ci.log \
+            | strip | sort -u | head -30 \
+            | while IFS= read -r l; do echo "::error::[E] ${l:0:800}"; done
+
+          echo "--- tail ---"
+          tail -n 25 ci.log | strip \
+            | while IFS= read -r l; do echo "::error::[T] ${l:0:800}"; done
 
       - name: Package .ipa
+        if: steps.build.outcome == 'success'
         run: |
           mkdir -p Payload
           cp -R build/Build/Products/Release-iphoneos/LowBitCam.app Payload/
@@ -56,6 +84,18 @@ jobs:
           ls -lh LowBitCam-unsigned.ipa
 
       - uses: actions/upload-artifact@v4
+        if: steps.build.outcome == 'success'
         with:
           name: LowBitCam-unsigned-ipa
           path: LowBitCam-unsigned.ipa
+
+      - name: Full log as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-log
+          path: ci.log
+
+      - name: Mark job failed if the build failed
+        if: steps.build.outcome != 'success'
+        run: exit 1
