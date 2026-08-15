@@ -238,10 +238,13 @@ enum Encoder {
 
     /// Builds AVCaptureMovieFileOutput video settings, falling back to H.264
     /// (or whatever the connection actually offers) if this device cannot do
-    /// HEVC. There is no `canApply`-style dry run for this API, so the codec
-    /// is checked against `availableVideoCodecTypes` instead; every other key
-    /// here is a plain width/height/bitrate value of the kind that has never
-    /// been the cause of a crash.
+    /// HEVC. There is no `canApply`-style dry run for this API, so this stays
+    /// to the small set of keys that are actually documented for
+    /// AVCaptureMovieFileOutput specifically - AVVideoScalingModeKey,
+    /// AVVideoExpectedSourceFrameRateKey and AVVideoAllowFrameReorderingKey
+    /// are AVAssetWriter idioms and are not confirmed safe here, so they are
+    /// left out rather than risk the same class of uncatchable crash as
+    /// before. The output still scales to width/height on its own.
     static func movieVideoSettings(for plan: EncodePlan, output: AVCaptureMovieFileOutput) -> [String: Any] {
         let available = output.availableVideoCodecTypes
         let codec = available.contains(plan.codec)
@@ -250,9 +253,7 @@ enum Encoder {
 
         var compression: [String: Any] = [
             AVVideoAverageBitRateKey: plan.videoBitrate,
-            AVVideoMaxKeyFrameIntervalKey: plan.keyFrameInterval,
-            AVVideoExpectedSourceFrameRateKey: plan.frameRate,
-            AVVideoAllowFrameReorderingKey: true
+            AVVideoMaxKeyFrameIntervalKey: plan.keyFrameInterval
         ]
         if codec == .h264 {
             compression[AVVideoProfileLevelKey] = AVVideoProfileLevelH264HighAutoLevel
@@ -261,7 +262,6 @@ enum Encoder {
             AVVideoCodecKey: codec,
             AVVideoWidthKey: plan.width,
             AVVideoHeightKey: plan.height,
-            AVVideoScalingModeKey: AVVideoScalingModeResizeAspectFill,
             AVVideoCompressionPropertiesKey: compression
         ]
     }
