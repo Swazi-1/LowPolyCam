@@ -1,4 +1,4 @@
-# LowPolyCam 1.4
+# LowPolyCam 1.0.0
 
 Tested on an iPhone 7, iOS 15.8.x — including a full record → freeze the phone
 until it powers off → recover the clip on next launch test, which came back clean.
