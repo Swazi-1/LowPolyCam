@@ -33,53 +33,61 @@ struct CameraScreen: View {
 
     var body: some View {
         ZStack {
-            Color.black
+            // Full-bleed layer: the camera feed and anything positioned by
+            // raw tap coordinates. This is the one place safe area is
+            // ignored, so the feed fills the whole screen edge to edge and
+            // the focus reticle's `.position()` lands in the same coordinate
+            // space the tap gesture itself reports - splitting these two
+            // concerns is what fixed the reticle landing under the finger.
+            ZStack {
+                Color.black
 
-            CameraPreview(session: recorder.session) { devicePoint, viewPoint in
-                recorder.focusAndExpose(at: devicePoint)
-                showFocusReticle(at: viewPoint)
-            }
-            .gesture(
-                MagnificationGesture()
-                    .onChanged { value in
-                        // The base is read fresh at the start of every
-                        // gesture rather than trusted from last time - a
-                        // camera flip or a Settings change resets the actual
-                        // zoom to 1x on its own, and a stale base here would
-                        // make the very next pinch jump from the wrong point.
-                        if !isPinching {
-                            isPinching = true
-                            zoomGestureBase = recorder.zoomFactor
+                CameraPreview(session: recorder.session) { devicePoint, viewPoint in
+                    recorder.focusAndExpose(at: devicePoint)
+                    showFocusReticle(at: viewPoint)
+                }
+                .gesture(
+                    MagnificationGesture()
+                        .onChanged { value in
+                            // The base is read fresh at the start of every
+                            // gesture rather than trusted from last time - a
+                            // camera flip or a Settings change resets the
+                            // actual zoom to 1x on its own, and a stale base
+                            // here would make the very next pinch jump from
+                            // the wrong point.
+                            if !isPinching {
+                                isPinching = true
+                                zoomGestureBase = recorder.zoomFactor
+                            }
+                            showZoomLabel = true
+                            recorder.setZoom(factor: zoomGestureBase * value)
                         }
-                        showZoomLabel = true
-                        recorder.setZoom(factor: zoomGestureBase * value)
-                    }
-                    .onEnded { _ in
-                        isPinching = false
-                        scheduleHideZoomLabel()
-                    }
-            )
+                        .onEnded { _ in
+                            isPinching = false
+                            scheduleHideZoomLabel()
+                        }
+                )
 
-            if let focusPoint {
-                focusReticle.position(focusPoint)
+                if let focusPoint {
+                    focusReticle.position(focusPoint)
+                }
+
+                if showZoomLabel { zoomLabel }
+
+                if dimmed { dimOverlay }
             }
+            .ignoresSafeArea()
 
+            // Safe-area-respecting layer: readable text and buttons, kept
+            // clear of the notch/Dynamic Island and the home indicator - the
+            // camera feed behind them is allowed to run under the notch,
+            // the text reading it is not.
             if recorder.permissionDenied {
                 permissionMessage
             } else {
                 controls
             }
-
-            if showZoomLabel { zoomLabel }
-
-            if dimmed { dimOverlay }
         }
-        // Applied once, to the whole screen, rather than per child - the
-        // focus reticle is positioned in this same coordinate space via
-        // `.position()`, and it has to start from the true screen edge to
-        // land under the finger, not offset by the safe-area inset that
-        // remains even with the status bar hidden.
-        .ignoresSafeArea()
         .statusBar(hidden: true)
         .preferredColorScheme(.dark)
         .accentColor(Palette.mint)
