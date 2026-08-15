@@ -20,6 +20,14 @@ struct CameraScreen: View {
     @State private var focusPoint: CGPoint?
     @State private var focusHideToken = 0
 
+    // A freshly-created, unretained UIImpactFeedbackGenerator that fires
+    // immediately is a known way for haptics to silently do nothing - the
+    // Taptic Engine needs it "prepared" ahead of time, and it should stay
+    // alive rather than existing only for the one statement that uses it.
+    // Kept as state so it persists and stays warmed up between taps.
+    @State private var startHaptic = UIImpactFeedbackGenerator(style: .medium)
+    @State private var stopHaptic = UIImpactFeedbackGenerator(style: .light)
+
     private var plan: EncodePlan { Encoder.plan(for: settings) }
 
     var body: some View {
@@ -60,7 +68,11 @@ struct CameraScreen: View {
         .statusBar(hidden: true)
         .preferredColorScheme(.dark)
         .accentColor(Palette.mint)
-        .onAppear { recorder.start() }
+        .onAppear {
+            recorder.start()
+            startHaptic.prepare()
+            stopHaptic.prepare()
+        }
         .onDisappear { recorder.stop() }
         // Dim mode turns the screen brightness down to zero. Leaving the app
         // while dimmed would otherwise strand the whole phone at zero
@@ -267,8 +279,13 @@ struct CameraScreen: View {
     /// the artwork stays exactly the same size.
     private var recordButton: some View {
         Button {
-            UIImpactFeedbackGenerator(style: recorder.isRecording ? .light : .medium)
-                .impactOccurred()
+            if recorder.isRecording {
+                stopHaptic.impactOccurred()
+                stopHaptic.prepare()   // re-arms it for the next tap
+            } else {
+                startHaptic.impactOccurred()
+                startHaptic.prepare()
+            }
             recorder.toggleRecording()
         } label: {
             ZStack {
