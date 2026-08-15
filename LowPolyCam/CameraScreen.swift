@@ -33,13 +33,12 @@ struct CameraScreen: View {
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
+            Color.black
 
             CameraPreview(session: recorder.session) { devicePoint, viewPoint in
                 recorder.focusAndExpose(at: devicePoint)
                 showFocusReticle(at: viewPoint)
             }
-            .ignoresSafeArea()
             .gesture(
                 MagnificationGesture()
                     .onChanged { value in
@@ -75,6 +74,12 @@ struct CameraScreen: View {
 
             if dimmed { dimOverlay }
         }
+        // Applied once, to the whole screen, rather than per child - the
+        // focus reticle is positioned in this same coordinate space via
+        // `.position()`, and it has to start from the true screen edge to
+        // land under the finger, not offset by the safe-area inset that
+        // remains even with the status bar hidden.
+        .ignoresSafeArea()
         .statusBar(hidden: true)
         .preferredColorScheme(.dark)
         .accentColor(Palette.mint)
