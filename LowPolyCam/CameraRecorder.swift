@@ -510,18 +510,36 @@ final class CameraRecorder: NSObject, ObservableObject {
     private var minZoomFactorSnapshot: CGFloat = 1
 
     private func refreshZoomLimits() {
-        let device = cameraInput?.device
+        guard let device = cameraInput?.device else { return }
         // `videoMaxZoomFactor` on some formats reports numbers in the
         // thousands (digital crop far past anything usable) - capped at 8x,
         // which stays genuinely usable on a sensor this size.
         let cap: CGFloat = 8
-        let ceiling = min(device?.activeFormat.videoMaxZoomFactor ?? 1, cap)
+        let ceiling = min(device.activeFormat.videoMaxZoomFactor, cap)
         // Below 1.0 only on a device with an ultra-wide lens folded into a
         // virtual device - stays at 1.0 (no effect) on a single-lens phone
         // like the iPhone 7.
-        let floor = device?.minAvailableVideoZoomFactor ?? 1
+        let floor = device.minAvailableVideoZoomFactor
         maxZoomFactorSnapshot = ceiling
         minZoomFactorSnapshot = floor
+
+        // A virtual multi-lens device does not reliably default its real
+        // optical zoom to 1.0 on its own - it can silently sit on the
+        // ultra-wide lens while this class still believes it is at "1x".
+        // That mismatch is what made the first pinch after launch look like
+        // a sudden lens switch: the gesture's base was read from the
+        // (wrong) published 1.0 while the device's true zoom was ~0.5, so
+        // the very first zoom command jumped the real lens instead of
+        // continuing smoothly from where it actually was. Forcing the real
+        // value here keeps the two in sync from the start.
+        do {
+            try device.lockForConfiguration()
+            device.videoZoomFactor = 1
+            device.unlockForConfiguration()
+        } catch {
+            // Not fatal - the zoom just stays wherever it already was.
+        }
+
         DispatchQueue.main.async {
             self.maxZoomFactor = ceiling
             self.minZoomFactor = floor
