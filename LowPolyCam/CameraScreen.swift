@@ -96,6 +96,11 @@ struct CameraScreen: View {
                     Text("· clip \(recorder.clipsThisSession)")
                         .font(.system(size: 12))
                         .foregroundColor(.white.opacity(0.7))
+                    if recorder.droppedFrames > 0 {
+                        Text("· \(recorder.droppedFrames) dropped")
+                            .font(.system(size: 12))
+                            .foregroundColor(.orange)
+                    }
                 }
                 .foregroundColor(.white)
                 .padding(.horizontal, 14)
