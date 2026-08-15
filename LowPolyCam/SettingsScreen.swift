@@ -11,6 +11,7 @@ struct SettingsScreen: View {
     var body: some View {
         NavigationView {
             List {
+                if recorder.isFrontCamera { frontCameraBanner }
                 resolutionSection
                 qualitySection
                 frameRateSection
@@ -27,15 +28,45 @@ struct SettingsScreen: View {
             })
         }
         .navigationViewStyle(StackNavigationViewStyle())
+        .accentColor(Palette.mint)
     }
 
     // MARK: Sections
+
+    /// Explains up front why some rows below are greyed out, rather than
+    /// leaving them looking broken.
+    private var frontCameraBanner: some View {
+        Section {
+            HStack(spacing: 12) {
+                Facet(sides: 6, rotation: .pi / 6)
+                    .fill(Palette.violet.opacity(0.25))
+                    .frame(width: 34, height: 34)
+                    .overlay(
+                        Image(systemName: "person.fill")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundColor(Palette.violet)
+                    )
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Selfie camera")
+                        .font(.system(size: 15, weight: .semibold))
+                    Text("It offers fewer options than the back camera. Anything it cannot do is greyed out.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(.vertical, 2)
+        }
+    }
 
     private var resolutionSection: some View {
         Section(header: Text("Resolution"),
                 footer: Text("Recording at \(plan.sizeLabel).")) {
             ForEach(Resolution.allCases) { r in
-                row(title: r.label, subtitle: r.detail, selected: settings.resolution == r) {
+                row(title: r.label,
+                    subtitle: recorder.availableResolutions.contains(r) ? r.detail : "Not on this camera",
+                    selected: settings.resolution == r,
+                    enabled: recorder.availableResolutions.contains(r)) {
                     settings.resolution = r
                     recorder.updateCaptureFormat()
                 }
@@ -44,9 +75,15 @@ struct SettingsScreen: View {
     }
 
     private var frameRateSection: some View {
-        Section(header: Text("Frame rate")) {
+        Section(header: Text("Frame rate"),
+                footer: Text(recorder.availableFrameRates.count < FrameRate.allCases.count
+                             ? "This camera films at \(recorder.availableFrameRates.map { $0.label }.joined(separator: " or ")) only."
+                             : "Higher frame rates look smoother and take more space.")) {
             ForEach(FrameRate.allCases) { f in
-                row(title: f.label, subtitle: f.detail, selected: settings.frameRate == f) {
+                row(title: f.label,
+                    subtitle: recorder.availableFrameRates.contains(f) ? f.detail : "Not on this camera",
+                    selected: settings.frameRate == f,
+                    enabled: recorder.availableFrameRates.contains(f)) {
                     settings.frameRate = f
                     recorder.updateCaptureFormat()
                 }
@@ -115,7 +152,7 @@ struct SettingsScreen: View {
 
     private var aboutSection: some View {
         Section(header: Text("Good to know")) {
-            Text("Recording is split into \(Int(CameraRecorder.segmentSeconds / 60))-minute clips, so a crash or a flat battery costs you seconds, not the whole session.")
+            Text("A recording is one continuous file, however long it runs. It is written a few seconds at a time, so if the battery dies mid-recording, the footage up to that moment survives and is filed away next time the app opens.")
                 .font(.footnote)
                 .foregroundColor(.secondary)
             Text("Filming stops when the app leaves the screen. iOS gives no app permission to keep the camera running in the background, so the screen has to stay on. The moon button dims it to black while recording.")
@@ -126,23 +163,35 @@ struct SettingsScreen: View {
 
     // MARK: Pieces
 
-    private func row(title: String, subtitle: String, selected: Bool, tap: @escaping () -> Void) -> some View {
-        Button(action: tap) {
+    private func row(title: String,
+                     subtitle: String,
+                     selected: Bool,
+                     enabled: Bool = true,
+                     tap: @escaping () -> Void) -> some View {
+        Button(action: { if enabled { tap() } }) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(title).foregroundColor(.primary)
-                    Text(subtitle).font(.caption).foregroundColor(.secondary)
+                    Text(title)
+                        .foregroundColor(enabled ? .primary : .secondary)
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                 }
                 Spacer()
-                if selected {
+                if selected && enabled {
                     Image(systemName: "checkmark")
-                        .foregroundColor(.accentColor)
+                        .foregroundColor(Palette.mintDeep)
                         .font(.system(size: 15, weight: .semibold))
+                } else if !enabled {
+                    Image(systemName: "lock.fill")
+                        .foregroundColor(.secondary.opacity(0.5))
+                        .font(.system(size: 12))
                 }
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(!enabled)
     }
 
     private func info(_ label: String, _ value: String) -> some View {

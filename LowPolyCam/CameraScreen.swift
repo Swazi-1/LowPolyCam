@@ -30,6 +30,7 @@ struct CameraScreen: View {
         }
         .statusBar(hidden: true)
         .preferredColorScheme(.dark)
+        .accentColor(Palette.mint)
         .onAppear { recorder.start() }
         .onDisappear { recorder.stop() }
         // Dim mode turns the screen brightness down to zero. Leaving the app
@@ -62,24 +63,32 @@ struct CameraScreen: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("\(settings.resolution.label) · \(settings.quality.label)")
                     .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(Palette.mintBright)
                 Text(plan.sizeLabel)
                     .font(.system(size: 12))
-                    .foregroundColor(.white.opacity(0.6))
+                    .foregroundColor(.white.opacity(0.55))
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 3) {
                 Text("\(Int(plan.megabytesPerHour.rounded())) MB / hour")
                     .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(Palette.amber)
                 Text("\(Fmt.size(recorder.freeBytes)) free · about \(Fmt.hours(hoursLeft))")
                     .font(.system(size: 12))
-                    .foregroundColor(.white.opacity(0.6))
+                    .foregroundColor(.white.opacity(0.55))
             }
         }
-        .foregroundColor(.white)
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .background(Color.black.opacity(0.45))
-        .cornerRadius(14)
+        .background(
+            Palette.panel.opacity(0.72)
+                .overlay(Palette.mint.opacity(0.05))
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(Palette.mint.opacity(0.18), lineWidth: 1)
+        )
         .overlay(recordingBadge, alignment: .bottom)
     }
 
@@ -90,9 +99,9 @@ struct CameraScreen: View {
         Group {
             if recorder.isRecording {
                 HStack(spacing: 8) {
-                    Circle()
-                        .fill(Color.red)
-                        .frame(width: 11, height: 11)
+                    Facet(sides: 6)
+                        .fill(Palette.record)
+                        .frame(width: 12, height: 12)
                         .opacity(blink ? 0.25 : 1)
                         .animation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true),
                                    value: blink)
@@ -100,33 +109,31 @@ struct CameraScreen: View {
                         .font(.system(size: 13, weight: .bold))
                     Text(Fmt.duration(recorder.elapsed))
                         .font(.system(size: 15, weight: .semibold, design: .monospaced))
-                    Text("· clip \(recorder.clipsThisSession)")
-                        .font(.system(size: 12))
-                        .foregroundColor(.white.opacity(0.7))
                     if recorder.droppedFrames > 0 {
                         Text("· \(recorder.droppedFrames) dropped")
                             .font(.system(size: 12))
-                            .foregroundColor(.orange)
+                            .foregroundColor(Palette.amber)
                     }
                 }
                 .foregroundColor(.white)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 7)
-                .background(Capsule().fill(Color.black.opacity(0.75)))
-                .overlay(Capsule().stroke(Color.red.opacity(0.8), lineWidth: 1.5))
+                .background(Capsule().fill(Palette.panel.opacity(0.85)))
+                .overlay(Capsule().stroke(Palette.record.opacity(0.85), lineWidth: 1.5))
                 .offset(y: 26)
                 .onAppear { blink = true }
                 .onDisappear { blink = false }
             } else if recorder.isSaving {
                 HStack(spacing: 8) {
-                    ProgressView().tint(.white).scaleEffect(0.7)
+                    ProgressView().tint(Palette.mint).scaleEffect(0.7)
                     Text("Saving…")
                         .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(Palette.mintBright)
                 }
-                .foregroundColor(.white)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 7)
-                .background(Capsule().fill(Color.black.opacity(0.75)))
+                .background(Capsule().fill(Palette.panel.opacity(0.85)))
+                .overlay(Capsule().stroke(Palette.mint.opacity(0.5), lineWidth: 1.5))
                 .offset(y: 26)
             }
         }
@@ -134,20 +141,17 @@ struct CameraScreen: View {
 
     /// The record button sits in a ZStack, not a shared HStack with the other
     /// controls - a single row with Spacers between unevenly-counted buttons
-    /// (2 on the left once the torch button appears, only 1 on the right)
-    /// pushes the middle button off true center. Each side lays itself out
-    /// independently against its own edge, so the record button stays exactly
-    /// centered no matter how many buttons appear next to it.
+    /// pushes the middle button off true centre.
     private var bottomBar: some View {
         ZStack {
             HStack {
-                circleButton(system: "gearshape.fill") { showSettings = true }
+                facetButton(system: "gearshape.fill") { showSettings = true }
                     .disabled(recorder.isRecording || recorder.isSaving)
                     .opacity((recorder.isRecording || recorder.isSaving) ? 0.35 : 1)
 
                 if recorder.hasTorch {
-                    circleButton(system: recorder.torchOn ? "bolt.fill" : "bolt.slash.fill",
-                                 tint: recorder.torchOn ? .yellow : .white) {
+                    facetButton(system: recorder.torchOn ? "bolt.fill" : "bolt.slash.fill",
+                                tint: recorder.torchOn ? Palette.amber : Palette.mintBright) {
                         recorder.toggleTorch()
                     }
                 }
@@ -159,9 +163,9 @@ struct CameraScreen: View {
                 Spacer()
 
                 if recorder.isRecording {
-                    circleButton(system: "moon.fill") { enterDim() }
+                    facetButton(system: "moon.fill") { enterDim() }
                 } else {
-                    circleButton(system: "arrow.triangle.2.circlepath.camera.fill") {
+                    facetButton(system: "arrow.triangle.2.circlepath.camera.fill") {
                         recorder.flipCamera()
                     }
                     .disabled(recorder.isSaving)
@@ -173,39 +177,63 @@ struct CameraScreen: View {
         }
     }
 
+    /// Faceted lens rings around a red centre, echoing the icon.
+    ///
+    /// `contentShape` is the important part: the visible pieces are a stroked
+    /// ring and a small inner shape, and a stroke is only tappable *on the
+    /// line itself*. Without this, the actual tap target while recording was
+    /// the little stop square and a thin ring - which is why stopping
+    /// sometimes took a few tries. The whole 84pt disc is now tappable while
+    /// the artwork stays exactly the same size.
     private var recordButton: some View {
         Button {
             recorder.toggleRecording()
         } label: {
             ZStack {
-                Circle()
-                    .stroke(Color.white, lineWidth: 4)
-                    .frame(width: 76, height: 76)
+                Facet(sides: 12)
+                    .stroke(Palette.mint, lineWidth: 4)
+                    .frame(width: 78, height: 78)
+                Facet(sides: 12)
+                    .stroke(Palette.mintDeep.opacity(0.55), lineWidth: 2)
+                    .frame(width: 66, height: 66)
+
                 if recorder.isSaving {
-                    ProgressView().tint(.white)
+                    ProgressView().tint(Palette.mintBright)
+                } else if recorder.isRecording {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Palette.record)
+                        .frame(width: 30, height: 30)
                 } else {
-                    RoundedRectangle(cornerRadius: recorder.isRecording ? 6 : 31)
-                        .fill(Color.red)
-                        .frame(width: recorder.isRecording ? 30 : 62,
-                               height: recorder.isRecording ? 30 : 62)
+                    Facet(sides: 12)
+                        .fill(Palette.record)
+                        .frame(width: 58, height: 58)
                 }
             }
+            .frame(width: 84, height: 84)
+            .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .disabled(recorder.isSaving)
         .animation(.easeInOut(duration: 0.18), value: recorder.isRecording)
     }
 
-    private func circleButton(system: String,
-                              tint: Color = .white,
-                              action: @escaping () -> Void) -> some View {
+    private func facetButton(system: String,
+                             tint: Color = Palette.mintBright,
+                             action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: system)
-                .font(.system(size: 20))
+                .font(.system(size: 19))
                 .foregroundColor(tint)
-                .frame(width: 52, height: 52)
-                .background(Color.black.opacity(0.45))
-                .clipShape(Circle())
+                .frame(width: 54, height: 54)
+                .background(
+                    Facet(sides: 6, rotation: .pi / 6)
+                        .fill(Palette.slateDeep.opacity(0.85))
+                )
+                .overlay(
+                    Facet(sides: 6, rotation: .pi / 6)
+                        .stroke(Palette.mint.opacity(0.25), lineWidth: 1)
+                )
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
     }
@@ -217,15 +245,21 @@ struct CameraScreen: View {
             .multilineTextAlignment(.center)
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
-            .background(Color.black.opacity(0.7))
-            .cornerRadius(12)
+            .background(Palette.panel.opacity(0.9))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(Palette.mint.opacity(0.3), lineWidth: 1)
+            )
             .padding(.bottom, 14)
             .onTapGesture { recorder.notice = nil }
     }
 
     private var permissionMessage: some View {
         VStack(spacing: 14) {
-            Image(systemName: "camera.fill").font(.system(size: 40))
+            Image(systemName: "camera.fill")
+                .font(.system(size: 40))
+                .foregroundColor(Palette.mint)
             Text("Camera access is off")
                 .font(.system(size: 18, weight: .semibold))
             Text("Turn it on in Settings › LowPolyCam.")
@@ -236,6 +270,7 @@ struct CameraScreen: View {
                     UIApplication.shared.open(url)
                 }
             }
+            .foregroundColor(Palette.mintBright)
             .padding(.top, 4)
         }
         .foregroundColor(.white)
@@ -251,12 +286,12 @@ struct CameraScreen: View {
             .ignoresSafeArea()
             .overlay(
                 VStack(spacing: 10) {
-                    Circle()
-                        .fill(Color.red.opacity(0.55))
-                        .frame(width: 9, height: 9)
+                    Facet(sides: 6)
+                        .fill(Palette.record.opacity(0.5))
+                        .frame(width: 10, height: 10)
                     Text("recording · tap to wake")
                         .font(.system(size: 11))
-                        .foregroundColor(.white.opacity(0.16))
+                        .foregroundColor(Palette.mint.opacity(0.16))
                 }
             )
             .onTapGesture { leaveDim() }

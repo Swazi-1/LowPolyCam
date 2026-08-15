@@ -12,19 +12,25 @@ import Combine
 /// locking to it directly, rather than trusting a session preset to guess
 /// right; that is also what keeps 60 fps steady instead of stuttering.
 ///
-/// Long recordings are split into segments (see `segmentSeconds`) and each
-/// segment is written as a fragmented movie, so a crash, a dead battery or iOS
-/// killing the app costs you at most a few seconds - not the whole recording.
+/// A recording is one continuous file, however long it runs, the way the
+/// built-in Camera app behaves. It is written as a *fragmented* movie: the
+/// playable index is flushed to disk every few seconds, so if the battery dies
+/// or iOS kills the app mid-recording, what was filmed up to that moment is
+/// still a valid video rather than a dead file. On the next launch
+/// `recoverInterruptedRecording` finds it and files it away properly.
 final class CameraRecorder: NSObject, ObservableObject {
 
     // MARK: Tunables
 
-    /// A new file is started every this many seconds while recording.
-    static let segmentSeconds: Double = 600          // 10 minutes
-    /// How often the movie index is flushed to disk. Worst-case loss on a crash.
+    /// How often the movie index is flushed to disk. This is what makes an
+    /// interrupted recording survive - worst case you lose this many seconds
+    /// off the end, not the whole file.
     static let fragmentSeconds: Double = 4
     /// Recording stops when free space drops below this.
     static let reserveBytes: Int64 = 300 * 1024 * 1024
+    /// Remembers the file being written, so a recording cut short by a flat
+    /// battery can be picked up again next launch.
+    private static let inProgressKey = "inProgressClipName"
 
     // MARK: Published state
 
@@ -47,6 +53,11 @@ final class CameraRecorder: NSObject, ObservableObject {
     @Published private(set) var torchOn = false
     @Published private(set) var isFrontCamera = false
     @Published private(set) var stabilizationSupported = true
+    /// What the camera currently in use can actually do. The front camera on
+    /// an iPhone 7 tops out at 30 fps, so the unavailable choices are shown
+    /// greyed out rather than silently doing nothing.
+    @Published private(set) var availableFrameRates: [FrameRate] = FrameRate.allCases
+    @Published private(set) var availableResolutions: [Resolution] = Resolution.allCases
     @Published var notice: String?
 
     let session = AVCaptureSession()
@@ -113,6 +124,7 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     func start() {
         refreshFreeSpace()
+        recoverInterruptedRecording()
         spaceTimer?.invalidate()
         spaceTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             self?.refreshFreeSpace()
@@ -190,7 +202,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         session.commitConfiguration()
 
         configureVideoConnection()
-        applyActiveFormat()
+        refreshCapabilitiesThenApplyFormat()
         refreshTorchState()
         syncMicInput()
     }
@@ -293,6 +305,53 @@ final class CameraRecorder: NSObject, ObservableObject {
         sessionQueue.async { self.applyActiveFormat() }
     }
 
+    /// Works out what the camera now in use is actually capable of, corrects
+    /// the current selection if it is asking for something impossible (the
+    /// iPhone 7 front camera has no 60 fps mode at all), and only then applies
+    /// the format. Doing it in that order avoids a pointless "can't do that"
+    /// notice on every flip to the selfie camera.
+    private func refreshCapabilitiesThenApplyFormat() {
+        guard let device = cameraInput?.device else { return }
+
+        var rates = Set<FrameRate>()
+        var widestPixels = 0
+        for format in device.formats {
+            let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+            widestPixels = max(widestPixels, Int(dims.width) * Int(dims.height))
+            for rate in FrameRate.allCases {
+                let fps = Double(rate.value)
+                if format.videoSupportedFrameRateRanges.contains(where: {
+                    $0.minFrameRate <= fps && fps <= $0.maxFrameRate
+                }) {
+                    rates.insert(rate)
+                }
+            }
+        }
+
+        let supportedRates = FrameRate.allCases.filter { rates.contains($0) }
+        let canDo1080 = widestPixels >= 1920 * 1080
+        let supportedResolutions = Resolution.allCases.filter { $0 != .p1080 || canDo1080 }
+
+        DispatchQueue.main.async {
+            self.availableFrameRates = supportedRates.isEmpty ? [.fps30] : supportedRates
+            self.availableResolutions = supportedResolutions.isEmpty ? [.p720] : supportedResolutions
+
+            if !self.availableFrameRates.contains(self.settings.frameRate) {
+                let fallback: FrameRate = self.availableFrameRates.contains(.fps30)
+                    ? .fps30 : (self.availableFrameRates.first ?? .fps30)
+                self.settings.frameRate = fallback
+                self.notice = "This camera only films at \(self.availableFrameRates.map { $0.label }.joined(separator: " or ")) - switched to \(fallback.label)."
+            }
+            if !self.availableResolutions.contains(self.settings.resolution) {
+                let fallback: Resolution = self.availableResolutions.first ?? .p720
+                self.settings.resolution = fallback
+                self.notice = "This camera does not go up to \(Resolution.p1080.label) - switched to \(fallback.label)."
+            }
+
+            self.sessionQueue.async { self.applyActiveFormat() }
+        }
+    }
+
     /// Adds or removes the microphone to match the setting. With audio off the
     /// app never touches the audio session, so music keeps playing.
     func syncMicInput() {
@@ -348,7 +407,7 @@ final class CameraRecorder: NSObject, ObservableObject {
             self.session.commitConfiguration()
 
             self.configureVideoConnection()
-            self.applyActiveFormat()
+            self.refreshCapabilitiesThenApplyFormat()
             self.refreshTorchState()
             DispatchQueue.main.async { self.isFrontCamera = (next == .front) }
         }
@@ -482,6 +541,10 @@ final class CameraRecorder: NSObject, ObservableObject {
 
         do {
             let url = Self.newClipURL()
+            // Remembered before a single frame is written, so an interrupted
+            // recording can be found again on the next launch.
+            UserDefaults.standard.set(url.lastPathComponent, forKey: Self.inProgressKey)
+
             let w = try AVAssetWriter(outputURL: url, fileType: .mov)
             w.movieFragmentInterval = CMTime(seconds: Self.fragmentSeconds, preferredTimescale: 600)
 
@@ -548,6 +611,10 @@ final class CameraRecorder: NSObject, ObservableObject {
         a?.markAsFinished()
         if end.isValid { w.endSession(atSourceTime: end) }
         w.finishWriting {
+            // The file is closed either way, so it is no longer "in progress"
+            // and must not be picked up again by the recovery pass.
+            UserDefaults.standard.removeObject(forKey: Self.inProgressKey)
+
             guard w.status == .completed else {
                 let reason = w.error?.localizedDescription ?? "unknown error"
                 DispatchQueue.main.async {
@@ -597,6 +664,37 @@ final class CameraRecorder: NSObject, ObservableObject {
 
         // Nothing validated - record video-only rather than crash.
         return nil
+    }
+
+    // MARK: Recovering an interrupted recording
+
+    /// If the battery died (or iOS killed the app) while filming, the movie is
+    /// still on disk and - because it was written in fragments - still
+    /// playable up to the last few seconds before the cut. This picks it up on
+    /// the next launch and files it where the rest of the recordings go.
+    private func recoverInterruptedRecording() {
+        let defaults = UserDefaults.standard
+        guard let name = defaults.string(forKey: Self.inProgressKey) else { return }
+
+        let url = Self.clipsDirectory.appendingPathComponent(name)
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+
+        // An empty or missing file is just leftover bookkeeping - clear it and
+        // say nothing.
+        guard size > 0 else {
+            defaults.removeObject(forKey: Self.inProgressKey)
+            try? FileManager.default.removeItem(at: url)
+            return
+        }
+
+        defaults.removeObject(forKey: Self.inProgressKey)
+        let destination = settings.saveLocation
+        deliver(url, to: destination) { [weak self] in
+            DispatchQueue.main.async {
+                self?.notice = "Recovered the recording that was cut short."
+                self?.refreshFreeSpace()
+            }
+        }
     }
 
     // MARK: Delivering finished clips
@@ -721,14 +819,9 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
             return
         }
 
-        if isVideo {
-            if writer == nil {
-                startSegment(at: pts)
-            } else if segmentStart.isValid,
-                      CMTimeGetSeconds(CMTimeSubtract(pts, segmentStart)) >= Self.segmentSeconds {
-                finishSegment()
-                startSegment(at: pts)
-            }
+        // One file per recording, no matter how long it runs.
+        if isVideo, writer == nil {
+            startSegment(at: pts)
         }
 
         guard let w = writer, w.status == .writing else { return }
@@ -776,6 +869,16 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
         if lastElapsedPush.isValid,
            CMTimeGetSeconds(CMTimeSubtract(pts, lastElapsedPush)) < 0.25 { return }
         lastElapsedPush = pts
+
+        // A recording is no longer chopped into segments, so this is the only
+        // place left that can notice the disk filling up mid-recording.
+        if freeBytesSnapshot <= Self.reserveBytes {
+            DispatchQueue.main.async {
+                self.stopRecording(notice: "Stopped - storage is almost full.")
+            }
+            return
+        }
+
         let seconds = CMTimeGetSeconds(CMTimeSubtract(pts, recordStartPTS))
         let drops = droppedFrameCount
         DispatchQueue.main.async {
