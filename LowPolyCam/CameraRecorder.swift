@@ -58,6 +58,17 @@ final class CameraRecorder: NSObject, ObservableObject {
     /// greyed out rather than silently doing nothing.
     @Published private(set) var availableFrameRates: [FrameRate] = FrameRate.allCases
     @Published private(set) var availableResolutions: [Resolution] = Resolution.allCases
+    /// -1 while the phone has not reported a level yet (simulators, or the
+    /// first instant after enabling monitoring).
+    @Published private(set) var batteryPercent: Int = -1
+    @Published private(set) var batteryCharging = false
+    /// Current zoom, so the UI can show "2.3x" without asking the device
+    /// directly from the main thread.
+    @Published private(set) var zoomFactor: CGFloat = 1
+    @Published private(set) var maxZoomFactor: CGFloat = 1
+    /// 0...1, read from the system's own per-channel level rather than
+    /// decoding PCM by hand - cheap enough to poll a few times a second.
+    @Published private(set) var audioLevel: Float = 0
     @Published var notice: String?
 
     let session = AVCaptureSession()
@@ -118,6 +129,24 @@ final class CameraRecorder: NSObject, ObservableObject {
         NotificationCenter.default.addObserver(
             self, selector: #selector(willResignActive),
             name: UIApplication.willResignActiveNotification, object: nil)
+
+        UIDevice.current.isBatteryMonitoringEnabled = true
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(refreshBattery),
+            name: UIDevice.batteryLevelDidChangeNotification, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(refreshBattery),
+            name: UIDevice.batteryStateDidChangeNotification, object: nil)
+        refreshBattery()
+    }
+
+    @objc private func refreshBattery() {
+        let level = UIDevice.current.batteryLevel
+        let state = UIDevice.current.batteryState
+        DispatchQueue.main.async {
+            self.batteryPercent = level < 0 ? -1 : Int((level * 100).rounded())
+            self.batteryCharging = (state == .charging || state == .full)
+        }
     }
 
     // MARK: Lifecycle
@@ -272,6 +301,8 @@ final class CameraRecorder: NSObject, ObservableObject {
         } catch {
             DispatchQueue.main.async { self.notice = "Could not lock this camera's frame rate." }
         }
+        // The zoom ceiling depends on the format just chosen above.
+        refreshZoomLimits()
     }
 
     /// Searches the device's own formats for the smallest one that is still
@@ -448,6 +479,71 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
     }
 
+    // MARK: Zoom
+
+    /// Session-queue-owned mirror of `maxZoomFactor` - `setZoom` runs on
+    /// `sessionQueue` and must not read the `@Published` copy directly, the
+    /// same class of cross-thread read that caused the front-camera
+    /// orientation bug earlier.
+    private var maxZoomFactorSnapshot: CGFloat = 1
+
+    private func refreshZoomLimits() {
+        let device = cameraInput?.device
+        // `videoMaxZoomFactor` on some formats reports numbers in the
+        // thousands (digital crop far past anything usable) - capped at 8x,
+        // which stays genuinely usable on a sensor this size.
+        let cap: CGFloat = 8
+        let ceiling = min(device?.activeFormat.videoMaxZoomFactor ?? 1, cap)
+        maxZoomFactorSnapshot = ceiling
+        DispatchQueue.main.async {
+            self.maxZoomFactor = ceiling
+            self.zoomFactor = 1
+        }
+    }
+
+    /// `factor` is the absolute zoom, not a delta - the caller (a pinch
+    /// gesture) tracks the running value itself and hands over where it wants
+    /// to land.
+    func setZoom(factor: CGFloat) {
+        sessionQueue.async {
+            guard let device = self.cameraInput?.device else { return }
+            let clamped = max(1, min(factor, self.maxZoomFactorSnapshot))
+            do {
+                try device.lockForConfiguration()
+                device.videoZoomFactor = clamped
+                device.unlockForConfiguration()
+                DispatchQueue.main.async { self.zoomFactor = clamped }
+            } catch {
+                // Not fatal - the zoom just does not change this time.
+            }
+        }
+    }
+
+    // MARK: Focus and exposure
+
+    /// `point` is in the device's own 0...1 coordinate space, already
+    /// converted from the tap location by the preview layer - the recorder
+    /// itself has no idea how the preview is laid out on screen.
+    func focusAndExpose(at point: CGPoint) {
+        sessionQueue.async {
+            guard let device = self.cameraInput?.device else { return }
+            do {
+                try device.lockForConfiguration()
+                if device.isFocusPointOfInterestSupported {
+                    device.focusPointOfInterest = point
+                    device.focusMode = .autoFocus
+                }
+                if device.isExposurePointOfInterestSupported {
+                    device.exposurePointOfInterest = point
+                    device.exposureMode = .autoExpose
+                }
+                device.unlockForConfiguration()
+            } catch {
+                // Not fatal - focus/exposure just stay where they were.
+            }
+        }
+    }
+
     // MARK: Recording control
 
     func toggleRecording() {
@@ -481,6 +577,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         elapsed = 0
         clipsThisSession = 0
         droppedFrames = 0
+        audioLevel = 0
         isRecording = true
         UIApplication.shared.isIdleTimerDisabled = true
     }
@@ -497,6 +594,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         // finishes writing and (if Photos is the destination) importing.
         isRecording = false
         isSaving = true
+        audioLevel = 0
         UIApplication.shared.isIdleTimerDisabled = false
         notice = message
         refreshFreeSpace()
@@ -881,9 +979,23 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
 
         let seconds = CMTimeGetSeconds(CMTimeSubtract(pts, recordStartPTS))
         let drops = droppedFrameCount
+        let level = currentAudioLevel()
         DispatchQueue.main.async {
             self.elapsed = seconds
             if self.droppedFrames != drops { self.droppedFrames = drops }
+            self.audioLevel = level
         }
+    }
+
+    /// Reads the system's own per-channel power level rather than decoding
+    /// PCM samples by hand - cheap enough to call from here, four times a
+    /// second, without adding real load to the capture path.
+    private func currentAudioLevel() -> Float {
+        guard let channel = audioOutput.connection(with: .audio)?.audioChannels.first else { return 0 }
+        // averagePowerLevel is roughly -160 (silence) to 0 (loudest) dBFS.
+        // -50 dB is a quiet room; anything below that reads as silence here.
+        let db = channel.averagePowerLevel
+        let normalized = (db + 50) / 50
+        return Float(max(0, min(1, normalized)))
     }
 }

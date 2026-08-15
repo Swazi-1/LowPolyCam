@@ -11,20 +11,49 @@ struct CameraScreen: View {
     @State private var savedBrightness: CGFloat = UIScreen.main.brightness
     @State private var blink = false
 
+    // Zoom
+    @State private var zoomGestureBase: CGFloat = 1
+    @State private var showZoomLabel = false
+    @State private var zoomLabelHideToken = 0
+
+    // Tap to focus
+    @State private var focusPoint: CGPoint?
+    @State private var focusHideToken = 0
+
     private var plan: EncodePlan { Encoder.plan(for: settings) }
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            CameraPreview(session: recorder.session)
-                .ignoresSafeArea()
+            CameraPreview(session: recorder.session) { devicePoint, viewPoint in
+                recorder.focusAndExpose(at: devicePoint)
+                showFocusReticle(at: viewPoint)
+            }
+            .ignoresSafeArea()
+            .gesture(
+                MagnificationGesture()
+                    .onChanged { value in
+                        showZoomLabel = true
+                        recorder.setZoom(factor: zoomGestureBase * value)
+                    }
+                    .onEnded { _ in
+                        zoomGestureBase = recorder.zoomFactor
+                        scheduleHideZoomLabel()
+                    }
+            )
+
+            if let focusPoint {
+                focusReticle.position(focusPoint)
+            }
 
             if recorder.permissionDenied {
                 permissionMessage
             } else {
                 controls
             }
+
+            if showZoomLabel { zoomLabel }
 
             if dimmed { dimOverlay }
         }
@@ -70,6 +99,7 @@ struct CameraScreen: View {
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 3) {
+                if recorder.batteryPercent >= 0 { batteryIndicator }
                 Text("\(Int(plan.megabytesPerHour.rounded())) MB / hour")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(Palette.amber)
@@ -92,30 +122,59 @@ struct CameraScreen: View {
         .overlay(recordingBadge, alignment: .bottom)
     }
 
+    /// A plain reading, not a warning by default - it only turns amber/red as
+    /// the level that would actually make you stop and plug in.
+    private var batteryIndicator: some View {
+        let pct = recorder.batteryPercent
+        let color: Color = recorder.batteryCharging ? Palette.mintBright
+            : pct <= 20 ? Palette.record
+            : pct <= 40 ? Palette.amber
+            : .white.opacity(0.8)
+        let symbol: String = {
+            if recorder.batteryCharging { return "battery.100.bolt" }
+            switch pct {
+            case ..<13: return "battery.0"
+            case ..<38: return "battery.25"
+            case ..<63: return "battery.50"
+            case ..<88: return "battery.75"
+            default: return "battery.100"
+            }
+        }()
+        return HStack(spacing: 4) {
+            Image(systemName: symbol).font(.system(size: 13))
+            Text("\(pct)%").font(.system(size: 12, weight: .medium))
+        }
+        .foregroundColor(color)
+    }
+
     /// Sits just under the top bar while filming, and stays put (as "Saving…")
     /// until the clip is actually written - so tapping stop always visibly
     /// does something right away, even before the file finishes.
     private var recordingBadge: some View {
         Group {
             if recorder.isRecording {
-                HStack(spacing: 8) {
-                    Facet(sides: 6)
-                        .fill(Palette.record)
-                        .frame(width: 12, height: 12)
-                        .opacity(blink ? 0.25 : 1)
-                        .animation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true),
-                                   value: blink)
-                    Text("REC")
-                        .font(.system(size: 13, weight: .bold))
-                    Text(Fmt.duration(recorder.elapsed))
-                        .font(.system(size: 15, weight: .semibold, design: .monospaced))
-                    if recorder.droppedFrames > 0 {
-                        Text("· \(recorder.droppedFrames) dropped")
-                            .font(.system(size: 12))
-                            .foregroundColor(Palette.amber)
+                VStack(spacing: 5) {
+                    HStack(spacing: 8) {
+                        Facet(sides: 6)
+                            .fill(Palette.record)
+                            .frame(width: 12, height: 12)
+                            .opacity(blink ? 0.25 : 1)
+                            .animation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true),
+                                       value: blink)
+                        Text("REC")
+                            .font(.system(size: 13, weight: .bold))
+                        Text(Fmt.duration(recorder.elapsed))
+                            .font(.system(size: 15, weight: .semibold, design: .monospaced))
+                        if recorder.droppedFrames > 0 {
+                            Text("· \(recorder.droppedFrames) dropped")
+                                .font(.system(size: 12))
+                                .foregroundColor(Palette.amber)
+                        }
                     }
+                    .foregroundColor(.white)
+
+                    if settings.recordAudio { audioLevelBar }
                 }
-                .foregroundColor(.white)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 7)
                 .background(Capsule().fill(Palette.panel.opacity(0.85)))
@@ -137,6 +196,27 @@ struct CameraScreen: View {
                 .offset(y: 26)
             }
         }
+    }
+
+    /// A small, easy-to-read fill bar rather than a technical meter - it only
+    /// has to answer "is the mic picking anything up," not show exact dB.
+    private var audioLevelBar: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.white.opacity(0.15))
+                Capsule()
+                    .fill(audioLevelColor)
+                    .frame(width: max(3, geo.size.width * CGFloat(recorder.audioLevel)))
+                    .animation(.easeOut(duration: 0.15), value: recorder.audioLevel)
+            }
+        }
+        .frame(width: 90, height: 5)
+    }
+
+    private var audioLevelColor: Color {
+        recorder.audioLevel > 0.85 ? Palette.record
+            : recorder.audioLevel > 0.6 ? Palette.amber
+            : Palette.mint
     }
 
     /// The record button sits in a ZStack, not a shared HStack with the other
@@ -187,6 +267,8 @@ struct CameraScreen: View {
     /// the artwork stays exactly the same size.
     private var recordButton: some View {
         Button {
+            UIImpactFeedbackGenerator(style: recorder.isRecording ? .light : .medium)
+                .impactOccurred()
             recorder.toggleRecording()
         } label: {
             ZStack {
@@ -275,6 +357,49 @@ struct CameraScreen: View {
         }
         .foregroundColor(.white)
         .padding(30)
+    }
+
+    // MARK: Zoom
+
+    private var zoomLabel: some View {
+        Text(String(format: "%.1fx", recorder.zoomFactor))
+            .font(.system(size: 15, weight: .semibold, design: .rounded))
+            .foregroundColor(.white)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Capsule().fill(Palette.panel.opacity(0.85)))
+            .overlay(Capsule().stroke(Palette.mint.opacity(0.4), lineWidth: 1))
+            .transition(.opacity)
+    }
+
+    private func scheduleHideZoomLabel() {
+        zoomLabelHideToken += 1
+        let token = zoomLabelHideToken
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            if zoomLabelHideToken == token {
+                withAnimation { showZoomLabel = false }
+            }
+        }
+    }
+
+    // MARK: Tap to focus
+
+    private var focusReticle: some View {
+        Facet(sides: 6, rotation: .pi / 6)
+            .stroke(Palette.mint, lineWidth: 1.5)
+            .frame(width: 56, height: 56)
+            .opacity(focusPoint == nil ? 0 : 1)
+    }
+
+    private func showFocusReticle(at point: CGPoint) {
+        focusHideToken += 1
+        let token = focusHideToken
+        withAnimation(.easeOut(duration: 0.15)) { focusPoint = point }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
+            if focusHideToken == token {
+                withAnimation(.easeIn(duration: 0.2)) { focusPoint = nil }
+            }
+        }
     }
 
     // MARK: Dim mode
