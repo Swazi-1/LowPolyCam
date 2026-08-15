@@ -147,7 +147,7 @@ final class AppSettings: ObservableObject {
 
     private init() {
         resolution    = Resolution(rawValue: store.string(forKey: "resolution") ?? "") ?? .p720
-        quality       = Quality(rawValue: store.string(forKey: "quality") ?? "") ?? .ultraLow
+        quality       = Quality(rawValue: store.string(forKey: "quality") ?? "") ?? .medium
         frameRate     = FrameRate(rawValue: store.integer(forKey: "frameRate")) ?? .fps30
         saveLocation  = SaveLocation(rawValue: store.string(forKey: "saveLocation") ?? "") ?? .photos
         recordAudio   = store.object(forKey: "recordAudio") as? Bool ?? true
