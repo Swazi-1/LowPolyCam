@@ -12,8 +12,8 @@ struct SettingsScreen: View {
         NavigationView {
             List {
                 resolutionSection
-                frameRateSection
                 qualitySection
+                frameRateSection
                 saveSection
                 estimateSection
                 cameraSection
@@ -100,11 +100,16 @@ struct SettingsScreen: View {
     }
 
     private var advancedSection: some View {
-        Section(header: Text("Advanced"),
+        Section(header: Text("Video format"),
                 footer: Text(settings.useHEVC
-                             ? "HEVC gets the same picture into roughly half the space. Plays on the iPhone and in VLC. Turn it off if some other player refuses the files."
-                             : "H.264 plays everywhere but needs about 60% more space for the same picture.")) {
-            Toggle("HEVC (smaller files)", isOn: $settings.useHEVC)
+                             ? "HEVC gets the same picture into roughly half the space. Plays on the iPhone and in VLC. Switch to H.264 if some other player refuses the files."
+                             : "H.264 plays everywhere but needs about 60% more space for the same picture as HEVC.")) {
+            row(title: "HEVC", subtitle: "Smaller files, the modern default", selected: settings.useHEVC) {
+                settings.useHEVC = true
+            }
+            row(title: "H.264", subtitle: "Bigger files, plays on almost anything", selected: !settings.useHEVC) {
+                settings.useHEVC = false
+            }
         }
     }
 
