@@ -5,12 +5,13 @@ import Combine
 // MARK: - Resolution
 
 enum Resolution: String, CaseIterable, Identifiable {
-    case p720, p480, p320, p144
+    case p1080, p720, p480, p320, p144
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
+        case .p1080: return "1080p"
         case .p720: return "720p"
         case .p480: return "480p"
         case .p320: return "320p"
@@ -18,9 +19,10 @@ enum Resolution: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Always 16:9 so nothing gets cropped when the 1280x720 capture is scaled down.
+    /// Always 16:9 so nothing gets cropped when the capture is scaled down.
     var pixels: (w: Int, h: Int) {
         switch self {
+        case .p1080: return (1920, 1080)
         case .p720: return (1280, 720)
         case .p480: return (854, 480)
         case .p320: return (568, 320)
@@ -28,9 +30,35 @@ enum Resolution: String, CaseIterable, Identifiable {
         }
     }
 
+    /// The sensor only needs to run bigger than 720p when 1080p is actually
+    /// wanted - every smaller export is produced by downscaling a 720p
+    /// capture, so the camera stays cheap to run for the low tiers.
+    var captureDimensions: (w: Int, h: Int) {
+        self == .p1080 ? (1920, 1080) : (1280, 720)
+    }
+
     var detail: String {
         let p = pixels
         return "\(p.w) x \(p.h)"
+    }
+}
+
+// MARK: - Frame rate
+
+enum FrameRate: Int, CaseIterable, Identifiable {
+    case fps24 = 24, fps30 = 30, fps60 = 60
+
+    var id: Int { rawValue }
+    var value: Int { rawValue }
+
+    var label: String { "\(rawValue) fps" }
+
+    var detail: String {
+        switch self {
+        case .fps24: return "Film-like motion"
+        case .fps30: return "Standard, smallest files"
+        case .fps60: return "Smoothest motion, largest files"
+        }
     }
 }
 
@@ -96,6 +124,9 @@ final class AppSettings: ObservableObject {
     @Published var quality: Quality {
         didSet { store.set(quality.rawValue, forKey: "quality") }
     }
+    @Published var frameRate: FrameRate {
+        didSet { store.set(frameRate.rawValue, forKey: "frameRate") }
+    }
     @Published var saveLocation: SaveLocation {
         didSet { store.set(saveLocation.rawValue, forKey: "saveLocation") }
     }
@@ -117,6 +148,7 @@ final class AppSettings: ObservableObject {
     private init() {
         resolution    = Resolution(rawValue: store.string(forKey: "resolution") ?? "") ?? .p720
         quality       = Quality(rawValue: store.string(forKey: "quality") ?? "") ?? .ultraLow
+        frameRate     = FrameRate(rawValue: store.integer(forKey: "frameRate")) ?? .fps30
         saveLocation  = SaveLocation(rawValue: store.string(forKey: "saveLocation") ?? "") ?? .photos
         recordAudio   = store.object(forKey: "recordAudio") as? Bool ?? true
         stabilization = store.object(forKey: "stabilization") as? Bool ?? true
@@ -149,13 +181,12 @@ struct EncodePlan {
 
 enum Encoder {
 
-    /// Frames per second. Dropping this to 15 is the single biggest extra
-    /// saving available - it roughly halves every number below.
-    static let frameRate = 30
-
-    // Video bitrate in kbit/s, assuming HEVC. Tweak freely, these are the
-    // only numbers that decide how much space an hour of footage takes.
+    // Video bitrate in kbit/s at 30 fps, assuming HEVC. Tweak freely, these
+    // are the only numbers that decide how much space an hour of footage
+    // takes at the standard frame rate; other rates scale off this via
+    // fpsMultiplier below.
     private static let videoKbps: [Resolution: [Quality: Int]] = [
+        .p1080: [.high: 4500, .medium: 2200, .low: 1000, .ultraLow: 400],
         .p720: [.high: 2500, .medium: 1200, .low: 600, .ultraLow: 250],
         .p480: [.high: 1200, .medium: 600,  .low: 300, .ultraLow: 130],
         .p320: [.high: 700,  .medium: 350,  .low: 180, .ultraLow: 80],
@@ -175,20 +206,30 @@ enum Encoder {
     /// H.264 needs roughly 60% more bits for the same picture as HEVC.
     private static let h264Multiplier = 1.6
 
+    /// More frames per second need more total bits to hold picture quality
+    /// steady, since each individual frame gets a smaller slice of the
+    /// average bitrate otherwise. Scaled relative to 30 fps.
+    private static let fpsMultiplier: [FrameRate: Double] = [
+        .fps24: 0.85, .fps30: 1.0, .fps60: 1.6
+    ]
+
     static func plan(for settings: AppSettings) -> EncodePlan {
         let px = settings.resolution.pixels
         let baseKbps = videoKbps[settings.resolution]?[settings.quality] ?? 600
-        let kbps = settings.useHEVC ? Double(baseKbps) : Double(baseKbps) * h264Multiplier
+        let codecMultiplier = settings.useHEVC ? 1.0 : h264Multiplier
+        let fpsFactor = fpsMultiplier[settings.frameRate] ?? 1.0
+        let kbps = Double(baseKbps) * codecMultiplier * fpsFactor
         let gopSeconds = keyFrameSeconds[settings.quality] ?? 4
         let aKbps = settings.recordAudio ? (audioKbps[settings.quality] ?? 32) : 0
+        let fps = settings.frameRate.value
 
         return EncodePlan(
             width: px.w,
             height: px.h,
             videoBitrate: Int(kbps * 1000.0),
             audioBitrate: aKbps * 1000,
-            keyFrameInterval: gopSeconds * frameRate,
-            frameRate: frameRate,
+            keyFrameInterval: gopSeconds * fps,
+            frameRate: fps,
             codec: settings.useHEVC ? .hevc : .h264,
             hasAudio: settings.recordAudio,
             saveLocation: settings.saveLocation

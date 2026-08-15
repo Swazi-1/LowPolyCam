@@ -76,7 +76,9 @@ struct CameraScreen: View {
         .overlay(recordingBadge, alignment: .bottom)
     }
 
-    /// Sits just under the top bar while filming so it is impossible to miss.
+    /// Sits just under the top bar while filming, and stays put (as "Saving…")
+    /// until the clip is actually written - so tapping stop always visibly
+    /// does something right away, even before the file finishes.
     private var recordingBadge: some View {
         Group {
             if recorder.isRecording {
@@ -103,6 +105,17 @@ struct CameraScreen: View {
                 .offset(y: 26)
                 .onAppear { blink = true }
                 .onDisappear { blink = false }
+            } else if recorder.isSaving {
+                HStack(spacing: 8) {
+                    ProgressView().tint(.white).scaleEffect(0.7)
+                    Text("Saving…")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .foregroundColor(.white)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
+                .background(Capsule().fill(Color.black.opacity(0.75)))
+                .offset(y: 26)
             }
         }
     }
@@ -110,8 +123,8 @@ struct CameraScreen: View {
     private var bottomBar: some View {
         HStack {
             circleButton(system: "gearshape.fill") { showSettings = true }
-                .disabled(recorder.isRecording)
-                .opacity(recorder.isRecording ? 0.35 : 1)
+                .disabled(recorder.isRecording || recorder.isSaving)
+                .opacity((recorder.isRecording || recorder.isSaving) ? 0.35 : 1)
 
             Spacer()
 
@@ -133,6 +146,8 @@ struct CameraScreen: View {
                 circleButton(system: "arrow.triangle.2.circlepath.camera.fill") {
                     recorder.flipCamera()
                 }
+                .disabled(recorder.isSaving)
+                .opacity(recorder.isSaving ? 0.35 : 1)
             }
         }
     }
@@ -145,13 +160,18 @@ struct CameraScreen: View {
                 Circle()
                     .stroke(Color.white, lineWidth: 4)
                     .frame(width: 76, height: 76)
-                RoundedRectangle(cornerRadius: recorder.isRecording ? 6 : 31)
-                    .fill(Color.red)
-                    .frame(width: recorder.isRecording ? 30 : 62,
-                           height: recorder.isRecording ? 30 : 62)
+                if recorder.isSaving {
+                    ProgressView().tint(.white)
+                } else {
+                    RoundedRectangle(cornerRadius: recorder.isRecording ? 6 : 31)
+                        .fill(Color.red)
+                        .frame(width: recorder.isRecording ? 30 : 62,
+                               height: recorder.isRecording ? 30 : 62)
+                }
             }
         }
         .buttonStyle(.plain)
+        .disabled(recorder.isSaving)
         .animation(.easeInOut(duration: 0.18), value: recorder.isRecording)
     }
 

@@ -12,6 +12,7 @@ struct SettingsScreen: View {
         NavigationView {
             List {
                 resolutionSection
+                frameRateSection
                 qualitySection
                 saveSection
                 estimateSection
@@ -36,6 +37,18 @@ struct SettingsScreen: View {
             ForEach(Resolution.allCases) { r in
                 row(title: r.label, subtitle: r.detail, selected: settings.resolution == r) {
                     settings.resolution = r
+                    recorder.updateCaptureFormat()
+                }
+            }
+        }
+    }
+
+    private var frameRateSection: some View {
+        Section(header: Text("Frame rate")) {
+            ForEach(FrameRate.allCases) { f in
+                row(title: f.label, subtitle: f.detail, selected: settings.frameRate == f) {
+                    settings.frameRate = f
+                    recorder.updateCaptureFormat()
                 }
             }
         }

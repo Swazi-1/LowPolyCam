@@ -5,9 +5,12 @@ import Combine
 
 /// Capture pipeline.
 ///
-/// The camera always runs at 1280x720/30. The chosen resolution and quality are
-/// applied by the encoder (AVAssetWriter scales down for us), so changing a
-/// setting never has to tear down and rebuild the capture session.
+/// The sensor runs at 720p for every export at 720p or below - the encoder
+/// scales down for us - and only switches up to a real 1080p capture format
+/// when 1080p is actually selected. Frame rate (24/30/60) is applied by
+/// searching the device's own formats for one that actually supports it and
+/// locking to it directly, rather than trusting a session preset to guess
+/// right; that is also what keeps 60 fps steady instead of stuttering.
 ///
 /// Long recordings are split into segments (see `segmentSeconds`) and each
 /// segment is written as a fragmented movie, so a crash, a dead battery or iOS
@@ -26,6 +29,10 @@ final class CameraRecorder: NSObject, ObservableObject {
     // MARK: Published state
 
     @Published private(set) var isRecording = false
+    /// True from the moment "stop" is tapped until the clip is actually
+    /// written and delivered. The record button shows a spinner and ignores
+    /// taps during this window, so a slow save never looks like a dead tap.
+    @Published private(set) var isSaving = false
     @Published private(set) var isSessionRunning = false
     @Published private(set) var permissionDenied = false
     @Published private(set) var elapsed: TimeInterval = 0
@@ -125,16 +132,10 @@ final class CameraRecorder: NSObject, ObservableObject {
     private func configureSession() {
         session.beginConfiguration()
 
-        // 720p is the lowest 16:9 preset; everything smaller is produced by the
-        // encoder. If a device cannot do it, fall back rather than fail.
-        if session.canSetSessionPreset(.hd1280x720) {
-            session.sessionPreset = .hd1280x720
-        } else {
-            session.sessionPreset = .high
-            DispatchQueue.main.async {
-                self.notice = "This camera has no 720p mode - using its default instead."
-            }
-        }
+        // Resolution and frame rate are both driven by an explicitly chosen
+        // AVCaptureDevice.Format (see applyActiveFormat), not a canned preset -
+        // presets cannot express "1080p at 60 fps specifically."
+        session.sessionPreset = .inputPriority
 
         if let device = Self.camera(at: position),
            let input = try? AVCaptureDeviceInput(device: device),
@@ -156,7 +157,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         session.commitConfiguration()
 
         configureVideoConnection()
-        lockFrameRate()
+        applyActiveFormat()
         refreshTorchState()
         syncMicInput()
     }
@@ -191,30 +192,67 @@ final class CameraRecorder: NSObject, ObservableObject {
         sessionQueue.async { self.applyStabilization() }
     }
 
-    private func lockFrameRate() {
+    /// Finds a real capture format for the resolution+frame rate currently
+    /// selected in Settings and locks the device to it. Called at setup, after
+    /// flipping cameras (front and back support different combinations), and
+    /// whenever the resolution or frame rate setting changes.
+    private func applyActiveFormat() {
         guard let device = cameraInput?.device else { return }
-        let fps = Double(Encoder.frameRate)
-        let supported = device.activeFormat.videoSupportedFrameRateRanges.contains {
-            $0.minFrameRate <= fps && fps <= $0.maxFrameRate
-        }
-        guard supported else {
+        let dims = settings.resolution.captureDimensions
+        let fps = Double(settings.frameRate.value)
+
+        guard let format = Self.bestFormat(for: device, width: dims.w, height: dims.h, fps: fps) else {
             DispatchQueue.main.async {
-                self.notice = "This camera cannot do \(Encoder.frameRate) fps - using its default."
+                self.notice = "This camera can't do \(dims.w)x\(dims.h) at \(Int(fps)) fps here - using its closest mode instead."
             }
             return
         }
+
         do {
             try device.lockForConfiguration()
-            let d = CMTime(value: 1, timescale: CMTimeScale(Encoder.frameRate))
+            device.activeFormat = format
+            let d = CMTime(value: 1, timescale: CMTimeScale(fps.rounded()))
             device.activeVideoMinFrameDuration = d
             device.activeVideoMaxFrameDuration = d
-            if device.isLowLightBoostSupported {
-                device.automaticallyEnablesLowLightBoostWhenAvailable = true
-            }
+            // Low-light boost quietly drops the effective frame rate to gather
+            // more light per frame - exactly what fights a steady 60 fps, so
+            // it stays off; a locked frame rate matters more here than
+            // brightness in dark scenes.
             device.unlockForConfiguration()
         } catch {
-            // Not fatal - we just record at whatever rate the device picks.
+            DispatchQueue.main.async { self.notice = "Could not lock this camera's frame rate." }
         }
+    }
+
+    /// Searches the device's own formats for the smallest one that is still
+    /// big enough for `width`x`height` and actually supports `fps` - a session
+    /// preset cannot express an exact resolution+frame-rate combination like
+    /// "1080p at 60".
+    private static func bestFormat(for device: AVCaptureDevice, width: Int, height: Int, fps: Double) -> AVCaptureDevice.Format? {
+        var best: AVCaptureDevice.Format?
+        var bestScore = Int.max
+        for format in device.formats {
+            let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+            guard Int(dims.width) >= width, Int(dims.height) >= height else { continue }
+            let supportsFPS = format.videoSupportedFrameRateRanges.contains {
+                $0.minFrameRate <= fps && fps <= $0.maxFrameRate
+            }
+            guard supportsFPS else { continue }
+            // Prefer the closest match in area, and penalise pixel-binned
+            // formats (lower real detail) when a same-size unbinned one exists.
+            let areaDelta = Int(dims.width) * Int(dims.height) - width * height
+            let score = areaDelta + (format.isVideoBinned ? 1_000_000 : 0)
+            if score < bestScore {
+                bestScore = score
+                best = format
+            }
+        }
+        return best
+    }
+
+    /// Called from Settings when resolution or frame rate changes.
+    func updateCaptureFormat() {
+        sessionQueue.async { self.applyActiveFormat() }
     }
 
     /// Adds or removes the microphone to match the setting. With audio off the
@@ -272,7 +310,7 @@ final class CameraRecorder: NSObject, ObservableObject {
             self.session.commitConfiguration()
 
             self.configureVideoConnection()
-            self.lockFrameRate()
+            self.applyActiveFormat()
             self.refreshTorchState()
             DispatchQueue.main.async { self.isFrontCamera = (next == .front) }
         }
@@ -329,7 +367,10 @@ final class CameraRecorder: NSObject, ObservableObject {
         if settings.saveLocation == .photos { ensurePhotosAccess() }
 
         let newPlan = Encoder.plan(for: settings)
-        let transform = Self.transform(forInterface: currentInterfaceOrientation())
+        // Read the main-thread-synchronised mirror of the camera position,
+        // not the raw session-queue-owned `position` var, so this can never
+        // race a flip that is still in flight.
+        let transform = Self.transform(forInterface: currentInterfaceOrientation(), isFrontCamera: isFrontCamera)
 
         ioQueue.async {
             self.plan = newPlan
@@ -349,24 +390,29 @@ final class CameraRecorder: NSObject, ObservableObject {
     func stopRecording(notice message: String?) {
         guard isRecording else { return }
 
-        // Keep the app alive long enough to close the file if we are on the way
-        // to the background.
+        // isSaving flips the record button into a spinner immediately, so the
+        // tap is never left looking like it did nothing while the clip
+        // finishes writing and (if Photos is the destination) importing.
+        isRecording = false
+        isSaving = true
+        UIApplication.shared.isIdleTimerDisabled = false
+        notice = message
+        refreshFreeSpace()
+
+        // Keep the app alive long enough to close the file - and, for Photos,
+        // to finish the import - if we are on the way to the background.
         var task = UIApplication.shared.beginBackgroundTask(withName: "finishClip")
 
         ioQueue.async {
             self.wantsRecording = false
             self.finishSegment {
+                DispatchQueue.main.async { self.isSaving = false }
                 if task != .invalid {
                     UIApplication.shared.endBackgroundTask(task)
                     task = .invalid
                 }
             }
         }
-
-        isRecording = false
-        UIApplication.shared.isIdleTimerDisabled = false
-        notice = message
-        refreshFreeSpace()
     }
 
     @objc private func willResignActive() {
@@ -459,14 +505,23 @@ final class CameraRecorder: NSObject, ObservableObject {
         a?.markAsFinished()
         if end.isValid { w.endSession(atSourceTime: end) }
         w.finishWriting {
-            if w.status == .completed {
-                self.deliver(url, to: destination)
-            } else {
+            guard w.status == .completed else {
                 let reason = w.error?.localizedDescription ?? "unknown error"
-                DispatchQueue.main.async { self.notice = "Clip failed to save: \(reason)" }
+                DispatchQueue.main.async {
+                    self.notice = "Clip failed to save: \(reason)"
+                    self.refreshFreeSpace()
+                }
+                completion?()
+                return
             }
-            DispatchQueue.main.async { self.refreshFreeSpace() }
-            completion?()
+            // completion (which ends the background task and clears isSaving)
+            // waits for the Photos import too, not just the file write - a
+            // backgrounded app was previously free to get its background time
+            // revoked mid-import, which could silently drop the clip.
+            self.deliver(url, to: destination) {
+                DispatchQueue.main.async { self.refreshFreeSpace() }
+                completion?()
+            }
         }
     }
 
@@ -508,9 +563,10 @@ final class CameraRecorder: NSObject, ObservableObject {
         PHPhotoLibrary.requestAuthorization(for: .addOnly) { _ in }
     }
 
-    private func deliver(_ url: URL, to destination: SaveLocation) {
+    private func deliver(_ url: URL, to destination: SaveLocation, done: @escaping () -> Void) {
         guard destination == .photos else {
             DispatchQueue.main.async { self.notice = "Clip saved to Files." }
+            done()
             return
         }
 
@@ -519,6 +575,7 @@ final class CameraRecorder: NSObject, ObservableObject {
             DispatchQueue.main.async {
                 self.notice = "No photo access - clip kept in Files instead."
             }
+            done()
             return
         }
 
@@ -536,8 +593,8 @@ final class CameraRecorder: NSObject, ObservableObject {
                     let reason = error?.localizedDescription ?? "unknown error"
                     self.notice = "Photos refused the clip (\(reason)) - it is still in Files."
                 }
-                self.refreshFreeSpace()
             }
+            done()
         }
     }
 
@@ -573,7 +630,12 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     /// The buffers arrive in `.landscapeRight`. This is the rotation a player
     /// has to apply to show the clip the way the phone was held.
-    private static func transform(forInterface o: UIInterfaceOrientation) -> CGAffineTransform {
+    ///
+    /// The front sensor is physically mounted 180 degrees rotated relative to
+    /// the back one, so the same nominal buffer orientation needs the
+    /// opposite rotation to come out upright - without this, front-camera
+    /// clips record flipped regardless of which way the phone was held.
+    private static func transform(forInterface o: UIInterfaceOrientation, isFrontCamera: Bool) -> CGAffineTransform {
         let angle: CGFloat
         switch o {
         case .portrait:           angle = .pi / 2
@@ -582,7 +644,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         case .portraitUpsideDown: angle = -.pi / 2
         default:                  angle = .pi / 2
         }
-        return CGAffineTransform(rotationAngle: angle)
+        return CGAffineTransform(rotationAngle: isFrontCamera ? angle + .pi : angle)
     }
 
     enum RecorderError: LocalizedError {
