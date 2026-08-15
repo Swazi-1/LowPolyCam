@@ -81,6 +81,8 @@ final class CameraRecorder: NSObject, ObservableObject {
     private var clipTransform = CGAffineTransform.identity
     private var freeBytesSnapshot: Int64 = .max
     private var lastElapsedPush = CMTime.invalid
+    /// Capture-queue-only running total, mirrored to `droppedFrames` for the UI.
+    private var droppedFrameCount = 0
 
     init(settings: AppSettings) {
         self.settings = settings
@@ -392,6 +394,7 @@ final class CameraRecorder: NSObject, ObservableObject {
             self.clipTransform = transform
             self.recordStartPTS = .invalid
             self.lastElapsedPush = .invalid
+            self.droppedFrameCount = 0
             self.wantsRecording = true
         }
 
@@ -727,8 +730,13 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
         countDroppedFrame()
     }
 
+    /// Counted on the capture queue only. Publishing to the main thread on
+    /// every drop would mean a burst of drops causes a burst of main-thread
+    /// work - the measurement making the problem it measures worse - so the
+    /// running total is pushed alongside the elapsed time instead, four times
+    /// a second.
     private func countDroppedFrame() {
-        DispatchQueue.main.async { self.droppedFrames += 1 }
+        droppedFrameCount += 1
     }
 
     /// Publishes the running time about four times a second instead of thirty.
@@ -738,6 +746,10 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
            CMTimeGetSeconds(CMTimeSubtract(pts, lastElapsedPush)) < 0.25 { return }
         lastElapsedPush = pts
         let seconds = CMTimeGetSeconds(CMTimeSubtract(pts, recordStartPTS))
-        DispatchQueue.main.async { self.elapsed = seconds }
+        let drops = droppedFrameCount
+        DispatchQueue.main.async {
+            self.elapsed = seconds
+            if self.droppedFrames != drops { self.droppedFrames = drops }
+        }
     }
 }

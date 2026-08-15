@@ -32,6 +32,13 @@ struct CameraScreen: View {
         .preferredColorScheme(.dark)
         .onAppear { recorder.start() }
         .onDisappear { recorder.stop() }
+        // Dim mode turns the screen brightness down to zero. Leaving the app
+        // while dimmed would otherwise strand the whole phone at zero
+        // brightness, so the original level is always put back.
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIApplication.willResignActiveNotification)) { _ in
+            if dimmed { leaveDim() }
+        }
         .sheet(isPresented: $showSettings) {
             SettingsScreen(settings: settings, recorder: recorder)
         }
