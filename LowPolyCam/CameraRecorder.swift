@@ -502,63 +502,91 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     // MARK: Zoom
 
-    /// Session-queue-owned mirrors of `maxZoomFactor`/`minZoomFactor` -
-    /// `setZoom` runs on `sessionQueue` and must not read the `@Published`
-    /// copies directly, the same class of cross-thread read that caused the
-    /// front-camera orientation bug earlier.
-    private var maxZoomFactorSnapshot: CGFloat = 1
-    private var minZoomFactorSnapshot: CGFloat = 1
+    /// Everything the app shows and accepts is "display zoom", the scale
+    /// people actually read: 1.0 is the normal wide lens, 0.5 is ultra-wide,
+    /// 2.0 is telephoto. AVFoundation's own `videoZoomFactor` uses a
+    /// different scale on a multi-lens virtual device - there, 1.0 means the
+    /// *widest* constituent lens, so on a phone with an ultra-wide, raw 1.0
+    /// is what a user calls 0.5x and the normal lens only starts at raw 2.0.
+    /// These snapshots hold the raw values; `zoomBaseline` converts between
+    /// the two scales.
+    ///
+    /// Session-queue-owned, because `setZoom` runs there and must not read
+    /// the `@Published` copies directly - the same class of cross-thread read
+    /// that caused the front-camera orientation bug earlier.
+    private var rawMaxZoomSnapshot: CGFloat = 1
+    private var rawMinZoomSnapshot: CGFloat = 1
+    /// The raw `videoZoomFactor` that corresponds to display 1.0x.
+    private var zoomBaselineSnapshot: CGFloat = 1
+
+    /// Finds the raw zoom factor at which the ordinary wide-angle lens takes
+    /// over - that is the point a user would call "1x".
+    ///
+    /// On a single-lens phone (iPhone 7) there are no constituents and this
+    /// is simply 1.0. On an iPhone 11 (ultra-wide + wide) the wide lens is
+    /// the second constituent, so the answer is the first switch-over value,
+    /// normally 2.0. On a wide + telephoto phone the wide lens is already
+    /// first, so it is 1.0 again.
+    private static func wideAngleBaseline(for device: AVCaptureDevice) -> CGFloat {
+        let constituents = device.constituentDevices
+        guard !constituents.isEmpty,
+              let wideIndex = constituents.firstIndex(where: {
+                  $0.deviceType == .builtInWideAngleCamera
+              }),
+              wideIndex > 0 else { return 1 }
+
+        let switchOvers = device.virtualDeviceSwitchOverVideoZoomFactors
+        guard wideIndex - 1 < switchOvers.count else { return 1 }
+        let value = CGFloat(switchOvers[wideIndex - 1].doubleValue)
+        return value > 0 ? value : 1
+    }
 
     private func refreshZoomLimits() {
         guard let device = cameraInput?.device else { return }
-        // `videoMaxZoomFactor` on some formats reports numbers in the
-        // thousands (digital crop far past anything usable) - capped at 8x,
-        // which stays genuinely usable on a sensor this size.
-        let cap: CGFloat = 8
-        let ceiling = min(device.activeFormat.videoMaxZoomFactor, cap)
-        // Below 1.0 only on a device with an ultra-wide lens folded into a
-        // virtual device - stays at 1.0 (no effect) on a single-lens phone
-        // like the iPhone 7.
-        let floor = device.minAvailableVideoZoomFactor
-        maxZoomFactorSnapshot = ceiling
-        minZoomFactorSnapshot = floor
 
-        // A virtual multi-lens device does not reliably default its real
-        // optical zoom to 1.0 on its own - it can silently sit on the
-        // ultra-wide lens while this class still believes it is at "1x".
-        // That mismatch is what made the first pinch after launch look like
-        // a sudden lens switch: the gesture's base was read from the
-        // (wrong) published 1.0 while the device's true zoom was ~0.5, so
-        // the very first zoom command jumped the real lens instead of
-        // continuing smoothly from where it actually was. Forcing the real
-        // value here keeps the two in sync from the start.
+        let baseline = Self.wideAngleBaseline(for: device)
+        // Cap at 8x *as displayed*, since `videoMaxZoomFactor` on some
+        // formats reports numbers in the thousands - digital crop far past
+        // anything usable.
+        let rawCeiling = min(device.activeFormat.videoMaxZoomFactor, baseline * 8)
+        let rawFloor = device.minAvailableVideoZoomFactor
+
+        zoomBaselineSnapshot = baseline
+        rawMaxZoomSnapshot = rawCeiling
+        rawMinZoomSnapshot = rawFloor
+
+        // Start on the ordinary wide lens, which means raw `baseline` - not
+        // raw 1.0. Setting raw 1.0 here is what previously made the app open
+        // on the ultra-wide lens while the label claimed 1.0x.
         do {
             try device.lockForConfiguration()
-            device.videoZoomFactor = 1
+            device.videoZoomFactor = baseline
             device.unlockForConfiguration()
         } catch {
             // Not fatal - the zoom just stays wherever it already was.
         }
 
         DispatchQueue.main.async {
-            self.maxZoomFactor = ceiling
-            self.minZoomFactor = floor
+            self.maxZoomFactor = rawCeiling / baseline
+            self.minZoomFactor = rawFloor / baseline
             self.zoomFactor = 1
         }
     }
 
-    /// `factor` is the absolute zoom, not a delta - the caller (a pinch
-    /// gesture) tracks the running value itself and hands over where it wants
-    /// to land.
+    /// `factor` is an absolute *display* zoom (1.0 = the normal lens), not a
+    /// delta - the caller (a pinch gesture) tracks the running value itself
+    /// and hands over where it wants to land.
     func setZoom(factor: CGFloat) {
         sessionQueue.async {
             guard let device = self.cameraInput?.device else { return }
-            let clamped = max(self.minZoomFactorSnapshot, min(factor, self.maxZoomFactorSnapshot))
+            let baseline = self.zoomBaselineSnapshot
+            let raw = factor * baseline
+            let clamped = max(self.rawMinZoomSnapshot, min(raw, self.rawMaxZoomSnapshot))
             do {
                 try device.lockForConfiguration()
                 device.videoZoomFactor = clamped
                 device.unlockForConfiguration()
-                DispatchQueue.main.async { self.zoomFactor = clamped }
+                DispatchQueue.main.async { self.zoomFactor = clamped / baseline }
             } catch {
                 // Not fatal - the zoom just does not change this time.
             }
