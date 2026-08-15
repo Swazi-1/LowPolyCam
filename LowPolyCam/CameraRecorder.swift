@@ -3,18 +3,25 @@ import UIKit
 import Photos
 import Combine
 
-/// Capture pipeline.
+/// Capture pipeline, built on AVCaptureMovieFileOutput - the same direct
+/// hardware-to-disk recorder the built-in Camera app uses. An earlier version
+/// of this class hand-rolled the pipeline with AVCaptureVideoDataOutput and a
+/// manual AVAssetWriter, copying every frame across queues and re-validating
+/// it in app code; at 1080p60 on an A10 that left less headroom than Apple's
+/// own path and measurably dropped frames (~59.35 fps instead of ~59.97).
+/// Handing frames to the system output directly is what closes that gap.
 ///
-/// The sensor runs at 720p for every export at 720p or below - the encoder
+/// The trade-off: AVCaptureMovieFileOutput does not support the seamless
+/// writer-swap this app used to do at each 10-minute segment cut, so segment
+/// boundaries now have a brief real gap (tens to low-hundreds of ms) instead
+/// of being perfectly continuous. Within a segment, recording should be
+/// smoother than before.
+///
+/// The sensor runs at 720p for every export at 720p or below - the output
 /// scales down for us - and only switches up to a real 1080p capture format
 /// when 1080p is actually selected. Frame rate (24/30/60) is applied by
 /// searching the device's own formats for one that actually supports it and
-/// locking to it directly, rather than trusting a session preset to guess
-/// right; that is also what keeps 60 fps steady instead of stuttering.
-///
-/// Long recordings are split into segments (see `segmentSeconds`) and each
-/// segment is written as a fragmented movie, so a crash, a dead battery or iOS
-/// killing the app costs you at most a few seconds - not the whole recording.
+/// locking to it directly.
 final class CameraRecorder: NSObject, ObservableObject {
 
     // MARK: Tunables
@@ -49,29 +56,28 @@ final class CameraRecorder: NSObject, ObservableObject {
     // MARK: Private
 
     private let settings: AppSettings
-    private let sessionQueue = DispatchQueue(label: "lowpolycam.session")
-    private let ioQueue = DispatchQueue(label: "lowpolycam.io")
+    /// User-initiated QoS so our own configuration calls are not left waiting
+    /// behind lower-priority work - the actual frame-by-frame encode happens
+    /// inside AVFoundation's own real-time threads, not on this queue.
+    private let sessionQueue = DispatchQueue(label: "lowpolycam.session", qos: .userInitiated)
 
-    private let videoOutput = AVCaptureVideoDataOutput()
-    private let audioOutput = AVCaptureAudioDataOutput()
+    private let movieOutput = AVCaptureMovieFileOutput()
     private var cameraInput: AVCaptureDeviceInput?
     private var micInput: AVCaptureDeviceInput?
     private var position: AVCaptureDevice.Position = .back
     private var isConfigured = false
     private var spaceTimer: Timer?
+    private var elapsedTimer: Timer?
 
-    // Writer state. Only ever touched on ioQueue.
-    private var writer: AVAssetWriter?
-    private var videoIn: AVAssetWriterInput?
-    private var audioIn: AVAssetWriterInput?
-    private var segmentStart = CMTime.invalid
-    private var lastVideoPTS = CMTime.invalid
-    private var recordStartPTS = CMTime.invalid
-    private var wantsRecording = false
     private var plan: EncodePlan?
-    private var clipTransform = CGAffineTransform.identity
+    private var currentDestination: SaveLocation = .files
+    /// True from the moment recording starts until the moment it is told to
+    /// stop - read inside the recording delegate to decide whether a
+    /// finished segment should roll straight into the next one.
+    private var wantsRecording = false
+    private var recordingStartDate: Date?
     private var freeBytesSnapshot: Int64 = .max
-    private var lastElapsedPush = CMTime.invalid
+    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
 
     init(settings: AppSettings) {
         self.settings = settings
@@ -144,30 +150,22 @@ final class CameraRecorder: NSObject, ObservableObject {
             cameraInput = input
         }
 
-        videoOutput.alwaysDiscardsLateVideoFrames = true
-        videoOutput.videoSettings = [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
-        ]
-        videoOutput.setSampleBufferDelegate(self, queue: ioQueue)
-        if session.canAddOutput(videoOutput) { session.addOutput(videoOutput) }
-
-        audioOutput.setSampleBufferDelegate(self, queue: ioQueue)
-        if session.canAddOutput(audioOutput) { session.addOutput(audioOutput) }
+        if session.canAddOutput(movieOutput) { session.addOutput(movieOutput) }
 
         session.commitConfiguration()
 
-        configureVideoConnection()
+        configureMirrorAndStabilization()
         applyActiveFormat()
         refreshTorchState()
         syncMicInput()
     }
 
-    /// The buffers are kept in the sensor's own landscape orientation and the
-    /// rotation is stored as metadata on the file instead. Rotating pixels for
-    /// hours would cost real battery for no benefit.
-    private func configureVideoConnection() {
-        guard let c = videoOutput.connection(with: .video) else { return }
-        if c.isVideoOrientationSupported { c.videoOrientation = .landscapeRight }
+    /// Mirroring and stabilisation are configured once at setup (and again
+    /// after flipping cameras); output orientation is set separately, fresh
+    /// at the start of each recording, since it depends on how the phone is
+    /// being held right then.
+    private func configureMirrorAndStabilization() {
+        guard let c = movieOutput.connection(with: .video) else { return }
         if c.isVideoMirroringSupported {
             c.automaticallyAdjustsVideoMirroring = false
             c.isVideoMirrored = false
@@ -179,7 +177,7 @@ final class CameraRecorder: NSObject, ObservableObject {
     /// front camera on older phones generally does not - so the UI is told
     /// whether the switch actually does anything here.
     private func applyStabilization(to connection: AVCaptureConnection? = nil) {
-        guard let c = connection ?? videoOutput.connection(with: .video) else { return }
+        guard let c = connection ?? movieOutput.connection(with: .video) else { return }
         let supported = c.isVideoStabilizationSupported
         if supported {
             c.preferredVideoStabilizationMode = settings.stabilization ? .auto : .off
@@ -215,9 +213,8 @@ final class CameraRecorder: NSObject, ObservableObject {
             device.activeVideoMinFrameDuration = d
             device.activeVideoMaxFrameDuration = d
             // Low-light boost quietly drops the effective frame rate to gather
-            // more light per frame - exactly what fights a steady 60 fps, so
-            // it stays off; a locked frame rate matters more here than
-            // brightness in dark scenes.
+            // more light per frame - exactly what fights a steady frame rate,
+            // so it stays off.
             device.unlockForConfiguration()
         } catch {
             DispatchQueue.main.async { self.notice = "Could not lock this camera's frame rate." }
@@ -309,7 +306,7 @@ final class CameraRecorder: NSObject, ObservableObject {
             }
             self.session.commitConfiguration()
 
-            self.configureVideoConnection()
+            self.configureMirrorAndStabilization()
             self.applyActiveFormat()
             self.refreshTorchState()
             DispatchQueue.main.async { self.isFrontCamera = (next == .front) }
@@ -367,50 +364,86 @@ final class CameraRecorder: NSObject, ObservableObject {
         if settings.saveLocation == .photos { ensurePhotosAccess() }
 
         let newPlan = Encoder.plan(for: settings)
-        // Read the main-thread-synchronised mirror of the camera position,
-        // not the raw session-queue-owned `position` var, so this can never
-        // race a flip that is still in flight.
-        let transform = Self.transform(forInterface: currentInterfaceOrientation(), isFrontCamera: isFrontCamera)
-
-        ioQueue.async {
-            self.plan = newPlan
-            self.clipTransform = transform
-            self.recordStartPTS = .invalid
-            self.lastElapsedPush = .invalid
-            self.wantsRecording = true
-        }
+        let orientation = Self.captureOrientation(for: currentInterfaceOrientation())
 
         notice = nil
         elapsed = 0
         clipsThisSession = 0
         isRecording = true
         UIApplication.shared.isIdleTimerDisabled = true
+        recordingStartDate = Date()
+        startElapsedTimer()
+
+        sessionQueue.async {
+            self.plan = newPlan
+            self.currentDestination = newPlan.saveLocation
+            self.wantsRecording = true
+            self.movieOutput.movieFragmentInterval = CMTime(seconds: Self.fragmentSeconds, preferredTimescale: 600)
+            self.movieOutput.maxRecordedDuration = CMTime(seconds: Self.segmentSeconds, preferredTimescale: 1)
+            self.movieOutput.minFreeDiskSpaceLimit = Self.reserveBytes
+            self.applyRecordingSettings(plan: newPlan, orientation: orientation)
+            self.beginSegment()
+        }
+    }
+
+    /// Applies encode settings and orientation once, at the start of a
+    /// recording session - they hold for every segment that session rolls
+    /// through, since Settings cannot be reached again until recording stops.
+    private func applyRecordingSettings(plan: EncodePlan, orientation: AVCaptureVideoOrientation) {
+        guard let videoConnection = movieOutput.connection(with: .video) else { return }
+        if videoConnection.isVideoOrientationSupported {
+            videoConnection.videoOrientation = orientation
+        }
+        let videoSettings = Encoder.movieVideoSettings(for: plan, output: movieOutput, connection: videoConnection)
+        movieOutput.setOutputSettings(videoSettings, for: videoConnection)
+
+        if plan.hasAudio, let audioConnection = movieOutput.connection(with: .audio) {
+            movieOutput.setOutputSettings(Encoder.movieAudioSettings(for: plan), for: audioConnection)
+        }
+    }
+
+    private func beginSegment() {
+        guard freeBytesSnapshot > Self.reserveBytes else {
+            wantsRecording = false
+            DispatchQueue.main.async {
+                self.isRecording = false
+                self.isSaving = false
+                self.notice = "Stopped - storage is almost full."
+                UIApplication.shared.isIdleTimerDisabled = false
+            }
+            endBackgroundTaskIfNeeded()
+            return
+        }
+        movieOutput.startRecording(to: Self.newClipURL(), recordingDelegate: self)
     }
 
     func stopRecording(notice message: String?) {
         guard isRecording else { return }
 
         // isSaving flips the record button into a spinner immediately, so the
-        // tap is never left looking like it did nothing while the clip
-        // finishes writing and (if Photos is the destination) importing.
+        // tap is never left looking like it did nothing while the last
+        // segment finishes writing and (if Photos is the destination)
+        // importing.
         isRecording = false
         isSaving = true
         UIApplication.shared.isIdleTimerDisabled = false
         notice = message
+        stopElapsedTimer()
         refreshFreeSpace()
 
         // Keep the app alive long enough to close the file - and, for Photos,
         // to finish the import - if we are on the way to the background.
-        var task = UIApplication.shared.beginBackgroundTask(withName: "finishClip")
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "finishClip")
 
-        ioQueue.async {
+        sessionQueue.async {
             self.wantsRecording = false
-            self.finishSegment {
+            if self.movieOutput.isRecording {
+                self.movieOutput.stopRecording()   // finishes on the delegate below
+            } else {
+                // Stop landed in the brief gap between two segments - there is
+                // nothing in flight to wait for.
                 DispatchQueue.main.async { self.isSaving = false }
-                if task != .invalid {
-                    UIApplication.shared.endBackgroundTask(task)
-                    task = .invalid
-                }
+                self.endBackgroundTaskIfNeeded()
             }
         }
     }
@@ -422,138 +455,29 @@ final class CameraRecorder: NSObject, ObservableObject {
         stopRecording(notice: "Recording stopped - the app left the screen.")
     }
 
-    // MARK: Segments
-
-    private func startSegment(at pts: CMTime) {
-        guard let plan = plan else { return }
-
-        guard freeBytesSnapshot > Self.reserveBytes else {
-            wantsRecording = false
-            DispatchQueue.main.async {
-                self.isRecording = false
-                self.notice = "Stopped - storage is almost full."
-                UIApplication.shared.isIdleTimerDisabled = false
-            }
-            return
-        }
-
-        do {
-            let url = Self.newClipURL()
-            let w = try AVAssetWriter(outputURL: url, fileType: .mov)
-            w.movieFragmentInterval = CMTime(seconds: Self.fragmentSeconds, preferredTimescale: 600)
-
-            let v = AVAssetWriterInput(mediaType: .video,
-                                       outputSettings: Encoder.videoSettings(for: plan, writer: w))
-            v.expectsMediaDataInRealTime = true
-            v.transform = clipTransform
-            guard w.canAdd(v) else { throw RecorderError.cannotAddInput }
-            w.add(v)
-
-            var a: AVAssetWriterInput?
-            if plan.hasAudio, let aSettings = audioSettings(for: plan, writer: w) {
-                let ai = AVAssetWriterInput(mediaType: .audio, outputSettings: aSettings)
-                ai.expectsMediaDataInRealTime = true
-                if w.canAdd(ai) { w.add(ai); a = ai }
-            }
-
-            guard w.startWriting() else {
-                throw w.error ?? RecorderError.cannotAddInput
-            }
-            w.startSession(atSourceTime: pts)
-
-            writer = w
-            videoIn = v
-            audioIn = a
-            segmentStart = pts
-            lastVideoPTS = pts
-            if !recordStartPTS.isValid { recordStartPTS = pts }
-
-            DispatchQueue.main.async { self.clipsThisSession += 1 }
-
-        } catch {
-            wantsRecording = false
-            let text = error.localizedDescription
-            DispatchQueue.main.async {
-                self.isRecording = false
-                self.notice = "Could not start recording: \(text)"
-                UIApplication.shared.isIdleTimerDisabled = false
-            }
+    private func endBackgroundTaskIfNeeded() {
+        if backgroundTask != .invalid {
+            UIApplication.shared.endBackgroundTask(backgroundTask)
+            backgroundTask = .invalid
         }
     }
 
-    private func finishSegment(_ completion: (() -> Void)? = nil) {
-        guard let w = writer, let v = videoIn else {
-            writer = nil; videoIn = nil; audioIn = nil
-            completion?()
-            return
-        }
-        let a = audioIn
-        let end = lastVideoPTS
-        let destination = plan?.saveLocation ?? .files
-        let url = w.outputURL
+    // MARK: Elapsed time
 
-        writer = nil; videoIn = nil; audioIn = nil
-        segmentStart = .invalid
-
-        guard w.status == .writing else {
-            w.cancelWriting()
-            completion?()
-            return
-        }
-
-        v.markAsFinished()
-        a?.markAsFinished()
-        if end.isValid { w.endSession(atSourceTime: end) }
-        w.finishWriting {
-            guard w.status == .completed else {
-                let reason = w.error?.localizedDescription ?? "unknown error"
-                DispatchQueue.main.async {
-                    self.notice = "Clip failed to save: \(reason)"
-                    self.refreshFreeSpace()
-                }
-                completion?()
-                return
-            }
-            // completion (which ends the background task and clears isSaving)
-            // waits for the Photos import too, not just the file write - a
-            // backgrounded app was previously free to get its background time
-            // revoked mid-import, which could silently drop the clip.
-            self.deliver(url, to: destination) {
-                DispatchQueue.main.async { self.refreshFreeSpace() }
-                completion?()
-            }
+    /// Wall-clock based rather than derived from media timestamps - simpler,
+    /// and it reflects true recording duration even if a frame were ever
+    /// dropped, which a PTS-derived clock would not.
+    private func startElapsedTimer() {
+        elapsedTimer?.invalidate()
+        elapsedTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            guard let self = self, let start = self.recordingStartDate else { return }
+            self.elapsed = Date().timeIntervalSince(start)
         }
     }
 
-    /// AVAssetWriterInput does not throw on invalid settings - it raises an
-    /// Objective-C exception, which crashes the app outright since Swift has no
-    /// way to catch it. Every candidate is checked with `canApply` before it is
-    /// ever handed to a real input, so a bad bitrate degrades quietly instead.
-    private func audioSettings(for plan: EncodePlan, writer w: AVAssetWriter) -> [String: Any]? {
-
-        func valid(_ s: [String: Any]) -> Bool {
-            w.canApply(outputSettings: s, forMediaType: .audio)
-        }
-
-        if var s = audioOutput.recommendedAudioSettingsForAssetWriter(writingTo: .mov) {
-            let recommended = s
-            s[AVEncoderBitRateKey] = plan.audioBitrate
-            if valid(s) { return s }
-            // Our bitrate override made it invalid - the untouched recommended
-            // settings are guaranteed valid, so use those instead of crashing.
-            if valid(recommended) { return recommended }
-        }
-
-        let fallback: [String: Any] = [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVNumberOfChannelsKey: 1,
-            AVSampleRateKey: 44100,
-            AVEncoderBitRateKey: plan.audioBitrate
-        ]
-        if valid(fallback) { return fallback }
-
-        // Nothing validated - record video-only rather than crash.
-        return nil
+    private func stopElapsedTimer() {
+        elapsedTimer?.invalidate()
+        elapsedTimer = nil
     }
 
     // MARK: Delivering finished clips
@@ -605,7 +529,7 @@ final class CameraRecorder: NSObject, ObservableObject {
             let url = URL(fileURLWithPath: NSHomeDirectory())
             let bytes = (try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
                 .volumeAvailableCapacityForImportantUsage ?? 0
-            self.ioQueue.async { self.freeBytesSnapshot = Int64(bytes) }
+            self.sessionQueue.async { self.freeBytesSnapshot = Int64(bytes) }
             DispatchQueue.main.async { self.freeBytes = Int64(bytes) }
         }
     }
@@ -628,82 +552,62 @@ final class CameraRecorder: NSObject, ObservableObject {
             .first?.interfaceOrientation ?? .portrait
     }
 
-    /// The buffers arrive in `.landscapeRight`. This is the rotation a player
-    /// has to apply to show the clip the way the phone was held.
-    ///
-    /// The front sensor is physically mounted 180 degrees rotated relative to
-    /// the back one, so the same nominal buffer orientation needs the
-    /// opposite rotation to come out upright - without this, front-camera
-    /// clips record flipped regardless of which way the phone was held.
-    private static func transform(forInterface o: UIInterfaceOrientation, isFrontCamera: Bool) -> CGAffineTransform {
-        let angle: CGFloat
-        switch o {
-        case .portrait:           angle = .pi / 2
-        case .landscapeRight:     angle = 0
-        case .landscapeLeft:      angle = .pi
-        case .portraitUpsideDown: angle = -.pi / 2
-        default:                  angle = .pi / 2
-        }
-        return CGAffineTransform(rotationAngle: isFrontCamera ? angle + .pi : angle)
-    }
-
-    enum RecorderError: LocalizedError {
-        case cannotAddInput
-        var errorDescription: String? { "the encoder rejected these settings" }
+    /// AVCaptureVideoOrientation and UIInterfaceOrientation share raw values.
+    /// Setting this directly on the connection lets the system map it through
+    /// the sensor's own mounting rotation and mirroring - which differs
+    /// between the front and back cameras - rather than us reimplementing
+    /// that mapping by hand.
+    private static func captureOrientation(for o: UIInterfaceOrientation) -> AVCaptureVideoOrientation {
+        AVCaptureVideoOrientation(rawValue: o.rawValue) ?? .portrait
     }
 }
 
-// MARK: - Sample buffers
+// MARK: - Recording delegate
 
-extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
-                          AVCaptureAudioDataOutputSampleBufferDelegate {
+extension CameraRecorder: AVCaptureFileOutputRecordingDelegate {
 
-    func captureOutput(_ output: AVCaptureOutput,
-                       didOutput sampleBuffer: CMSampleBuffer,
-                       from connection: AVCaptureConnection) {
+    func fileOutput(_ output: AVCaptureFileOutput,
+                    didStartRecordingTo fileURL: URL,
+                    from connections: [AVCaptureConnection]) {
+        DispatchQueue.main.async { self.clipsThisSession += 1 }
+    }
 
-        guard CMSampleBufferDataIsReady(sampleBuffer) else { return }
-        let isVideo = (output === videoOutput)
-        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+    func fileOutput(_ output: AVCaptureFileOutput,
+                    didFinishRecordingTo outputFileURL: URL,
+                    from connections: [AVCaptureConnection],
+                    error: Error?) {
 
-        guard wantsRecording else {
-            if writer != nil { finishSegment() }
+        // A non-nil error here does not necessarily mean the clip is bad -
+        // stopRecording() and hitting maxRecordedDuration both legitimately
+        // report one. The flag in the error's userInfo is the real signal.
+        let nsError = error as NSError?
+        let recordedOK = (nsError == nil)
+            || ((nsError?.userInfo[AVErrorRecordingSuccessfullyFinishedKey] as? Bool) ?? false)
+
+        guard recordedOK else {
+            let reason = error?.localizedDescription ?? "unknown error"
+            DispatchQueue.main.async { self.notice = "Clip failed to save: \(reason)" }
+            continueOrFinish()
             return
         }
 
-        if isVideo {
-            if writer == nil {
-                startSegment(at: pts)
-            } else if segmentStart.isValid,
-                      CMTimeGetSeconds(CMTimeSubtract(pts, segmentStart)) >= Self.segmentSeconds {
-                finishSegment()
-                startSegment(at: pts)
-            }
-        }
-
-        guard let w = writer, w.status == .writing else { return }
-        guard segmentStart.isValid, CMTimeCompare(pts, segmentStart) >= 0 else { return }
-
-        if isVideo {
-            if videoIn?.isReadyForMoreMediaData == true {
-                videoIn?.append(sampleBuffer)
-                lastVideoPTS = pts
-            }
-            pushElapsed(pts)
-        } else {
-            if audioIn?.isReadyForMoreMediaData == true {
-                audioIn?.append(sampleBuffer)
-            }
+        deliver(outputFileURL, to: currentDestination) { [weak self] in
+            guard let self = self else { return }
+            DispatchQueue.main.async { self.refreshFreeSpace() }
+            self.continueOrFinish()
         }
     }
 
-    /// Publishes the running time about four times a second instead of thirty.
-    private func pushElapsed(_ pts: CMTime) {
-        guard recordStartPTS.isValid else { return }
-        if lastElapsedPush.isValid,
-           CMTimeGetSeconds(CMTimeSubtract(pts, lastElapsedPush)) < 0.25 { return }
-        lastElapsedPush = pts
-        let seconds = CMTimeGetSeconds(CMTimeSubtract(pts, recordStartPTS))
-        DispatchQueue.main.async { self.elapsed = seconds }
+    /// Rolls straight into the next segment if the user is still recording,
+    /// or wraps things up if this was the final segment after a stop.
+    private func continueOrFinish() {
+        sessionQueue.async {
+            if self.wantsRecording {
+                self.beginSegment()
+            } else {
+                DispatchQueue.main.async { self.isSaving = false }
+                self.endBackgroundTaskIfNeeded()
+            }
+        }
     }
 }

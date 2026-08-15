@@ -236,45 +236,48 @@ enum Encoder {
         )
     }
 
-    /// Builds the AVAssetWriter video settings, quietly falling back to H.264
-    /// if this device cannot apply the HEVC settings. `canApply` is an instance
-    /// method on AVAssetWriter, so the writer the settings are headed for has
-    /// to already exist.
-    static func videoSettings(for plan: EncodePlan, writer: AVAssetWriter) -> [String: Any] {
+    /// Builds AVCaptureMovieFileOutput video settings, falling back to H.264
+    /// (or whatever the connection actually offers) if this device cannot do
+    /// HEVC. There is no `canApply`-style dry run for this API, so the codec
+    /// is checked against `availableVideoCodecTypes` instead; every other key
+    /// here is a plain width/height/bitrate value of the kind that has never
+    /// been the cause of a crash.
+    static func movieVideoSettings(for plan: EncodePlan,
+                                   output: AVCaptureMovieFileOutput,
+                                   connection: AVCaptureConnection) -> [String: Any] {
+        let available = output.availableVideoCodecTypes(for: connection)
+        let codec = available.contains(plan.codec)
+            ? plan.codec
+            : (available.contains(.h264) ? .h264 : (available.first ?? .h264))
 
-        func build(_ codec: AVVideoCodecType) -> [String: Any] {
-            var compression: [String: Any] = [
-                AVVideoAverageBitRateKey: plan.videoBitrate,
-                AVVideoMaxKeyFrameIntervalKey: plan.keyFrameInterval,
-                AVVideoExpectedSourceFrameRateKey: plan.frameRate,
-                AVVideoAllowFrameReorderingKey: true
-            ]
-            if codec == .h264 {
-                compression[AVVideoProfileLevelKey] = AVVideoProfileLevelH264HighAutoLevel
-            }
-            return [
-                AVVideoCodecKey: codec,
-                AVVideoWidthKey: plan.width,
-                AVVideoHeightKey: plan.height,
-                AVVideoScalingModeKey: AVVideoScalingModeResizeAspectFill,
-                AVVideoCompressionPropertiesKey: compression
-            ]
+        var compression: [String: Any] = [
+            AVVideoAverageBitRateKey: plan.videoBitrate,
+            AVVideoMaxKeyFrameIntervalKey: plan.keyFrameInterval,
+            AVVideoExpectedSourceFrameRateKey: plan.frameRate,
+            AVVideoAllowFrameReorderingKey: true
+        ]
+        if codec == .h264 {
+            compression[AVVideoProfileLevelKey] = AVVideoProfileLevelH264HighAutoLevel
         }
-
-        let preferred = build(plan.codec)
-        if writer.canApply(outputSettings: preferred, forMediaType: .video) {
-            return preferred
-        }
-        // The picked codec is not usable here - fall back rather than crash.
-        let fallback = build(.h264)
-        if writer.canApply(outputSettings: fallback, forMediaType: .video) {
-            return fallback
-        }
-        // Last resort: let the system choose everything except the size.
         return [
-            AVVideoCodecKey: AVVideoCodecType.h264,
+            AVVideoCodecKey: codec,
             AVVideoWidthKey: plan.width,
-            AVVideoHeightKey: plan.height
+            AVVideoHeightKey: plan.height,
+            AVVideoScalingModeKey: AVVideoScalingModeResizeAspectFill,
+            AVVideoCompressionPropertiesKey: compression
+        ]
+    }
+
+    /// Every key here is chosen by us and self-consistent - unlike the
+    /// AVAssetWriter crash from before (an inherited "recommended" dictionary
+    /// with one key overridden), there is nothing borrowed here that could
+    /// clash with the bitrate override.
+    static func movieAudioSettings(for plan: EncodePlan) -> [String: Any] {
+        [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVNumberOfChannelsKey: 1,
+            AVSampleRateKey: 44100,
+            AVEncoderBitRateKey: plan.audioBitrate
         ]
     }
 }
