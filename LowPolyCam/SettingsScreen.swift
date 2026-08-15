@@ -13,9 +13,11 @@ struct SettingsScreen: View {
             List {
                 resolutionSection
                 qualitySection
+                saveSection
                 estimateSection
+                cameraSection
                 advancedSection
-                filesSection
+                aboutSection
             }
             .listStyle(InsetGroupedListStyle())
             .navigationBarTitle("Settings", displayMode: .inline)
@@ -29,7 +31,8 @@ struct SettingsScreen: View {
     // MARK: Sections
 
     private var resolutionSection: some View {
-        Section(header: Text("Resolution")) {
+        Section(header: Text("Resolution"),
+                footer: Text("Recording at \(plan.sizeLabel).")) {
             ForEach(Resolution.allCases) { r in
                 row(title: r.label, subtitle: r.detail, selected: settings.resolution == r) {
                     settings.resolution = r
@@ -48,6 +51,16 @@ struct SettingsScreen: View {
         }
     }
 
+    private var saveSection: some View {
+        Section(header: Text("Save recordings to")) {
+            ForEach(SaveLocation.allCases) { s in
+                row(title: s.label, subtitle: s.detail, selected: settings.saveLocation == s) {
+                    settings.saveLocation = s
+                }
+            }
+        }
+    }
+
     private var estimateSection: some View {
         Section(header: Text("What that costs")) {
             info("Space per hour", "\(Int(plan.megabytesPerHour.rounded())) MB")
@@ -58,24 +71,33 @@ struct SettingsScreen: View {
         }
     }
 
-    private var advancedSection: some View {
-        Section(header: Text("Advanced")) {
+    private var cameraSection: some View {
+        Section(header: Text("Camera"),
+                footer: Text(recorder.stabilizationSupported
+                             ? "Steadies the picture. Turning it off gives a slightly wider view and uses a little less power."
+                             : "This camera does not offer stabilisation, so the switch has no effect here.")) {
+
+            Toggle("Optical image stabilisation", isOn: $settings.stabilization)
+                .onChange(of: settings.stabilization) { _ in recorder.updateStabilization() }
+                .disabled(!recorder.stabilizationSupported)
+
             Toggle("Record sound", isOn: $settings.recordAudio)
                 .onChange(of: settings.recordAudio) { _ in recorder.syncMicInput() }
-
-            Toggle("HEVC (smaller files)", isOn: $settings.useHEVC)
-
-            Text(settings.useHEVC
-                 ? "HEVC gets the same picture into roughly half the space. Plays on the iPhone and in VLC. Turn it off if some other player refuses the files."
-                 : "H.264 plays everywhere but needs about 60% more space for the same picture.")
-                .font(.footnote)
-                .foregroundColor(.secondary)
         }
     }
 
-    private var filesSection: some View {
-        Section(header: Text("Recordings")) {
-            Text("Clips land in the Files app under On My iPhone › LowBitCam. Recording is split into \(Int(CameraRecorder.segmentSeconds / 60))-minute files, so a crash or a flat battery costs you seconds, not the whole session.")
+    private var advancedSection: some View {
+        Section(header: Text("Advanced"),
+                footer: Text(settings.useHEVC
+                             ? "HEVC gets the same picture into roughly half the space. Plays on the iPhone and in VLC. Turn it off if some other player refuses the files."
+                             : "H.264 plays everywhere but needs about 60% more space for the same picture.")) {
+            Toggle("HEVC (smaller files)", isOn: $settings.useHEVC)
+        }
+    }
+
+    private var aboutSection: some View {
+        Section(header: Text("Good to know")) {
+            Text("Recording is split into \(Int(CameraRecorder.segmentSeconds / 60))-minute clips, so a crash or a flat battery costs you seconds, not the whole session.")
                 .font(.footnote)
                 .foregroundColor(.secondary)
             Text("Filming stops when the app leaves the screen. iOS gives no app permission to keep the camera running in the background, so the screen has to stay on. The moon button dims it to black while recording.")

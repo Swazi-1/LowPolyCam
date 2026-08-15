@@ -47,17 +47,17 @@ jobs:
 
           echo "### after generate"
           ls -la
-          ls -la LowBitCam.xcodeproj || echo "NO LowBitCam.xcodeproj DIRECTORY"
-          ls -la LowBitCam.xcodeproj/project.pbxproj || echo "NO project.pbxproj"
-          ls -la LowBitCam.xcodeproj/xcshareddata/xcschemes || echo "NO shared schemes"
+          ls -la LowPolyCam.xcodeproj || echo "NO LowPolyCam.xcodeproj DIRECTORY"
+          ls -la LowPolyCam.xcodeproj/project.pbxproj || echo "NO project.pbxproj"
+          ls -la LowPolyCam.xcodeproj/xcshareddata/xcschemes || echo "NO shared schemes"
 
           echo "### xcodebuild -list"
-          xcodebuild -list -project ./LowBitCam.xcodeproj || echo "LIST FAILED rc=$?"
+          xcodebuild -list -project ./LowPolyCam.xcodeproj || echo "LIST FAILED rc=$?"
 
           echo "### build"
           xcodebuild \
-            -project ./LowBitCam.xcodeproj \
-            -scheme LowBitCam \
+            -project ./LowPolyCam.xcodeproj \
+            -scheme LowPolyCam \
             -configuration Release \
             -sdk iphoneos \
             -derivedDataPath build \
@@ -76,7 +76,7 @@ jobs:
           strip() { sed "s|/Users/runner/work/[^/]*/[^/]*/||g"; }
 
           echo "--- filtered errors ---"
-          grep -E "error:|xcodebuild: error|cannot be opened|does not contain|No such module|NO project.pbxproj|NO LowBitCam|LIST FAILED|Reason:" ci.log \
+          grep -E "error:|xcodebuild: error|cannot be opened|does not contain|No such module|NO project.pbxproj|NO LowPolyCam|LIST FAILED|Reason:" ci.log \
             | strip | sort -u | head -30 \
             | while IFS= read -r l; do echo "::error::[E] ${l:0:800}"; done
 
@@ -88,15 +88,15 @@ jobs:
         if: steps.build.outcome == 'success'
         run: |
           mkdir -p Payload
-          cp -R build/Build/Products/Release-iphoneos/LowBitCam.app Payload/
-          zip -qry LowBitCam-unsigned.ipa Payload
-          ls -lh LowBitCam-unsigned.ipa
+          cp -R build/Build/Products/Release-iphoneos/LowPolyCam.app Payload/
+          zip -qry LowPolyCam-unsigned.ipa Payload
+          ls -lh LowPolyCam-unsigned.ipa
 
       - uses: actions/upload-artifact@v4
         if: steps.build.outcome == 'success'
         with:
-          name: LowBitCam-unsigned-ipa
-          path: LowBitCam-unsigned.ipa
+          name: LowPolyCam-unsigned-ipa
+          path: LowPolyCam-unsigned.ipa
 
       - name: Full log as artifact
         if: always()

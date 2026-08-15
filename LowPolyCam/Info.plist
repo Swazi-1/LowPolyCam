@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>LowBitCam</string>
+	<string>LowPolyCam</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -13,7 +13,7 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>$(PRODUCT_NAME)</string>
+	<string>LowPolyCam</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -42,9 +42,11 @@
 	<false/>
 
 	<key>NSCameraUsageDescription</key>
-	<string>LowBitCam needs the camera to record video.</string>
+	<string>LowPolyCam needs the camera to record video.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>LowBitCam records sound with your video. You can turn this off in the app's settings.</string>
+	<string>LowPolyCam records sound with your video. You can turn this off in the app's settings.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>LowPolyCam saves your recordings to Photos when you choose that in its settings.</string>
 
 	<key>UIFileSharingEnabled</key>
 	<true/>

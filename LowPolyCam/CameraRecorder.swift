@@ -1,5 +1,6 @@
 import AVFoundation
 import UIKit
+import Photos
 import Combine
 
 /// Capture pipeline.
@@ -30,6 +31,10 @@ final class CameraRecorder: NSObject, ObservableObject {
     @Published private(set) var elapsed: TimeInterval = 0
     @Published private(set) var clipsThisSession = 0
     @Published private(set) var freeBytes: Int64 = 0
+    @Published private(set) var hasTorch = false
+    @Published private(set) var torchOn = false
+    @Published private(set) var isFrontCamera = false
+    @Published private(set) var stabilizationSupported = true
     @Published var notice: String?
 
     let session = AVCaptureSession()
@@ -37,8 +42,8 @@ final class CameraRecorder: NSObject, ObservableObject {
     // MARK: Private
 
     private let settings: AppSettings
-    private let sessionQueue = DispatchQueue(label: "lowbitcam.session")
-    private let ioQueue = DispatchQueue(label: "lowbitcam.io")
+    private let sessionQueue = DispatchQueue(label: "lowpolycam.session")
+    private let ioQueue = DispatchQueue(label: "lowpolycam.io")
 
     private let videoOutput = AVCaptureVideoDataOutput()
     private let audioOutput = AVCaptureAudioDataOutput()
@@ -100,6 +105,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         spaceTimer?.invalidate()
         spaceTimer = nil
         if isRecording { stopRecording(notice: nil) }
+        setTorch(on: false)
         sessionQueue.async {
             if self.session.isRunning { self.session.stopRunning() }
             DispatchQueue.main.async { self.isSessionRunning = false }
@@ -118,7 +124,17 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     private func configureSession() {
         session.beginConfiguration()
-        session.sessionPreset = .hd1280x720
+
+        // 720p is the lowest 16:9 preset; everything smaller is produced by the
+        // encoder. If a device cannot do it, fall back rather than fail.
+        if session.canSetSessionPreset(.hd1280x720) {
+            session.sessionPreset = .hd1280x720
+        } else {
+            session.sessionPreset = .high
+            DispatchQueue.main.async {
+                self.notice = "This camera has no 720p mode - using its default instead."
+            }
+        }
 
         if let device = Self.camera(at: position),
            let input = try? AVCaptureDeviceInput(device: device),
@@ -141,6 +157,7 @@ final class CameraRecorder: NSObject, ObservableObject {
 
         configureVideoConnection()
         lockFrameRate()
+        refreshTorchState()
         syncMicInput()
     }
 
@@ -150,11 +167,28 @@ final class CameraRecorder: NSObject, ObservableObject {
     private func configureVideoConnection() {
         guard let c = videoOutput.connection(with: .video) else { return }
         if c.isVideoOrientationSupported { c.videoOrientation = .landscapeRight }
-        if c.isVideoStabilizationSupported { c.preferredVideoStabilizationMode = .auto }
         if c.isVideoMirroringSupported {
             c.automaticallyAdjustsVideoMirroring = false
             c.isVideoMirrored = false
         }
+        applyStabilization(to: c)
+    }
+
+    /// OIS/video stabilisation. Not every camera or format supports it - the
+    /// front camera on older phones generally does not - so the UI is told
+    /// whether the switch actually does anything here.
+    private func applyStabilization(to connection: AVCaptureConnection? = nil) {
+        guard let c = connection ?? videoOutput.connection(with: .video) else { return }
+        let supported = c.isVideoStabilizationSupported
+        if supported {
+            c.preferredVideoStabilizationMode = settings.stabilization ? .auto : .off
+        }
+        DispatchQueue.main.async { self.stabilizationSupported = supported }
+    }
+
+    /// Called when the toggle changes.
+    func updateStabilization() {
+        sessionQueue.async { self.applyStabilization() }
     }
 
     private func lockFrameRate() {
@@ -163,7 +197,12 @@ final class CameraRecorder: NSObject, ObservableObject {
         let supported = device.activeFormat.videoSupportedFrameRateRanges.contains {
             $0.minFrameRate <= fps && fps <= $0.maxFrameRate
         }
-        guard supported else { return }
+        guard supported else {
+            DispatchQueue.main.async {
+                self.notice = "This camera cannot do \(Encoder.frameRate) fps - using its default."
+            }
+            return
+        }
         do {
             try device.lockForConfiguration()
             let d = CMTime(value: 1, timescale: CMTimeScale(Encoder.frameRate))
@@ -215,6 +254,7 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     func flipCamera() {
         guard !isRecording else { return }
+        setTorch(on: false)
         sessionQueue.async {
             let next: AVCaptureDevice.Position = (self.position == .back) ? .front : .back
             guard let device = Self.camera(at: next),
@@ -233,12 +273,44 @@ final class CameraRecorder: NSObject, ObservableObject {
 
             self.configureVideoConnection()
             self.lockFrameRate()
+            self.refreshTorchState()
+            DispatchQueue.main.async { self.isFrontCamera = (next == .front) }
         }
     }
 
     private static func camera(at position: AVCaptureDevice.Position) -> AVCaptureDevice? {
         AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position)
             ?? AVCaptureDevice.default(for: .video)
+    }
+
+    // MARK: Torch
+
+    private func refreshTorchState() {
+        let device = cameraInput?.device
+        let available = device?.hasTorch ?? false
+        let on = (device?.torchMode == .on)
+        DispatchQueue.main.async {
+            self.hasTorch = available
+            self.torchOn = available && on
+        }
+    }
+
+    func toggleTorch() {
+        setTorch(on: !torchOn)
+    }
+
+    private func setTorch(on: Bool) {
+        sessionQueue.async {
+            guard let device = self.cameraInput?.device, device.hasTorch else { return }
+            do {
+                try device.lockForConfiguration()
+                device.torchMode = on ? .on : .off
+                device.unlockForConfiguration()
+                DispatchQueue.main.async { self.torchOn = on }
+            } catch {
+                DispatchQueue.main.async { self.notice = "The torch is busy right now." }
+            }
+        }
     }
 
     // MARK: Recording control
@@ -253,6 +325,8 @@ final class CameraRecorder: NSObject, ObservableObject {
             notice = "Not enough free space to start."
             return
         }
+
+        if settings.saveLocation == .photos { ensurePhotosAccess() }
 
         let newPlan = Encoder.plan(for: settings)
         let transform = Self.transform(forInterface: currentInterfaceOrientation())
@@ -369,6 +443,8 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
         let a = audioIn
         let end = lastVideoPTS
+        let destination = plan?.saveLocation ?? .files
+        let url = w.outputURL
 
         writer = nil; videoIn = nil; audioIn = nil
         segmentStart = .invalid
@@ -383,6 +459,12 @@ final class CameraRecorder: NSObject, ObservableObject {
         a?.markAsFinished()
         if end.isValid { w.endSession(atSourceTime: end) }
         w.finishWriting {
+            if w.status == .completed {
+                self.deliver(url, to: destination)
+            } else {
+                let reason = w.error?.localizedDescription ?? "unknown error"
+                DispatchQueue.main.async { self.notice = "Clip failed to save: \(reason)" }
+            }
             DispatchQueue.main.async { self.refreshFreeSpace() }
             completion?()
         }
@@ -419,6 +501,46 @@ final class CameraRecorder: NSObject, ObservableObject {
         return nil
     }
 
+    // MARK: Delivering finished clips
+
+    private func ensurePhotosAccess() {
+        guard PHPhotoLibrary.authorizationStatus(for: .addOnly) == .notDetermined else { return }
+        PHPhotoLibrary.requestAuthorization(for: .addOnly) { _ in }
+    }
+
+    private func deliver(_ url: URL, to destination: SaveLocation) {
+        guard destination == .photos else {
+            DispatchQueue.main.async { self.notice = "Clip saved to Files." }
+            return
+        }
+
+        let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
+        guard status == .authorized || status == .limited else {
+            DispatchQueue.main.async {
+                self.notice = "No photo access - clip kept in Files instead."
+            }
+            return
+        }
+
+        PHPhotoLibrary.shared().performChanges {
+            let request = PHAssetCreationRequest.forAsset()
+            let options = PHAssetResourceCreationOptions()
+            // Move rather than copy, so a clip never takes up space twice.
+            options.shouldMoveFile = true
+            request.addResource(with: .video, fileURL: url, options: options)
+        } completionHandler: { success, error in
+            DispatchQueue.main.async {
+                if success {
+                    self.notice = "Clip saved to Photos."
+                } else {
+                    let reason = error?.localizedDescription ?? "unknown error"
+                    self.notice = "Photos refused the clip (\(reason)) - it is still in Files."
+                }
+                self.refreshFreeSpace()
+            }
+        }
+    }
+
     // MARK: Storage
 
     func refreshFreeSpace() {
@@ -438,7 +560,7 @@ final class CameraRecorder: NSObject, ObservableObject {
     private static func newClipURL() -> URL {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-        return clipsDirectory.appendingPathComponent("LowBitCam_\(f.string(from: Date())).mov")
+        return clipsDirectory.appendingPathComponent("LowPolyCam_\(f.string(from: Date())).mov")
     }
 
     // MARK: Orientation

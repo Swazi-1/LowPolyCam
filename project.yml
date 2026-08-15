@@ -1,4 +1,4 @@
-name: LowBitCam
+name: LowPolyCam
 
 options:
   bundleIdPrefix: com.mo
@@ -9,31 +9,32 @@ options:
 # XcodeGen does not generate a scheme unless one is declared here, and
 # `xcodebuild -scheme` needs one to exist.
 schemes:
-  LowBitCam:
+  LowPolyCam:
     build:
       targets:
-        LowBitCam: all
+        LowPolyCam: all
     run:
       config: Debug
     archive:
       config: Release
 
 targets:
-  LowBitCam:
+  LowPolyCam:
     type: application
     platform: iOS
     sources:
-      - path: LowBitCam
+      - path: LowPolyCam
         excludes:
           - Info.plist
     settings:
       base:
-        PRODUCT_NAME: LowBitCam
-        PRODUCT_BUNDLE_IDENTIFIER: com.mo.lowbitcam
-        INFOPLIST_FILE: LowBitCam/Info.plist
+        PRODUCT_NAME: LowPolyCam
+        PRODUCT_BUNDLE_IDENTIFIER: com.mo.lowpolycam
+        INFOPLIST_FILE: LowPolyCam/Info.plist
         GENERATE_INFOPLIST_FILE: NO
-        MARKETING_VERSION: "1.0"
-        CURRENT_PROJECT_VERSION: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        MARKETING_VERSION: "1.1"
+        CURRENT_PROJECT_VERSION: "2"
         SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "1"          # iPhone only
         IPHONEOS_DEPLOYMENT_TARGET: "15.0"

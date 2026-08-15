@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct LowBitCamApp: App {
+struct LowPolyCamApp: App {
 
     @StateObject private var settings = AppSettings.shared
     @StateObject private var recorder = CameraRecorder(settings: AppSettings.shared)

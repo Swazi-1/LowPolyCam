@@ -60,6 +60,28 @@ enum Quality: String, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - Where clips end up
+
+enum SaveLocation: String, CaseIterable, Identifiable {
+    case photos, files
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .photos: return "Photos"
+        case .files: return "Files"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .photos: return "Shows up in the camera roll"
+        case .files: return "On My iPhone / LowPolyCam"
+        }
+    }
+}
+
 // MARK: - Stored settings
 
 final class AppSettings: ObservableObject {
@@ -74,8 +96,16 @@ final class AppSettings: ObservableObject {
     @Published var quality: Quality {
         didSet { store.set(quality.rawValue, forKey: "quality") }
     }
+    @Published var saveLocation: SaveLocation {
+        didSet { store.set(saveLocation.rawValue, forKey: "saveLocation") }
+    }
     @Published var recordAudio: Bool {
         didSet { store.set(recordAudio, forKey: "recordAudio") }
+    }
+    /// Video stabilisation (what the iPhone's OIS feeds into). On by default,
+    /// because that is how the camera already behaves.
+    @Published var stabilization: Bool {
+        didSet { store.set(stabilization, forKey: "stabilization") }
     }
     /// HEVC gives roughly the same picture as H.264 at ~40% of the size.
     /// The iPhone 7 (A10) can encode it in hardware. H.264 is here only as a
@@ -85,10 +115,12 @@ final class AppSettings: ObservableObject {
     }
 
     private init() {
-        resolution  = Resolution(rawValue: store.string(forKey: "resolution") ?? "") ?? .p720
-        quality     = Quality(rawValue: store.string(forKey: "quality") ?? "") ?? .ultraLow
-        recordAudio = store.object(forKey: "recordAudio") as? Bool ?? true
-        useHEVC     = store.object(forKey: "useHEVC") as? Bool ?? true
+        resolution    = Resolution(rawValue: store.string(forKey: "resolution") ?? "") ?? .p720
+        quality       = Quality(rawValue: store.string(forKey: "quality") ?? "") ?? .ultraLow
+        saveLocation  = SaveLocation(rawValue: store.string(forKey: "saveLocation") ?? "") ?? .photos
+        recordAudio   = store.object(forKey: "recordAudio") as? Bool ?? true
+        stabilization = store.object(forKey: "stabilization") as? Bool ?? true
+        useHEVC       = store.object(forKey: "useHEVC") as? Bool ?? true
     }
 }
 
@@ -103,6 +135,7 @@ struct EncodePlan {
     var frameRate: Int
     var codec: AVVideoCodecType
     var hasAudio: Bool
+    var saveLocation: SaveLocation
 
     var totalBitrate: Int { videoBitrate + audioBitrate }
 
@@ -110,6 +143,8 @@ struct EncodePlan {
     var megabytesPerHour: Double {
         Double(totalBitrate) * 3600.0 / 8.0 / 1_000_000.0
     }
+
+    var sizeLabel: String { "\(width) x \(height) · \(frameRate) fps" }
 }
 
 enum Encoder {
@@ -155,7 +190,8 @@ enum Encoder {
             keyFrameInterval: gopSeconds * frameRate,
             frameRate: frameRate,
             codec: settings.useHEVC ? .hevc : .h264,
-            hasAudio: settings.recordAudio
+            hasAudio: settings.recordAudio,
+            saveLocation: settings.saveLocation
         )
     }
 
@@ -188,7 +224,17 @@ enum Encoder {
         if writer.canApply(outputSettings: preferred, forMediaType: .video) {
             return preferred
         }
-        return build(.h264)
+        // The picked codec is not usable here - fall back rather than crash.
+        let fallback = build(.h264)
+        if writer.canApply(outputSettings: fallback, forMediaType: .video) {
+            return fallback
+        }
+        // Last resort: let the system choose everything except the size.
+        return [
+            AVVideoCodecKey: AVVideoCodecType.h264,
+            AVVideoWidthKey: plan.width,
+            AVVideoHeightKey: plan.height
+        ]
     }
 }
 
