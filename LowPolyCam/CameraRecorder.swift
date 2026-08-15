@@ -141,6 +141,12 @@ final class CameraRecorder: NSObject, ObservableObject {
             self, selector: #selector(refreshBattery),
             name: UIDevice.batteryStateDidChangeNotification, object: nil)
         refreshBattery()
+
+        // Posted by the capture device itself once the scene has moved on
+        // from whatever was tapped - the cue to stop holding that point.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(subjectAreaDidChange),
+            name: .AVCaptureDeviceSubjectAreaDidChange, object: nil)
     }
 
     @objc private func refreshBattery() {
@@ -236,6 +242,9 @@ final class CameraRecorder: NSObject, ObservableObject {
         configureVideoConnection()
         refreshCapabilitiesThenApplyFormat()
         refreshTorchState()
+        // Start in continuous auto explicitly rather than trusting whatever
+        // the device happened to default to.
+        resetFocusAndExposureToAuto()
         syncMicInput()
     }
 
@@ -443,6 +452,8 @@ final class CameraRecorder: NSObject, ObservableObject {
             self.configureVideoConnection()
             self.refreshCapabilitiesThenApplyFormat()
             self.refreshTorchState()
+            // A point tapped on the old camera means nothing on the new one.
+            self.resetFocusAndExposureToAuto()
             DispatchQueue.main.async { self.isFrontCamera = (next == .front) }
         }
     }
@@ -598,24 +609,59 @@ final class CameraRecorder: NSObject, ObservableObject {
     /// `point` is in the device's own 0...1 coordinate space, already
     /// converted from the tap location by the preview layer - the recorder
     /// itself has no idea how the preview is laid out on screen.
+    ///
+    /// `.autoFocus`/`.autoExpose` are *one-shot* modes: they adjust once at
+    /// the given point and then hold, which is what a tap should do. On its
+    /// own that means the exposure never recovers afterwards - walk into a
+    /// darker room and the picture stays stuck at the old brightness. So
+    /// subject-area monitoring is switched on at the same time, and when the
+    /// scene changes enough the device posts a notification and control goes
+    /// back to continuous auto. That is the behaviour the built-in Camera app
+    /// has.
     func focusAndExpose(at point: CGPoint) {
+        applyFocusAndExposure(at: point,
+                              focus: .autoFocus,
+                              exposure: .autoExpose,
+                              monitorSubjectArea: true)
+    }
+
+    /// Hands focus and exposure back to the camera, metering off the centre
+    /// of the frame again.
+    func resetFocusAndExposureToAuto() {
+        applyFocusAndExposure(at: CGPoint(x: 0.5, y: 0.5),
+                              focus: .continuousAutoFocus,
+                              exposure: .continuousAutoExposure,
+                              monitorSubjectArea: false)
+    }
+
+    private func applyFocusAndExposure(at point: CGPoint,
+                                       focus: AVCaptureDevice.FocusMode,
+                                       exposure: AVCaptureDevice.ExposureMode,
+                                       monitorSubjectArea: Bool) {
         sessionQueue.async {
             guard let device = self.cameraInput?.device else { return }
             do {
                 try device.lockForConfiguration()
-                if device.isFocusPointOfInterestSupported {
+                if device.isFocusPointOfInterestSupported, device.isFocusModeSupported(focus) {
                     device.focusPointOfInterest = point
-                    device.focusMode = .autoFocus
+                    device.focusMode = focus
                 }
-                if device.isExposurePointOfInterestSupported {
+                if device.isExposurePointOfInterestSupported, device.isExposureModeSupported(exposure) {
                     device.exposurePointOfInterest = point
-                    device.exposureMode = .autoExpose
+                    device.exposureMode = exposure
                 }
+                device.isSubjectAreaChangeMonitoringEnabled = monitorSubjectArea
                 device.unlockForConfiguration()
             } catch {
                 // Not fatal - focus/exposure just stay where they were.
             }
         }
+    }
+
+    /// Fired by the device once the scene has changed enough that the point
+    /// tapped earlier is no longer meaningful.
+    @objc private func subjectAreaDidChange() {
+        resetFocusAndExposureToAuto()
     }
 
     // MARK: Recording control
