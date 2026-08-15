@@ -66,6 +66,9 @@ final class CameraRecorder: NSObject, ObservableObject {
     /// directly from the main thread.
     @Published private(set) var zoomFactor: CGFloat = 1
     @Published private(set) var maxZoomFactor: CGFloat = 1
+    /// Below 1.0 only on a phone whose back camera folds an ultra-wide lens
+    /// into the same virtual device - stays 1.0 on a single-lens phone.
+    @Published private(set) var minZoomFactor: CGFloat = 1
     /// 0...1, read from the system's own per-channel level rather than
     /// decoding PCM by hand - cheap enough to poll a few times a second.
     @Published private(set) var audioLevel: Float = 0
@@ -444,8 +447,26 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
     }
 
+    /// On the back camera, prefers a "virtual device" spanning multiple
+    /// physical lenses over a single fixed one - that is what lets one
+    /// continuous pinch sweep from ultra-wide through wide to telephoto, the
+    /// system switching lenses automatically at the right zoom factor, the
+    /// same way the built-in Camera app behaves. Tried widest-range first,
+    /// falling all the way back to a single lens on a phone (like the
+    /// iPhone 7) that only has one to begin with. The front camera is always
+    /// a single lens on every iPhone to date, so it skips straight to that.
     private static func camera(at position: AVCaptureDevice.Position) -> AVCaptureDevice? {
-        AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position)
+        if position == .back {
+            let virtualTypes: [AVCaptureDevice.DeviceType] = [
+                .builtInTripleCamera, .builtInDualWideCamera, .builtInDualCamera
+            ]
+            for type in virtualTypes {
+                if let device = AVCaptureDevice.default(type, for: .video, position: .back) {
+                    return device
+                }
+            }
+        }
+        return AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position)
             ?? AVCaptureDevice.default(for: .video)
     }
 
@@ -481,11 +502,12 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     // MARK: Zoom
 
-    /// Session-queue-owned mirror of `maxZoomFactor` - `setZoom` runs on
-    /// `sessionQueue` and must not read the `@Published` copy directly, the
-    /// same class of cross-thread read that caused the front-camera
-    /// orientation bug earlier.
+    /// Session-queue-owned mirrors of `maxZoomFactor`/`minZoomFactor` -
+    /// `setZoom` runs on `sessionQueue` and must not read the `@Published`
+    /// copies directly, the same class of cross-thread read that caused the
+    /// front-camera orientation bug earlier.
     private var maxZoomFactorSnapshot: CGFloat = 1
+    private var minZoomFactorSnapshot: CGFloat = 1
 
     private func refreshZoomLimits() {
         let device = cameraInput?.device
@@ -494,9 +516,15 @@ final class CameraRecorder: NSObject, ObservableObject {
         // which stays genuinely usable on a sensor this size.
         let cap: CGFloat = 8
         let ceiling = min(device?.activeFormat.videoMaxZoomFactor ?? 1, cap)
+        // Below 1.0 only on a device with an ultra-wide lens folded into a
+        // virtual device - stays at 1.0 (no effect) on a single-lens phone
+        // like the iPhone 7.
+        let floor = device?.minAvailableVideoZoomFactor ?? 1
         maxZoomFactorSnapshot = ceiling
+        minZoomFactorSnapshot = floor
         DispatchQueue.main.async {
             self.maxZoomFactor = ceiling
+            self.minZoomFactor = floor
             self.zoomFactor = 1
         }
     }
@@ -507,7 +535,7 @@ final class CameraRecorder: NSObject, ObservableObject {
     func setZoom(factor: CGFloat) {
         sessionQueue.async {
             guard let device = self.cameraInput?.device else { return }
-            let clamped = max(1, min(factor, self.maxZoomFactorSnapshot))
+            let clamped = max(self.minZoomFactorSnapshot, min(factor, self.maxZoomFactorSnapshot))
             do {
                 try device.lockForConfiguration()
                 device.videoZoomFactor = clamped

@@ -13,6 +13,7 @@ struct CameraScreen: View {
 
     // Zoom
     @State private var zoomGestureBase: CGFloat = 1
+    @State private var isPinching = false
     @State private var showZoomLabel = false
     @State private var zoomLabelHideToken = 0
 
@@ -42,11 +43,20 @@ struct CameraScreen: View {
             .gesture(
                 MagnificationGesture()
                     .onChanged { value in
+                        // The base is read fresh at the start of every
+                        // gesture rather than trusted from last time - a
+                        // camera flip or a Settings change resets the actual
+                        // zoom to 1x on its own, and a stale base here would
+                        // make the very next pinch jump from the wrong point.
+                        if !isPinching {
+                            isPinching = true
+                            zoomGestureBase = recorder.zoomFactor
+                        }
                         showZoomLabel = true
                         recorder.setZoom(factor: zoomGestureBase * value)
                     }
                     .onEnded { _ in
-                        zoomGestureBase = recorder.zoomFactor
+                        isPinching = false
                         scheduleHideZoomLabel()
                     }
             )
