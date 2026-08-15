@@ -120,35 +120,44 @@ struct CameraScreen: View {
         }
     }
 
+    /// The record button sits in a ZStack, not a shared HStack with the other
+    /// controls - a single row with Spacers between unevenly-counted buttons
+    /// (2 on the left once the torch button appears, only 1 on the right)
+    /// pushes the middle button off true center. Each side lays itself out
+    /// independently against its own edge, so the record button stays exactly
+    /// centered no matter how many buttons appear next to it.
     private var bottomBar: some View {
-        HStack {
-            circleButton(system: "gearshape.fill") { showSettings = true }
-                .disabled(recorder.isRecording || recorder.isSaving)
-                .opacity((recorder.isRecording || recorder.isSaving) ? 0.35 : 1)
+        ZStack {
+            HStack {
+                circleButton(system: "gearshape.fill") { showSettings = true }
+                    .disabled(recorder.isRecording || recorder.isSaving)
+                    .opacity((recorder.isRecording || recorder.isSaving) ? 0.35 : 1)
 
-            Spacer()
-
-            if recorder.hasTorch {
-                circleButton(system: recorder.torchOn ? "bolt.fill" : "bolt.slash.fill",
-                             tint: recorder.torchOn ? .yellow : .white) {
-                    recorder.toggleTorch()
+                if recorder.hasTorch {
+                    circleButton(system: recorder.torchOn ? "bolt.fill" : "bolt.slash.fill",
+                                 tint: recorder.torchOn ? .yellow : .white) {
+                        recorder.toggleTorch()
+                    }
                 }
+
                 Spacer()
             }
 
-            recordButton
+            HStack {
+                Spacer()
 
-            Spacer()
-
-            if recorder.isRecording {
-                circleButton(system: "moon.fill") { enterDim() }
-            } else {
-                circleButton(system: "arrow.triangle.2.circlepath.camera.fill") {
-                    recorder.flipCamera()
+                if recorder.isRecording {
+                    circleButton(system: "moon.fill") { enterDim() }
+                } else {
+                    circleButton(system: "arrow.triangle.2.circlepath.camera.fill") {
+                        recorder.flipCamera()
+                    }
+                    .disabled(recorder.isSaving)
+                    .opacity(recorder.isSaving ? 0.35 : 1)
                 }
-                .disabled(recorder.isSaving)
-                .opacity(recorder.isSaving ? 0.35 : 1)
             }
+
+            recordButton
         }
     }
 
