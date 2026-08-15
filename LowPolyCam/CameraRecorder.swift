@@ -84,6 +84,22 @@ final class CameraRecorder: NSObject, ObservableObject {
     /// Capture-queue-only running total, mirrored to `droppedFrames` for the UI.
     private var droppedFrameCount = 0
 
+    /// Set the instant stop is tapped, from whatever thread taps it.
+    ///
+    /// Frames are no longer discarded when they arrive late (that was costing
+    /// us frame rate), which means a burst of them can be sitting in the
+    /// capture queue at any moment. The block that actually closes the file is
+    /// queued behind those, so on its own "stop" could take visibly long to
+    /// happen - worst on the front camera, where a heavier fallback capture
+    /// format makes the backlog deeper. Checking this flag at the very top of
+    /// the frame handler lets that backlog drain in an instant instead.
+    private let stopLock = NSLock()
+    private var _stopRequested = false
+    private var stopRequested: Bool {
+        get { stopLock.lock(); defer { stopLock.unlock() }; return _stopRequested }
+        set { stopLock.lock(); _stopRequested = newValue; stopLock.unlock() }
+    }
+
     init(settings: AppSettings) {
         self.settings = settings
         super.init()
@@ -182,12 +198,17 @@ final class CameraRecorder: NSObject, ObservableObject {
     /// The buffers are kept in the sensor's own landscape orientation and the
     /// rotation is stored as metadata on the file instead. Rotating pixels for
     /// hours would cost real battery for no benefit.
+    ///
+    /// The front camera is mirrored here so the recording matches the
+    /// mirrored preview you were looking at while filming. Without this the
+    /// preview is a mirror but the saved clip is not, which reads as the
+    /// selfie video being "flipped" the moment you play it back.
     private func configureVideoConnection() {
         guard let c = videoOutput.connection(with: .video) else { return }
         if c.isVideoOrientationSupported { c.videoOrientation = .landscapeRight }
         if c.isVideoMirroringSupported {
             c.automaticallyAdjustsVideoMirroring = false
-            c.isVideoMirrored = false
+            c.isVideoMirrored = (position == .front)
         }
         applyStabilization(to: c)
     }
@@ -384,10 +405,9 @@ final class CameraRecorder: NSObject, ObservableObject {
         if settings.saveLocation == .photos { ensurePhotosAccess() }
 
         let newPlan = Encoder.plan(for: settings)
-        // Read the main-thread-synchronised mirror of the camera position,
-        // not the raw session-queue-owned `position` var, so this can never
-        // race a flip that is still in flight.
-        let transform = Self.transform(forInterface: currentInterfaceOrientation(), isFrontCamera: isFrontCamera)
+        let transform = Self.transform(forInterface: currentInterfaceOrientation())
+
+        stopRequested = false
 
         ioQueue.async {
             self.plan = newPlan
@@ -408,6 +428,10 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     func stopRecording(notice message: String?) {
         guard isRecording else { return }
+
+        // Takes effect immediately, ahead of anything already queued, so any
+        // backlog of frames is skipped rather than encoded first.
+        stopRequested = true
 
         // isSaving flips the record button into a spinner immediately, so the
         // tap is never left looking like it did nothing while the clip
@@ -650,11 +674,13 @@ final class CameraRecorder: NSObject, ObservableObject {
     /// The buffers arrive in `.landscapeRight`. This is the rotation a player
     /// has to apply to show the clip the way the phone was held.
     ///
-    /// The front sensor is physically mounted 180 degrees rotated relative to
-    /// the back one, so the same nominal buffer orientation needs the
-    /// opposite rotation to come out upright - without this, front-camera
-    /// clips record flipped regardless of which way the phone was held.
-    private static func transform(forInterface o: UIInterfaceOrientation, isFrontCamera: Bool) -> CGAffineTransform {
+    /// Deliberately identical for both cameras: setting `videoOrientation` on
+    /// the connection already normalises each sensor's own mounting, so a
+    /// front-camera special case here would be double-correcting. An earlier
+    /// version added 180 degrees for the front camera and, because it read a
+    /// value published asynchronously to the main thread, produced clips that
+    /// were upside down only some of the time.
+    private static func transform(forInterface o: UIInterfaceOrientation) -> CGAffineTransform {
         let angle: CGFloat
         switch o {
         case .portrait:           angle = .pi / 2
@@ -663,7 +689,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         case .portraitUpsideDown: angle = -.pi / 2
         default:                  angle = .pi / 2
         }
-        return CGAffineTransform(rotationAngle: isFrontCamera ? angle + .pi : angle)
+        return CGAffineTransform(rotationAngle: angle)
     }
 
     enum RecorderError: LocalizedError {
@@ -680,6 +706,11 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
     func captureOutput(_ output: AVCaptureOutput,
                        didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
+
+        // Anything still queued when stop was tapped is dropped on the floor
+        // rather than encoded, so the block that closes the file gets to run
+        // straight away instead of waiting out the backlog.
+        if stopRequested { return }
 
         guard CMSampleBufferDataIsReady(sampleBuffer) else { return }
         let isVideo = (output === videoOutput)
