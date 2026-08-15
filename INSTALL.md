@@ -1,4 +1,4 @@
-# Getting LowBitCam onto a freshly flashed iPhone 7
+# Getting LowPolyCam onto a freshly flashed iPhone 7
 
 No Mac needed. GitHub's build machines compile it, your PC signs it, the phone runs it.
 
@@ -20,7 +20,7 @@ of it. The ID you sign with does **not** have to be the one signed in on the pho
 
 ## Step 1 — Build the .ipa on GitHub
 
-1. Go to **github.com** → **New repository**. Name it `LowBitCam`.
+1. Go to **github.com** → **New repository**. Name it `LowPolyCam`.
    Do **not** tick "Add a README" — the folder already has one.
    - Public repo = unlimited free Mac build minutes.
    - Private repo works too, but Mac minutes count 10x against the free 2000/month
@@ -29,7 +29,7 @@ of it. The ID you sign with does **not** have to be the one signed in on the pho
 2. Push the folder. In PowerShell:
 
 ```powershell
-cd "C:\Users\swazi\Documents\LowBitCam"; git init; git add .; git commit -m "LowBitCam"; git branch -M main; git remote add origin https://github.com/YOURNAME/LowBitCam.git; git push -u origin main
+cd "C:\Users\swazi\Documents\LowPolyCam"; git init; git add .; git commit -m "LowPolyCam"; git branch -M main; git remote add origin https://github.com/YOURNAME/LowPolyCam.git; git push -u origin main
 ```
 
    A browser window will pop up to log into GitHub the first time.
@@ -42,8 +42,8 @@ cd "C:\Users\swazi\Documents\LowBitCam"; git init; git add .; git commit -m "Low
      lines with `error:` in them. That is what needs fixing.
 
 4. Open the finished run, scroll to **Artifacts** at the bottom, download
-   **LowBitCam-unsigned-ipa**. It arrives as a `.zip` — **unzip it** to get the
-   actual `LowBitCam-unsigned.ipa`. Put it somewhere easy, like your Desktop.
+   **LowPolyCam-unsigned-ipa**. It arrives as a `.zip` — **unzip it** to get the
+   actual `LowPolyCam-unsigned.ipa`. Put it somewhere easy, like your Desktop.
 
 ---
 
@@ -97,18 +97,18 @@ not work here.
 8. Open **AltStore** on the phone once, so it settles.
 9. Now install ours: hold **Shift** and click the AltServer tray icon → a
    **Sideload .ipa** option appears → pick the iPhone → choose
-   `LowBitCam-unsigned.ipa`.
+   `LowPolyCam-unsigned.ipa`.
 
    *Or:* put the `.ipa` into the phone's Files app, then in AltStore go
    **My Apps → +** (top left) → pick the file.
 
-10. **LowBitCam** lands on the home screen.
+10. **LowPolyCam** lands on the home screen.
 
 ### 4B — Sideloadly (quicker, but manual every 7 days)
 
 1. **sideloadly.io** → download → install.
 2. Phone plugged in and unlocked. Sideloadly should show it at the top.
-3. Drag `LowBitCam-unsigned.ipa` onto the Sideloadly window.
+3. Drag `LowPolyCam-unsigned.ipa` onto the Sideloadly window.
 4. Type in the Apple ID. Click **Start**. Enter the password and 2FA code when asked.
 5. Wait for "Done".
 6. On the phone: **Settings → General → VPN & Device Management** → tap the entry
@@ -118,7 +118,7 @@ not work here.
 
 ## Step 5 — First run
 
-1. Tap **LowBitCam**. If it says "Untrusted Developer", you missed the Trust step
+1. Tap **LowPolyCam**. If it says "Untrusted Developer", you missed the Trust step
    above. If it says "Unable to Verify App", the phone is not on the internet.
 2. Allow **camera**.
 3. Allow **microphone** (or say no and switch sound off in the app's settings).
@@ -126,7 +126,7 @@ not work here.
 5. Check the top-right: it should read about **123 MB / hour** and show how many
    hours fit in your free space.
 6. Tap the red button. Film for a minute. Tap it again.
-7. Open the **Files** app → **On My iPhone → LowBitCam**. The clip should be there.
+7. Open the **Files** app → **On My iPhone → LowPolyCam**. The clip should be there.
    Play it. Check it is the right way up and the sound works.
 
 ---
