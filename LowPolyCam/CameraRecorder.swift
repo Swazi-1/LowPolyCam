@@ -394,7 +394,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         if videoConnection.isVideoOrientationSupported {
             videoConnection.videoOrientation = orientation
         }
-        let videoSettings = Encoder.movieVideoSettings(for: plan, output: movieOutput, connection: videoConnection)
+        let videoSettings = Encoder.movieVideoSettings(for: plan, output: movieOutput)
         movieOutput.setOutputSettings(videoSettings, for: videoConnection)
 
         if plan.hasAudio, let audioConnection = movieOutput.connection(with: .audio) {

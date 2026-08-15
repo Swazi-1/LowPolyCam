@@ -242,10 +242,8 @@ enum Encoder {
     /// is checked against `availableVideoCodecTypes` instead; every other key
     /// here is a plain width/height/bitrate value of the kind that has never
     /// been the cause of a crash.
-    static func movieVideoSettings(for plan: EncodePlan,
-                                   output: AVCaptureMovieFileOutput,
-                                   connection: AVCaptureConnection) -> [String: Any] {
-        let available = output.availableVideoCodecTypes(for: connection)
+    static func movieVideoSettings(for plan: EncodePlan, output: AVCaptureMovieFileOutput) -> [String: Any] {
+        let available = output.availableVideoCodecTypes
         let codec = available.contains(plan.codec)
             ? plan.codec
             : (available.contains(.h264) ? .h264 : (available.first ?? .h264))
