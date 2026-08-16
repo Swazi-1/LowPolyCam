@@ -72,6 +72,8 @@ struct CameraScreen: View {
                     focusReticle.position(focusPoint)
                 }
 
+                if settings.showGrid { gridOverlay }
+
                 if showZoomLabel { zoomLabel }
 
                 if dimmed { dimOverlay }
@@ -271,6 +273,18 @@ struct CameraScreen: View {
                     }
                 }
 
+                // Mic toggling reconfigures the capture session, same as in
+                // Settings - kept disabled mid-recording for the same reason
+                // the gear button already is, so it never touches the
+                // session while a file is actively being written.
+                facetButton(system: settings.recordAudio ? "mic.fill" : "mic.slash.fill",
+                            tint: settings.recordAudio ? Palette.mintBright : Palette.amber) {
+                    settings.recordAudio.toggle()
+                    recorder.syncMicInput()
+                }
+                .disabled(recorder.isRecording || recorder.isSaving)
+                .opacity((recorder.isRecording || recorder.isSaving) ? 0.35 : 1)
+
                 Spacer()
             }
 
@@ -400,6 +414,29 @@ struct CameraScreen: View {
     }
 
     // MARK: Zoom
+
+    /// Rule-of-thirds lines. `allowsHitTesting(false)` matters here - without
+    /// it this transparent layer would sit on top of the preview and eat the
+    /// pinch-to-zoom and tap-to-focus gestures underneath it.
+    private var gridOverlay: some View {
+        GeometryReader { geo in
+            Path { path in
+                let w = geo.size.width
+                let h = geo.size.height
+                for i in 1...2 {
+                    let x = w * CGFloat(i) / 3
+                    path.move(to: CGPoint(x: x, y: 0))
+                    path.addLine(to: CGPoint(x: x, y: h))
+                    let y = h * CGFloat(i) / 3
+                    path.move(to: CGPoint(x: 0, y: y))
+                    path.addLine(to: CGPoint(x: w, y: y))
+                }
+            }
+            .stroke(Color.white.opacity(0.35), lineWidth: 0.75)
+        }
+        .allowsHitTesting(false)
+        .transition(.opacity)
+    }
 
     private var zoomLabel: some View {
         Text(String(format: "%.1fx", recorder.zoomFactor))
