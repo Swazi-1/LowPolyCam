@@ -125,25 +125,31 @@ struct CameraScreen: View {
     }
 
     private var topBar: some View {
-        HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("\(settings.resolution.label) · \(settings.quality.label)")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundColor(Palette.mintBright)
-                Text(plan.sizeLabel)
-                    .font(.system(size: 12))
-                    .foregroundColor(.white.opacity(0.55))
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    if recorder.isRecording || recorder.isSaving {
+                        recordingStatusRow
+                    }
+                    Text("\(settings.resolution.label) · \(settings.quality.label)")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(Palette.mintBright)
+                    Text(plan.sizeLabel)
+                        .font(.system(size: 12))
+                        .foregroundColor(.white.opacity(0.55))
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 3) {
+                    if recorder.batteryPercent >= 0 { batteryIndicator }
+                    Text("\(Int(plan.megabytesPerHour.rounded())) MB / hour")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(Palette.amber)
+                    Text("\(Fmt.size(recorder.freeBytes)) free · about \(Fmt.hours(hoursLeft))")
+                        .font(.system(size: 12))
+                        .foregroundColor(.white.opacity(0.55))
+                }
             }
-            Spacer()
-            VStack(alignment: .trailing, spacing: 3) {
-                if recorder.batteryPercent >= 0 { batteryIndicator }
-                Text("\(Int(plan.megabytesPerHour.rounded())) MB / hour")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(Palette.amber)
-                Text("\(Fmt.size(recorder.freeBytes)) free · about \(Fmt.hours(hoursLeft))")
-                    .font(.system(size: 12))
-                    .foregroundColor(.white.opacity(0.55))
-            }
+            if recorder.isRecording && settings.recordAudio { audioLevelBar }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
@@ -156,7 +162,42 @@ struct CameraScreen: View {
             RoundedRectangle(cornerRadius: 14)
                 .stroke(Palette.mint.opacity(0.18), lineWidth: 1)
         )
-        .overlay(recordingBadge, alignment: .bottom)
+    }
+
+    /// The "REC 00:00" line, now inline at the top of the info panel instead
+    /// of a separate bubble floating below it.
+    private var recordingStatusRow: some View {
+        Group {
+            if recorder.isRecording {
+                HStack(spacing: 8) {
+                    Facet(sides: 6)
+                        .fill(Palette.record)
+                        .frame(width: 12, height: 12)
+                        .opacity(blink ? 0.25 : 1)
+                        .animation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true),
+                                   value: blink)
+                    Text("REC")
+                        .font(.system(size: 13, weight: .bold))
+                    Text(Fmt.duration(recorder.elapsed))
+                        .font(.system(size: 15, weight: .semibold, design: .monospaced))
+                    if recorder.droppedFrames > 0 {
+                        Text("· \(recorder.droppedFrames) dropped")
+                            .font(.system(size: 12))
+                            .foregroundColor(Palette.amber)
+                    }
+                }
+                .foregroundColor(.white)
+                .onAppear { blink = true }
+                .onDisappear { blink = false }
+            } else if recorder.isSaving {
+                HStack(spacing: 8) {
+                    ProgressView().tint(Palette.mint).scaleEffect(0.7)
+                    Text("Saving…")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(Palette.mintBright)
+                }
+            }
+        }
     }
 
     /// A plain reading, not a warning by default - it only turns amber/red as
@@ -184,58 +225,8 @@ struct CameraScreen: View {
         .foregroundColor(color)
     }
 
-    /// Sits just under the top bar while filming, and stays put (as "Saving…")
-    /// until the clip is actually written - so tapping stop always visibly
-    /// does something right away, even before the file finishes.
-    private var recordingBadge: some View {
-        Group {
-            if recorder.isRecording {
-                VStack(spacing: 5) {
-                    HStack(spacing: 8) {
-                        Facet(sides: 6)
-                            .fill(Palette.record)
-                            .frame(width: 12, height: 12)
-                            .opacity(blink ? 0.25 : 1)
-                            .animation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true),
-                                       value: blink)
-                        Text("REC")
-                            .font(.system(size: 13, weight: .bold))
-                        Text(Fmt.duration(recorder.elapsed))
-                            .font(.system(size: 15, weight: .semibold, design: .monospaced))
-                        if recorder.droppedFrames > 0 {
-                            Text("· \(recorder.droppedFrames) dropped")
-                                .font(.system(size: 12))
-                                .foregroundColor(Palette.amber)
-                        }
-                    }
-                    .foregroundColor(.white)
 
-                    if settings.recordAudio { audioLevelBar }
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 7)
-                .background(Capsule().fill(Palette.panel.opacity(0.85)))
-                .overlay(Capsule().stroke(Palette.record.opacity(0.85), lineWidth: 1.5))
-                .offset(y: 26)
-                .onAppear { blink = true }
-                .onDisappear { blink = false }
-            } else if recorder.isSaving {
-                HStack(spacing: 8) {
-                    ProgressView().tint(Palette.mint).scaleEffect(0.7)
-                    Text("Saving…")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(Palette.mintBright)
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 7)
-                .background(Capsule().fill(Palette.panel.opacity(0.85)))
-                .overlay(Capsule().stroke(Palette.mint.opacity(0.5), lineWidth: 1.5))
-                .offset(y: 26)
-            }
-        }
-    }
 
-    /// A small, easy-to-read fill bar rather than a technical meter - it only
     /// has to answer "is the mic picking anything up," not show exact dB.
     private var audioLevelBar: some View {
         GeometryReader { geo in
@@ -272,18 +263,6 @@ struct CameraScreen: View {
                         recorder.toggleTorch()
                     }
                 }
-
-                // Mic toggling reconfigures the capture session, same as in
-                // Settings - kept disabled mid-recording for the same reason
-                // the gear button already is, so it never touches the
-                // session while a file is actively being written.
-                facetButton(system: settings.recordAudio ? "mic.fill" : "mic.slash.fill",
-                            tint: settings.recordAudio ? Palette.mintBright : Palette.amber) {
-                    settings.recordAudio.toggle()
-                    recorder.syncMicInput()
-                }
-                .disabled(recorder.isRecording || recorder.isSaving)
-                .opacity((recorder.isRecording || recorder.isSaving) ? 0.35 : 1)
 
                 Spacer()
             }
