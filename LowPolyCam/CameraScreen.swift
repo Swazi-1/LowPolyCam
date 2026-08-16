@@ -165,24 +165,29 @@ struct CameraScreen: View {
     }
 
     /// The "REC 00:00" line, now inline at the top of the info panel instead
-    /// of a separate bubble floating below it.
+    /// of a separate bubble floating below it. Dropped frames get their own
+    /// line - keeping everything in one HStack let "dropped" wrap onto two
+    /// lines and squeeze the timer when the count went double digits.
     private var recordingStatusRow: some View {
         Group {
             if recorder.isRecording {
-                HStack(spacing: 8) {
-                    Facet(sides: 6)
-                        .fill(Palette.record)
-                        .frame(width: 12, height: 12)
-                        .opacity(blink ? 0.25 : 1)
-                        .animation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true),
-                                   value: blink)
-                    Text("REC")
-                        .font(.system(size: 13, weight: .bold))
-                    Text(Fmt.duration(recorder.elapsed))
-                        .font(.system(size: 15, weight: .semibold, design: .monospaced))
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 8) {
+                        Facet(sides: 6)
+                            .fill(Palette.record)
+                            .frame(width: 12, height: 12)
+                            .opacity(blink ? 0.25 : 1)
+                            .animation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true),
+                                       value: blink)
+                        Text("REC")
+                            .font(.system(size: 13, weight: .bold))
+                        Text(Fmt.duration(recorder.elapsed))
+                            .font(.system(size: 15, weight: .semibold, design: .monospaced))
+                    }
+                    .fixedSize()
                     if recorder.droppedFrames > 0 {
-                        Text("· \(recorder.droppedFrames) dropped")
-                            .font(.system(size: 12))
+                        Text("\(recorder.droppedFrames) frame\(recorder.droppedFrames == 1 ? "" : "s") dropped")
+                            .font(.system(size: 11))
                             .foregroundColor(Palette.amber)
                     }
                 }
