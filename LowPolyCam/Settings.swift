@@ -156,6 +156,11 @@ final class AppSettings: ObservableObject {
     @Published var useHEVC: Bool {
         didSet { store.set(useHEVC, forKey: "useHEVC") }
     }
+    /// Rule-of-thirds composition grid. Purely a preview overlay - it is
+    /// never baked into the recorded video.
+    @Published var showGrid: Bool {
+        didSet { store.set(showGrid, forKey: "showGrid") }
+    }
 
     private init() {
         resolution    = Resolution(rawValue: store.string(forKey: "resolution") ?? "") ?? .p720
@@ -165,6 +170,7 @@ final class AppSettings: ObservableObject {
         recordAudio   = store.object(forKey: "recordAudio") as? Bool ?? true
         stabilization = store.object(forKey: "stabilization") as? Bool ?? true
         useHEVC       = store.object(forKey: "useHEVC") as? Bool ?? true
+        showGrid      = store.object(forKey: "showGrid") as? Bool ?? false
     }
 }
 
