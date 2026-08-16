@@ -137,6 +137,8 @@ struct SettingsScreen: View {
 
             Toggle("Record sound", isOn: $settings.recordAudio)
                 .onChange(of: settings.recordAudio) { _ in recorder.syncMicInput() }
+
+            Toggle("Grid overlay", isOn: $settings.showGrid)
         }
     }
 
