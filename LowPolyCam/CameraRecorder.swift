@@ -290,7 +290,16 @@ final class CameraRecorder: NSObject, ObservableObject {
     private func applyActiveFormat() {
         guard let device = cameraInput?.device else { return }
         let dims = settings.resolution.captureDimensions
-        let fps = Double(settings.frameRate.value)
+
+        // 4K only holds up at 30 fps here - keep Settings in sync rather than
+        // silently hunting for an unsupported 4K+60 format.
+        if let locked = settings.resolution.lockedFrameRate, settings.frameRate != locked {
+            DispatchQueue.main.async {
+                self.settings.frameRate = locked
+                self.notice = "\(self.settings.resolution.label) films at \(locked.label) only - switched to \(locked.label)."
+            }
+        }
+        let fps = Double((settings.resolution.lockedFrameRate ?? settings.frameRate).value)
 
         guard let format = Self.bestFormat(for: device, width: dims.w, height: dims.h, fps: fps) else {
             DispatchQueue.main.async {
@@ -373,9 +382,13 @@ final class CameraRecorder: NSObject, ObservableObject {
 
         let supportedRates = FrameRate.allCases.filter { rates.contains($0) }
         let canDo1080 = widestPixels >= 1920 * 1080
-        let supportedResolutions = Resolution.allCases.filter { $0 != .p1080 || canDo1080 }
+        let canDo4K   = widestPixels >= 3840 * 2160
+        let supportedResolutions = Resolution.allCases.filter {
+            ($0 != .p1080 || canDo1080) && ($0 != .p2160 || canDo4K)
+        }
 
         DispatchQueue.main.async {
+            let previousResolution = self.settings.resolution
             self.availableFrameRates = supportedRates.isEmpty ? [.fps30] : supportedRates
             self.availableResolutions = supportedResolutions.isEmpty ? [.p720] : supportedResolutions
 
@@ -388,7 +401,7 @@ final class CameraRecorder: NSObject, ObservableObject {
             if !self.availableResolutions.contains(self.settings.resolution) {
                 let fallback: Resolution = self.availableResolutions.first ?? .p720
                 self.settings.resolution = fallback
-                self.notice = "This camera does not go up to \(Resolution.p1080.label) - switched to \(fallback.label)."
+                self.notice = "This camera does not go up to \(previousResolution.label) - switched to \(fallback.label)."
             }
 
             self.sessionQueue.async { self.applyActiveFormat() }
