@@ -5,12 +5,13 @@ import Combine
 // MARK: - Resolution
 
 enum Resolution: String, CaseIterable, Identifiable {
-    case p1080, p720, p480, p320, p144
+    case p2160, p1080, p720, p480, p320, p144
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
+        case .p2160: return "4K"
         case .p1080: return "1080p"
         case .p720: return "720p"
         case .p480: return "480p"
@@ -22,6 +23,7 @@ enum Resolution: String, CaseIterable, Identifiable {
     /// Always 16:9 so nothing gets cropped when the capture is scaled down.
     var pixels: (w: Int, h: Int) {
         switch self {
+        case .p2160: return (3840, 2160)
         case .p1080: return (1920, 1080)
         case .p720: return (1280, 720)
         case .p480: return (854, 480)
@@ -30,11 +32,21 @@ enum Resolution: String, CaseIterable, Identifiable {
         }
     }
 
-    /// The sensor only needs to run bigger than 720p when 1080p is actually
-    /// wanted - every smaller export is produced by downscaling a 720p
-    /// capture, so the camera stays cheap to run for the low tiers.
+    /// The sensor only needs to run bigger than 720p when 1080p or 4K is
+    /// actually wanted - every smaller export is produced by downscaling a
+    /// 720p capture, so the camera stays cheap to run for the low tiers.
     var captureDimensions: (w: Int, h: Int) {
-        self == .p1080 ? (1920, 1080) : (1280, 720)
+        switch self {
+        case .p2160: return (3840, 2160)
+        case .p1080: return (1920, 1080)
+        default: return (1280, 720)
+        }
+    }
+
+    /// 4K is locked to 30 fps - it's the only rate the hardware/encoder combo
+    /// on supported devices actually holds steady at this size.
+    var lockedFrameRate: FrameRate? {
+        self == .p2160 ? .fps30 : nil
     }
 
     var detail: String {
@@ -186,6 +198,7 @@ enum Encoder {
     // takes at the standard frame rate; other rates scale off this via
     // fpsMultiplier below.
     private static let videoKbps: [Resolution: [Quality: Int]] = [
+        .p2160: [.high: 13500, .medium: 8000, .low: 4000, .ultraLow: 1800],
         .p1080: [.high: 4500, .medium: 2200, .low: 1000, .ultraLow: 400],
         .p720: [.high: 2500, .medium: 1200, .low: 600, .ultraLow: 250],
         .p480: [.high: 1200, .medium: 600,  .low: 300, .ultraLow: 130],
