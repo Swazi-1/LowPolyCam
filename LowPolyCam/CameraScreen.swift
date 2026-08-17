@@ -139,6 +139,12 @@ struct CameraScreen: View {
                 levelHaptic.selectionChanged()
             }
         }
+        // Auto-Dim Battery Saver Timer (dims after 10s of filming)
+        .onChange(of: recorder.elapsed) { sec in
+            if settings.autoDimOnRecord && recorder.isRecording && !dimmed && sec >= 10 {
+                enterDim()
+            }
+        }
         .onChange(of: recorder.notice) { newNotice in
             guard newNotice != nil else { return }
             noticeHideToken += 1
@@ -882,7 +888,6 @@ struct CameraScreen: View {
         countdownRemaining = 0
     }
 
-    // Sleek, compact auto-dismissing toast pill
     private func noticeBar(_ text: String) -> some View {
         HStack(spacing: 6) {
             Image(systemName: "info.circle.fill")
