@@ -146,7 +146,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
     }
 
-    // MARK: Motion, Orientation Tracking & Gravity Horizon
+    // MARK: Motion & Gravity Horizon
 
     func startMotionUpdates() {
         guard motionManager.isDeviceMotionAvailable else { return }
@@ -638,7 +638,6 @@ final class CameraRecorder: NSObject, ObservableObject {
             self.configureVideoConnection()
             self.refreshCapabilitiesThenApplyFormat()
             self.refreshTorchState()
-            self.restoreProSettings(for: device)
             self.resetFocusAndExposureToAuto()
             DispatchQueue.main.async { self.isFrontCamera = (next == .front) }
         }
