@@ -98,7 +98,10 @@ struct CameraScreen: View {
             startHaptic.prepare()
             stopHaptic.prepare()
         }
-        .onDisappear { recorder.stop() }
+        .onDisappear {
+            if dimmed { leaveDim() }
+            recorder.stop()
+        }
         // Dim mode turns the screen brightness down to zero. Leaving the app
         // while dimmed would otherwise strand the whole phone at zero
         // brightness, so the original level is always put back.
@@ -229,8 +232,6 @@ struct CameraScreen: View {
         }
         .foregroundColor(color)
     }
-
-
 
     /// has to answer "is the mic picking anything up," not show exact dB.
     private var audioLevelBar: some View {
