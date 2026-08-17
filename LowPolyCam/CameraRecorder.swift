@@ -581,4 +581,667 @@ final class CameraRecorder: NSObject, ObservableObject {
               wideIndex > 0 else { return 1 }
 
         let switchOvers = device.virtualDeviceSwitchOverVideoZoomFactors
-        guard wideIndex
+        guard wideIndex - 1 < switchOvers.count else { return 1 }
+        let value = CGFloat(switchOvers[wideIndex - 1].doubleValue)
+        return value > 0 ? value : 1
+    }
+
+    private func refreshZoomLimits() {
+        guard let device = cameraInput?.device else { return }
+
+        let baseline = Self.wideAngleBaseline(for: device)
+        let rawCeiling = min(device.activeFormat.videoMaxZoomFactor, baseline * 8)
+        let rawFloor = device.minAvailableVideoZoomFactor
+
+        zoomBaselineSnapshot = baseline
+        rawMaxZoomSnapshot = rawCeiling
+        rawMinZoomSnapshot = rawFloor
+
+        do {
+            try device.lockForConfiguration()
+            device.videoZoomFactor = baseline
+            device.unlockForConfiguration()
+        } catch { }
+
+        DispatchQueue.main.async {
+            self.maxZoomFactor = rawCeiling / baseline
+            self.minZoomFactor = rawFloor / baseline
+            self.zoomFactor = 1
+        }
+    }
+
+    func setZoom(factor: CGFloat) {
+        sessionQueue.async {
+            guard let device = self.cameraInput?.device else { return }
+            let baseline = self.zoomBaselineSnapshot
+            let raw = factor * baseline
+            let clamped = max(self.rawMinZoomSnapshot, min(raw, self.rawMaxZoomSnapshot))
+            do {
+                try device.lockForConfiguration()
+                device.videoZoomFactor = clamped
+                device.unlockForConfiguration()
+                DispatchQueue.main.async { self.zoomFactor = clamped / baseline }
+            } catch { }
+        }
+    }
+
+    // MARK: Focus and exposure
+
+    func focusAndExpose(at point: CGPoint) {
+        applyFocusAndExposure(at: point,
+                              focus: .autoFocus,
+                              exposure: .autoExpose,
+                              monitorSubjectArea: true)
+    }
+
+    func resetFocusAndExposureToAuto() {
+        applyFocusAndExposure(at: CGPoint(x: 0.5, y: 0.5),
+                              focus: .continuousAutoFocus,
+                              exposure: .continuousAutoExposure,
+                              monitorSubjectArea: false)
+    }
+
+    private func applyFocusAndExposure(at point: CGPoint,
+                                       focus: AVCaptureDevice.FocusMode,
+                                       exposure: AVCaptureDevice.ExposureMode,
+                                       monitorSubjectArea: Bool) {
+        sessionQueue.async {
+            guard let device = self.cameraInput?.device else { return }
+            do {
+                try device.lockForConfiguration()
+                if device.isFocusPointOfInterestSupported, device.isFocusModeSupported(focus) {
+                    device.focusPointOfInterest = point
+                    device.focusMode = focus
+                }
+                if device.isExposurePointOfInterestSupported, device.isExposureModeSupported(exposure) {
+                    device.exposurePointOfInterest = point
+                    device.exposureMode = exposure
+                }
+                device.isSubjectAreaChangeMonitoringEnabled = monitorSubjectArea
+                device.unlockForConfiguration()
+            } catch { }
+        }
+    }
+
+    @objc private func subjectAreaDidChange() {
+        resetFocusAndExposureToAuto()
+    }
+
+    // MARK: Recording control
+
+    func toggleRecording() {
+        isRecording ? stopRecording(notice: nil) : startRecording()
+    }
+
+    func startRecording() {
+        guard !isRecording else { return }
+        guard freeBytes > Self.reserveBytes else {
+            notice = "Not enough free space to start."
+            return
+        }
+
+        if settings.saveLocation == .photos { ensurePhotosAccess() }
+
+        let newPlan = Encoder.plan(for: settings)
+        let transform = Self.transform(forInterface: currentInterfaceOrientation(),
+                                       width: newPlan.width,
+                                       height: newPlan.height)
+
+        stopRequested = false
+
+        ioQueue.async {
+            self.plan = newPlan
+            self.clipTransform = transform
+            self.recordStartPTS = .invalid
+            self.lastElapsedPush = .invalid
+            self.droppedFrameCount = 0
+            self.wantsRecording = true
+        }
+
+        notice = nil
+        elapsed = 0
+        clipsThisSession = 0
+        droppedFrames = 0
+        audioLevel = 0
+        isRecording = true
+        UIApplication.shared.isIdleTimerDisabled = true
+    }
+
+    func stopRecording(notice message: String?) {
+        guard isRecording else { return }
+
+        stopRequested = true
+        isRecording = false
+        isSaving = true
+        audioLevel = 0
+        UIApplication.shared.isIdleTimerDisabled = false
+        notice = message
+        refreshFreeSpace()
+
+        var task: UIBackgroundTaskIdentifier = .invalid
+        task = UIApplication.shared.beginBackgroundTask(withName: "finishClip") {
+            if task != .invalid {
+                UIApplication.shared.endBackgroundTask(task)
+                task = .invalid
+            }
+        }
+
+        ioQueue.async {
+            self.wantsRecording = false
+            self.finishSegment {
+                DispatchQueue.main.async { self.isSaving = false }
+                if task != .invalid {
+                    UIApplication.shared.endBackgroundTask(task)
+                    task = .invalid
+                }
+            }
+        }
+    }
+
+    @objc private func willResignActive() {
+        guard isRecording else { return }
+        stopRecording(notice: "Recording stopped - the app left the screen.")
+    }
+
+    // MARK: Segments & Rolling Split
+
+    private func startSegment(at pts: CMTime) {
+        guard let plan = plan else { return }
+
+        guard freeBytesSnapshot > Self.reserveBytes else {
+            wantsRecording = false
+            DispatchQueue.main.async {
+                self.isRecording = false
+                self.notice = "Stopped - storage is almost full."
+                UIApplication.shared.isIdleTimerDisabled = false
+            }
+            return
+        }
+
+        do {
+            let url = Self.newClipURL()
+            UserDefaults.standard.set(url.lastPathComponent, forKey: Self.inProgressKey)
+
+            let w = try AVAssetWriter(outputURL: url, fileType: .mov)
+            w.movieFragmentInterval = CMTime(seconds: Self.fragmentSeconds, preferredTimescale: 600)
+
+            let v = AVAssetWriterInput(mediaType: .video,
+                                       outputSettings: Encoder.videoSettings(for: plan, writer: w))
+            v.expectsMediaDataInRealTime = true
+            v.transform = clipTransform
+            guard w.canAdd(v) else { throw RecorderError.cannotAddInput }
+            w.add(v)
+
+            var a: AVAssetWriterInput?
+            // HFR/Slow-Mo also writes audio now. The Apple Photos app handles pitching it down automatically.
+            if plan.hasAudio, let aSettings = audioSettings(for: plan, writer: w) {
+                let ai = AVAssetWriterInput(mediaType: .audio, outputSettings: aSettings)
+                ai.expectsMediaDataInRealTime = true
+                if w.canAdd(ai) { w.add(ai); a = ai }
+            }
+
+            guard w.startWriting() else {
+                throw w.error ?? RecorderError.cannotAddInput
+            }
+            w.startSession(atSourceTime: pts)
+
+            writer = w
+            videoIn = v
+            audioIn = a
+            segmentStart = pts
+            lastVideoPTS = pts
+            if !recordStartPTS.isValid { recordStartPTS = pts }
+
+            DispatchQueue.main.async { self.clipsThisSession += 1 }
+
+        } catch {
+            wantsRecording = false
+            let text = error.localizedDescription
+            DispatchQueue.main.async {
+                self.isRecording = false
+                self.notice = "Could not start recording: \(text)"
+                UIApplication.shared.isIdleTimerDisabled = false
+            }
+        }
+    }
+
+    private func finishSegment(_ completion: (() -> Void)? = nil) {
+        guard let w = writer, let v = videoIn else {
+            writer = nil; videoIn = nil; audioIn = nil
+            completion?()
+            return
+        }
+        let a = audioIn
+        let end = lastVideoPTS
+        let start = segmentStart
+        let destination = plan?.saveLocation ?? .files
+        let url = w.outputURL
+
+        writer = nil; videoIn = nil; audioIn = nil
+        segmentStart = .invalid
+
+        guard w.status == .writing else {
+            w.cancelWriting()
+            completion?()
+            return
+        }
+
+        v.markAsFinished()
+        a?.markAsFinished()
+        if end.isValid, start.isValid, CMTimeCompare(end, start) > 0 {
+            w.endSession(atSourceTime: end)
+        }
+        w.finishWriting {
+            UserDefaults.standard.removeObject(forKey: Self.inProgressKey)
+
+            guard w.status == .completed else {
+                let reason = w.error?.localizedDescription ?? "unknown error"
+                DispatchQueue.main.async {
+                    self.notice = "Clip failed to save: \(reason)"
+                    self.refreshFreeSpace()
+                }
+                completion?()
+                return
+            }
+
+            self.generateThumbnail(for: url)
+            self.deliver(url, to: destination) {
+                DispatchQueue.main.async { self.refreshFreeSpace() }
+                completion?()
+            }
+        }
+    }
+
+    private func rotateSegment(at pts: CMTime) {
+        guard let oldWriter = writer, let oldVideoIn = videoIn else { return }
+        let oldAudioIn = audioIn
+        let oldEnd = lastVideoPTS
+        let oldStart = segmentStart
+        let oldUrl = oldWriter.outputURL
+        let destination = plan?.saveLocation ?? .files
+
+        writer = nil; videoIn = nil; audioIn = nil
+        segmentStart = .invalid
+
+        if oldWriter.status == .writing {
+            oldVideoIn.markAsFinished()
+            oldAudioIn?.markAsFinished()
+            if oldEnd.isValid, oldStart.isValid, CMTimeCompare(oldEnd, oldStart) > 0 {
+                oldWriter.endSession(atSourceTime: oldEnd)
+            }
+            oldWriter.finishWriting {
+                self.generateThumbnail(for: oldUrl)
+                self.deliver(oldUrl, to: destination) {
+                    DispatchQueue.main.async { self.refreshFreeSpace() }
+                }
+            }
+        }
+
+        // Start next file segment seamlessly on the current sample frame
+        startSegment(at: pts)
+    }
+
+    private func audioSettings(for plan: EncodePlan, writer w: AVAssetWriter) -> [String: Any]? {
+
+        func valid(_ s: [String: Any]) -> Bool {
+            w.canApply(outputSettings: s, forMediaType: .audio)
+        }
+
+        if var s = audioOutput.recommendedAudioSettingsForAssetWriter(writingTo: .mov) {
+            let recommended = s
+            s[AVEncoderBitRateKey] = plan.audioBitrate
+            if valid(s) { return s }
+            if valid(recommended) { return recommended }
+        }
+
+        let fallback: [String: Any] = [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVNumberOfChannelsKey: 1,
+            AVSampleRateKey: 44100,
+            AVEncoderBitRateKey: plan.audioBitrate
+        ]
+        if valid(fallback) { return fallback }
+        return nil
+    }
+
+    // MARK: Recovering interrupted recordings
+
+    private func recoverInterruptedRecording() {
+        let defaults = UserDefaults.standard
+        guard let name = defaults.string(forKey: Self.inProgressKey) else { return }
+
+        let url = Self.clipsDirectory.appendingPathComponent(name)
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+
+        guard size > 0 else {
+            defaults.removeObject(forKey: Self.inProgressKey)
+            try? FileManager.default.removeItem(at: url)
+            return
+        }
+
+        defaults.removeObject(forKey: Self.inProgressKey)
+        let destination = settings.saveLocation
+        generateThumbnail(for: url)
+        deliver(url, to: destination) { [weak self] in
+            DispatchQueue.main.async {
+                self?.notice = "Recovered the recording that was cut short."
+                self?.refreshFreeSpace()
+            }
+        }
+    }
+
+    // MARK: Delivering finished clips & Thumbnails
+
+    private func generateThumbnail(for url: URL) {
+        DispatchQueue.global(qos: .utility).async {
+            let asset = AVURLAsset(url: url)
+            let generator = AVAssetImageGenerator(asset: asset)
+            generator.appliesPreferredTrackTransform = true
+            generator.maximumSize = CGSize(width: 140, height: 140)
+            let time = CMTime(seconds: 0.5, preferredTimescale: 600)
+            if let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) {
+                let img = UIImage(cgImage: cgImage)
+                DispatchQueue.main.async {
+                    self.lastClipThumbnail = img
+                    self.lastClipURL = url
+                }
+            } else if let cgImage = try? generator.copyCGImage(at: .zero, actualTime: nil) {
+                let img = UIImage(cgImage: cgImage)
+                DispatchQueue.main.async {
+                    self.lastClipThumbnail = img
+                    self.lastClipURL = url
+                }
+            }
+        }
+    }
+
+    private func ensurePhotosAccess() {
+        guard PHPhotoLibrary.authorizationStatus(for: .addOnly) == .notDetermined else { return }
+        PHPhotoLibrary.requestAuthorization(for: .addOnly) { _ in }
+    }
+
+    private func deliver(_ url: URL, to destination: SaveLocation, done: @escaping () -> Void) {
+        guard destination == .photos else {
+            DispatchQueue.main.async { self.notice = "Clip saved to Files." }
+            done()
+            return
+        }
+
+        let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
+        guard status == .authorized || status == .limited else {
+            DispatchQueue.main.async {
+                self.notice = "No photo access - clip kept in Files instead."
+            }
+            done()
+            return
+        }
+
+        PHPhotoLibrary.shared().performChanges {
+            let request = PHAssetCreationRequest.forAsset()
+            let options = PHAssetResourceCreationOptions()
+            options.shouldMoveFile = false
+            request.addResource(with: .video, fileURL: url, options: options)
+        } completionHandler: { [weak self] success, error in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                if success {
+                    self.notice = "Clip saved to Photos."
+                    self.cleanupOlderClipsExcept(url)
+                } else {
+                    let reason = error?.localizedDescription ?? "unknown error"
+                    self.notice = "Photos refused the clip (\(reason)) - it is still in Files."
+                }
+            }
+            done()
+        }
+    }
+
+    private func cleanupOlderClipsExcept(_ currentURL: URL?) {
+        guard settings.saveLocation == .photos else { return }
+        DispatchQueue.global(qos: .background).async {
+            let fm = FileManager.default
+            guard let files = try? fm.contentsOfDirectory(at: Self.clipsDirectory, includingPropertiesForKeys: [.creationDateKey], options: [.skipsHiddenFiles]) else { return }
+            for file in files {
+                let ext = file.pathExtension.lowercased()
+                guard ext == "mov" || ext == "mp4" else { continue }
+                if let current = currentURL, file.lastPathComponent == current.lastPathComponent {
+                    continue
+                }
+                try? fm.removeItem(at: file)
+            }
+        }
+    }
+
+    private func loadLastSavedClip() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self = self else { return }
+            let fm = FileManager.default
+            guard let files = try? fm.contentsOfDirectory(at: Self.clipsDirectory, includingPropertiesForKeys: [.creationDateKey, .fileSizeKey], options: [.skipsHiddenFiles]) else { return }
+            let validClips = files.filter { url in
+                let ext = url.pathExtension.lowercased()
+                return ext == "mov" || ext == "mp4"
+            }.sorted { (u1, u2) -> Bool in
+                let d1 = (try? u1.resourceValues(forKeys: [.creationDateKey]))?.creationDate ?? .distantPast
+                let d2 = (try? u2.resourceValues(forKeys: [.creationDateKey]))?.creationDate ?? .distantPast
+                return d1 > d2
+            }
+
+            if let latest = validClips.first {
+                let size = (try? latest.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+                if size > 0 {
+                    self.generateThumbnail(for: latest)
+                }
+            }
+        }
+    }
+
+    // MARK: Storage
+
+    func refreshFreeSpace() {
+        DispatchQueue.global(qos: .utility).async {
+            let url = URL(fileURLWithPath: NSHomeDirectory())
+            let bytes = (try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
+                .volumeAvailableCapacityForImportantUsage ?? 0
+            self.ioQueue.async { self.freeBytesSnapshot = Int64(bytes) }
+            DispatchQueue.main.async { self.freeBytes = Int64(bytes) }
+        }
+    }
+
+    static var clipsDirectory: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+    }
+
+    private static func newClipURL() -> URL {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        return clipsDirectory.appendingPathComponent("LowPolyCam_\(f.string(from: Date())).mov")
+    }
+
+    // MARK: Orientation
+
+    private func currentInterfaceOrientation() -> UIInterfaceOrientation {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first?.interfaceOrientation ?? .portrait
+    }
+
+    private static func transform(forInterface o: UIInterfaceOrientation, width: Int, height: Int) -> CGAffineTransform {
+        let w = CGFloat(width)
+        let h = CGFloat(height)
+        switch o {
+        case .portrait:
+            return CGAffineTransform(translationX: h, y: 0).rotated(by: .pi / 2)
+        case .landscapeLeft:
+            return CGAffineTransform(translationX: w, y: h).rotated(by: .pi)
+        case .portraitUpsideDown:
+            return CGAffineTransform(translationX: 0, y: w).rotated(by: -.pi / 2)
+        case .landscapeRight:
+            return .identity
+        default:
+            return CGAffineTransform(translationX: h, y: 0).rotated(by: .pi / 2)
+        }
+    }
+
+    enum RecorderError: LocalizedError {
+        case cannotAddInput
+        var errorDescription: String? { "the encoder rejected these settings" }
+    }
+}
+
+// MARK: - Sample buffers
+
+extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
+                          AVCaptureAudioDataOutputSampleBufferDelegate {
+
+    func captureOutput(_ output: AVCaptureOutput,
+                       didOutput sampleBuffer: CMSampleBuffer,
+                       from connection: AVCaptureConnection) {
+
+        if stopRequested { return }
+
+        guard CMSampleBufferDataIsReady(sampleBuffer) else { return }
+        let isVideo = (output === videoOutput)
+        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+
+        guard wantsRecording else {
+            if writer != nil { finishSegment() }
+            return
+        }
+
+        if isVideo {
+            if writer == nil {
+                startSegment(at: pts)
+            } else if let splitLimit = plan?.splitInterval.seconds, segmentStart.isValid {
+                let duration = CMTimeGetSeconds(CMTimeSubtract(pts, segmentStart))
+                if duration >= splitLimit {
+                    rotateSegment(at: pts)
+                }
+            }
+        }
+
+        guard let w = writer, w.status == .writing else { return }
+        guard segmentStart.isValid, CMTimeCompare(pts, segmentStart) >= 0 else { return }
+
+        if isVideo {
+            if videoIn?.isReadyForMoreMediaData == true {
+                // We append the HFR buffer completely untouched.
+                // This means the file is actually encoded as a 120/240fps video file,
+                // which iOS Photos instantly recognizes and adds the Slow-Mo slider to!
+                videoIn?.append(sampleBuffer)
+                lastVideoPTS = pts
+            } else {
+                countDroppedFrame()
+            }
+            pushElapsed(pts)
+        } else {
+            if audioIn?.isReadyForMoreMediaData == true {
+                audioIn?.append(sampleBuffer)
+            }
+        }
+    }
+
+    func captureOutput(_ output: AVCaptureOutput,
+                       didDrop sampleBuffer: CMSampleBuffer,
+                       from connection: AVCaptureConnection) {
+        guard output === videoOutput, wantsRecording else { return }
+        countDroppedFrame()
+    }
+
+    private func countDroppedFrame() {
+        droppedFrameCount += 1
+    }
+
+    private func pushElapsed(_ pts: CMTime) {
+        guard recordStartPTS.isValid else { return }
+        if lastElapsedPush.isValid,
+           CMTimeGetSeconds(CMTimeSubtract(pts, lastElapsedPush)) < 0.25 { return }
+        lastElapsedPush = pts
+
+        if freeBytesSnapshot <= Self.reserveBytes {
+            DispatchQueue.main.async {
+                self.stopRecording(notice: "Stopped - storage is almost full.")
+            }
+            return
+        }
+
+        let seconds = CMTimeGetSeconds(CMTimeSubtract(pts, recordStartPTS))
+        let drops = droppedFrameCount
+        let level = currentAudioLevel()
+        DispatchQueue.main.async {
+            self.elapsed = seconds
+            if self.droppedFrames != drops { self.droppedFrames = drops }
+            self.audioLevel = level
+        }
+    }
+
+    private func currentAudioLevel() -> Float {
+        guard let channel = audioOutput.connection(with: .audio)?.audioChannels.first else { return 0 }
+        let db = channel.averagePowerLevel
+        let normalized = (db + 50) / 50
+        return Float(max(0, min(1, normalized)))
+    }
+}
+
+// MARK: - Volume Shutter Observer
+
+final class VolumeButtonObserver: NSObject {
+    private var audioSession: AVAudioSession { AVAudioSession.sharedInstance() }
+    private var volumeView: MPVolumeView?
+    private var isObserving = false
+    private var lastVolume: Float?
+    private var ignoreUntil: Date = .distantFuture
+    var onVolumeTrigger: (() -> Void)?
+
+    func start() {
+        guard !isObserving else { return }
+        do {
+            try audioSession.setActive(true, options: [])
+        } catch { }
+
+        // Invisible off-screen MPVolumeView to suppress the stock volume HUD
+        if volumeView == nil {
+            let v = MPVolumeView(frame: CGRect(x: -1000, y: -1000, width: 1, height: 1))
+            v.clipsToBounds = true
+            v.alpha = 0.01
+            if let window = UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene })
+                .first?.windows.first {
+                window.addSubview(v)
+                volumeView = v
+            }
+        }
+
+        // Store baseline volume and ignore startup KVO events for 2.5 seconds
+        lastVolume = audioSession.outputVolume
+        ignoreUntil = Date().addingTimeInterval(2.5)
+        audioSession.addObserver(self, forKeyPath: "outputVolume", options: [.new, .old], context: nil)
+        isObserving = true
+    }
+
+    func stop() {
+        guard isObserving else { return }
+        audioSession.removeObserver(self, forKeyPath: "outputVolume")
+        isObserving = false
+        volumeView?.removeFromSuperview()
+        volumeView = nil
+    }
+
+    override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey : Any]?, context: UnsafeMutableRawPointer?) {
+        if keyPath == "outputVolume" {
+            let currentVol = audioSession.outputVolume
+            if Date() < ignoreUntil {
+                lastVolume = currentVol
+                return
+            }
+            if let prev = lastVolume {
+                // Ensure a physical button press delta (standard iOS volume step is ~0.0625)
+                if abs(currentVol - prev) > 0.01 {
+                    lastVolume = currentVol
+                    onVolumeTrigger?()
+                }
+            } else {
+                lastVolume = currentVol
+            }
+        }
+    }
+}
