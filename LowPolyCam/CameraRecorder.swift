@@ -156,7 +156,6 @@ final class CameraRecorder: NSObject, ObservableObject {
             let gy = motion.gravity.y
             let angle = atan2(gx, -gy) * (180.0 / .pi)
 
-            // Determine physical orientation for video recording metadata
             let absAngle = abs(angle)
             if absAngle < 45 {
                 self.physicalOrientation = .portrait
@@ -315,6 +314,7 @@ final class CameraRecorder: NSObject, ObservableObject {
     private func ensureCorrectCameraDevice(for mode: CameraMode) {
         guard let targetDevice = Self.camera(at: position, mode: mode) else { return }
         if cameraInput?.device.uniqueID != targetDevice.uniqueID {
+            volumeObserver?.ignoreTemporarily() // Mute volume shutter to prevent 0-sec clip bug
             session.beginConfiguration()
             if let old = cameraInput { session.removeInput(old) }
             if let input = try? AVCaptureDeviceInput(device: targetDevice), session.canAddInput(input) {
@@ -327,6 +327,7 @@ final class CameraRecorder: NSObject, ObservableObject {
     }
 
     private func applyActiveFormat() {
+        volumeObserver?.ignoreTemporarily() // Mute volume shutter during format change
         ensureCorrectCameraDevice(for: settings.cameraMode)
         guard let device = cameraInput?.device else { return }
 
@@ -345,16 +346,26 @@ final class CameraRecorder: NSObject, ObservableObject {
             dims = settings.slowMoResolution.captureDimensions
         } else {
             dims = settings.resolution.captureDimensions
-            if let locked = settings.resolution.lockedFrameRate, settings.frameRate != locked {
-                DispatchQueue.main.async {
-                    self.settings.frameRate = locked
-                    self.notice = "\(self.settings.resolution.label) films at \(locked.label) only - switched to \(locked.label)."
-                }
-            }
-            fps = Double((settings.resolution.lockedFrameRate ?? settings.frameRate).value)
+            fps = Double(settings.frameRate.value)
         }
 
-        guard let format = Self.bestFormat(for: device, width: dims.w, height: dims.h, fps: fps) else {
+        // Try exact match (including 4K 60fps)
+        var targetFPS = fps
+        var format = Self.bestFormat(for: device, width: dims.w, height: dims.h, fps: targetFPS)
+
+        // If 4K 60fps is not supported on this hardware (like iPhone 7), gracefully drop to 30fps
+        if format == nil && targetFPS == 60 {
+            targetFPS = 30
+            format = Self.bestFormat(for: device, width: dims.w, height: dims.h, fps: targetFPS)
+            if format != nil {
+                DispatchQueue.main.async {
+                    self.settings.frameRate = .fps30
+                    self.notice = "60 fps is not supported at this resolution here. Switched to 30 fps."
+                }
+            }
+        }
+
+        guard let finalFormat = format else {
             if isSlow, let fallbackFormat = Self.bestSlowMoFormat(for: device, fps: fps) {
                 do {
                     try device.lockForConfiguration()
@@ -388,8 +399,8 @@ final class CameraRecorder: NSObject, ObservableObject {
 
         do {
             try device.lockForConfiguration()
-            device.activeFormat = format
-            let d = CMTime(value: 1, timescale: CMTimeScale(fps.rounded()))
+            device.activeFormat = finalFormat
+            let d = CMTime(value: 1, timescale: CMTimeScale(targetFPS.rounded()))
             device.activeVideoMaxFrameDuration = CMTime.invalid
             device.activeVideoMinFrameDuration = d
             device.activeVideoMaxFrameDuration = d
@@ -423,6 +434,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         return best
     }
 
+    /// Selects best format while penalizing 10-bit HDR on newer iPhones to prevent blown-out colors
     private static func bestFormat(for device: AVCaptureDevice, width: Int, height: Int, fps: Double) -> AVCaptureDevice.Format? {
         var best: AVCaptureDevice.Format?
         var bestScore = Int.max
@@ -434,7 +446,11 @@ final class CameraRecorder: NSObject, ObservableObject {
             }
             guard supportsFPS else { continue }
             let areaDelta = Int(dims.width) * Int(dims.height) - width * height
-            let score = areaDelta + (format.isVideoBinned ? 1_000_000 : 0)
+            
+            // Prefer clean 8-bit SDR formats over 10-bit HDR to avoid blown-out highlights
+            let isHDR = format.supportedColorSpaces.contains(.HLG_BT2020)
+            let colorScore = isHDR ? 10_000_000 : 0
+            let score = areaDelta + (format.isVideoBinned ? 1_000_000 : 0) + colorScore
             if score < bestScore {
                 bestScore = score
                 best = format
@@ -543,6 +559,7 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     private func addOrRemoveMic() {
         sessionQueue.async {
+            self.volumeObserver?.ignoreTemporarily() // Mute volume shutter during mic switch
             let want = self.settings.recordAudio
             if want, self.micInput == nil {
                 guard let mic = AVCaptureDevice.default(for: .audio),
@@ -564,6 +581,7 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     func flipCamera() {
         guard !isRecording else { return }
+        volumeObserver?.ignoreTemporarily() // Mute volume shutter during camera flip
         setTorch(on: false)
         sessionQueue.async {
             let next: AVCaptureDevice.Position = (self.position == .back) ? .front : .back
@@ -589,7 +607,6 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
     }
 
-    /// On newer iPhones, Slow-Mo requires the physical Wide Angle Camera, whereas standard Video uses the multi-camera
     private static func camera(at position: AVCaptureDevice.Position, mode: CameraMode) -> AVCaptureDevice? {
         if position == .back && mode != .slowMo {
             let virtualTypes: [AVCaptureDevice.DeviceType] = [
@@ -1349,6 +1366,11 @@ final class VolumeButtonObserver: NSObject {
         isObserving = false
         volumeView?.removeFromSuperview()
         volumeView = nil
+    }
+
+    /// Temporarily mutes the volume trigger to prevent false 0-sec clips during camera/mode/mic reconfigurations
+    func ignoreTemporarily() {
+        ignoreUntil = Date().addingTimeInterval(1.5)
     }
 
     override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey : Any]?, context: UnsafeMutableRawPointer?) {
