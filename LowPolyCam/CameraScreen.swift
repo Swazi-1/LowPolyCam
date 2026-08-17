@@ -40,14 +40,14 @@ struct CameraScreen: View {
             ZStack {
                 Color.black
 
-                CameraPreview(session: recorder.session, onTap: { devicePoint, viewPoint in
+                CameraPreview(session: recorder.session, onTap: { [weak recorder] devicePoint, viewPoint in
                     if showProMenu {
                         withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { showProMenu = false }
                     }
-                    recorder.focusAndExpose(at: devicePoint)
+                    recorder?.focusAndExpose(at: devicePoint)
                     showFocusReticle(at: viewPoint)
-                }, onDoubleTap: {
-                    recorder.flipCamera()
+                }, onDoubleTap: { [weak recorder] in
+                    recorder?.flipCamera()
                 })
                 .gesture(
                     MagnificationGesture()
@@ -103,7 +103,6 @@ struct CameraScreen: View {
             }
         }
         .statusBar(hidden: true)
-        .preferredColorScheme(.dark)
         .accentColor(Palette.mint)
         .onAppear {
             recorder.start()
@@ -658,7 +657,8 @@ struct CameraScreen: View {
         countdownRemaining = 0
     }
 
-    private var noticeBar(_ text: String) -> some View {
+    // FIXED: Changed 'var' to 'func' to resolve syntax error
+    private func noticeBar(_ text: String) -> some View {
         Text(text)
             .font(.system(size: 13, weight: .medium))
             .foregroundColor(.white)
