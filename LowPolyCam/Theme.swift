@@ -10,22 +10,36 @@ extension Color {
     }
 }
 
-/// Upgraded vibrant, modern palette. Deep OLED blacks with neon-tinted accents.
+/// Palette extracted directly from the 3D low-poly camera icon:
+/// - Dusty slate blue body
+/// - Seafoam / sage mint lens rings
+/// - Butter yellow hexagonal buttons
+/// - Pastel lavender top dial
 enum Palette {
-    static let slateDeep   = Color(hex: 0x15161A) // Deep OLED-friendly dark
-    static let slate       = Color(hex: 0x24262D)
-    static let slateLight  = Color(hex: 0x4A4E5C)
+    // Body & Background Slate Blues
+    static let slateDeep   = Color(hex: 0x141820) // Deep background base
+    static let slate       = Color(hex: 0x222B38) // Low-poly shadow tone
+    static let slateMid    = Color(hex: 0x3D4A5E) // Camera body mid-tone
+    static let slateLight  = Color(hex: 0x6B7B94) // Camera body highlight
 
-    static let mint        = Color(hex: 0x00F0B5) // Vibrant neon mint
-    static let mintBright  = Color(hex: 0x80FFDF)
-    static let mintDeep    = Color(hex: 0x00A87E)
+    // Lens Seafoam / Sage Mint
+    static let mint        = Color(hex: 0x68C4A8) // Outer lens ring
+    static let mintBright  = Color(hex: 0x98ECD4) // Inner lens aperture highlight
+    static let mintDeep    = Color(hex: 0x42967E) // Lens shadow ring
 
-    static let violet      = Color(hex: 0xAF52DE) // Apple's native system purple
-    static let amber       = Color(hex: 0xFFD60A) // Apple's native system yellow
+    // Top Dial Lavender
+    static let violet      = Color(hex: 0xBFA2DB) // Lavender shutter dial
+    static let violetDeep  = Color(hex: 0x8667A8)
 
-    static let record      = Color(hex: 0xFF453A) // Brighter, classic Apple record red
+    // Side Buttons Butter Yellow
+    static let amber       = Color(hex: 0xF5D365) // Hexagonal yellow buttons
+    static let amberBright = Color(hex: 0xFFE58F)
+    static let amberDeep   = Color(hex: 0xD4AD37)
 
-    static let panel       = Color(hex: 0x111112)
+    // Shutter / Recording Coral Red
+    static let record      = Color(hex: 0xFF5454)
+
+    static let panel       = Color(hex: 0x1A212C)
 }
 
 /// A regular polygon - the faceted motif the icon is built from. Used instead
