@@ -280,8 +280,10 @@ struct EncodePlan {
 
     var isSlowMo: Bool { cameraMode == .slowMo }
     var slowMoPlaybackFPS: Int { 30 }
-    /// Scales capture timestamps so that e.g. 120 fps → 30 fps playback (4x slow).
-    var slowMoMultiplier: Double { 30.0 / Double(frameRate) }
+    
+    // FIXED: Multiplier should be frameRate / 30.0 (e.g. 120 / 30 = 4x slow mo)
+    // The previous math (30 / 120) made it a 4x fast-forward timelapse!
+    var slowMoMultiplier: Double { Double(frameRate) / 30.0 }
 
     var totalBitrate: Int { videoBitrate + audioBitrate }
 
