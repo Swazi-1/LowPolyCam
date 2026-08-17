@@ -93,12 +93,6 @@ final class CameraRecorder: NSObject, ObservableObject {
     private var rawMinZoomSnapshot: CGFloat = 1
     private var zoomBaselineSnapshot: CGFloat = 1
 
-    // Continuity tracking for the level-gauge roll angle. atan2 wraps at
-    // ±180°, so the raw angle can jump ~360° in a single sample right at that
-    // boundary (e.g. 179.6° -> -179.8° from a hair of gravity-sensor noise).
-    // Animating straight off that raw value spins the gauge the long way
-    // around - the "bugs out at 180°, fine at 181°" glitch. We unwrap it into
-    // a continuous value instead.
     private var lastRawRollAngle: Double?
     private var unwrappedRollAngle: Double = 0
 
@@ -186,8 +180,6 @@ final class CameraRecorder: NSObject, ObservableObject {
                 self.uiRotationAngle = targetUIAngle
             }
 
-            // Unwrap so the displayed/animated value never has to jump the
-            // long way around when the raw atan2 angle crosses ±180°.
             if let last = self.lastRawRollAngle {
                 var delta = angle - last
                 if delta > 180 { delta -= 360 }
@@ -220,14 +212,6 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
     }
 
-    /// Briefly ignore the physical volume buttons/outputVolume KVO. Also
-    /// used while the user is actively pinch-zooming: on some iPhones,
-    /// changing videoZoomFactor rapidly can cause a tiny audio-route/volume
-    /// blip that the volume-button shutter watcher can misread as a real
-    /// button press and start a recording by itself. This was reported as a
-    /// one-off ("zoomed on the selfie camera and it started recording") -
-    /// suppressing the watcher while a pinch is in progress removes that
-    /// window without disabling the volume-button shutter feature itself.
     func suppressVolumeTriggerBriefly(duration: TimeInterval = 1.0) {
         DispatchQueue.main.async {
             self.volumeObserver?.ignoreTemporarily(duration: duration)
@@ -255,16 +239,6 @@ final class CameraRecorder: NSObject, ObservableObject {
         refreshFreeSpace()
         recoverInterruptedRecording()
         loadLastSavedClip()
-        // Only start the 20Hz gyro/gravity feed when the level gauge is
-        // actually on screen (it's off by default). physicalOrientation,
-        // uiRotationAngle, rollAngle, and isLevel only ever feed the level
-        // gauge overlay - nothing else in the UI reads them - but they're
-        // all @Published, so every sample was forcing SwiftUI to re-diff
-        // the *entire* CameraScreen body (preview, HUD, pro tools drawer)
-        // 20 times a second even with the gauge off. That constant
-        // background churn was the main source of general jank/dropped
-        // frames, most visible as stutter whenever something else animates
-        // on screen at the same time - e.g. opening the pro tools drawer.
         if settings.showLevelGauge { startMotionUpdates() }
 
         spaceTimer?.invalidate()
@@ -297,8 +271,6 @@ final class CameraRecorder: NSObject, ObservableObject {
         spaceTimer = nil
         pauseVolumeMonitoring()
         stopMotionUpdates()
-        // In case the app is backgrounded mid-flip, don't leave the record/
-        // flip buttons permanently disabled next time the screen appears.
         isSwitchingCamera = false
 
         if isRecording { stopRecording(notice: nil) }
@@ -354,21 +326,6 @@ final class CameraRecorder: NSObject, ObservableObject {
         if c.isVideoOrientationSupported { c.videoOrientation = .landscapeRight }
         if c.isVideoMirroringSupported {
             c.automaticallyAdjustsVideoMirroring = false
-            // The live preview layer has its own connection and always
-            // mirrors the front camera on its own (so filming feels like
-            // looking in a mirror). This connection feeds the actual saved
-            // file. It's kept un-mirrored here - the "Mirror Selfie Video"
-            // setting is applied later, baked into the clip's transform
-            // metadata in Self.transform(...), not on this connection.
-            // Reason: recording is locked to portrait by keeping this
-            // connection's videoOrientation fixed at .landscapeRight and
-            // rotating the whole frame 90 degrees via that transform at
-            // write time rather than physically rotating pixels. A mirror
-            // applied here happens in that same pre-rotation landscape
-            // space, so it flips along what becomes the *vertical* axis
-            // once the 90 degree rotation is applied - the saved video came
-            // out flipped top-to-bottom instead of mirrored left-to-right,
-            // which is why the setting looked broken.
             c.isVideoMirrored = false
         }
         applyStabilization(to: c)
@@ -396,13 +353,6 @@ final class CameraRecorder: NSObject, ObservableObject {
         switchCameraInput(to: targetDevice)
     }
 
-    /// Swaps the active AVCaptureDeviceInput to `targetDevice` if it isn't
-    /// already active. Shared by the normal mode/frame-rate routing in
-    /// ensureCorrectCameraDevice(...) and by setWhiteBalance(...), which
-    /// needs to force a specific device (the physical wide lens) only when
-    /// the currently active one actually can't lock custom white-balance
-    /// gains, rather than always routing manual presets away from the
-    /// virtual lens up front.
     private func switchCameraInput(to targetDevice: AVCaptureDevice) {
         guard cameraInput?.device.uniqueID != targetDevice.uniqueID else { return }
         DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
@@ -487,7 +437,6 @@ final class CameraRecorder: NSObject, ObservableObject {
         DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
     }
 
-    /// Single consolidated hardware lock to prevent camera flickering
     private func applyUnifiedHardwareConfiguration(to device: AVCaptureDevice, format: AVCaptureDevice.Format, targetFPS: Double) {
         do {
             try device.lockForConfiguration()
@@ -578,21 +527,6 @@ final class CameraRecorder: NSObject, ObservableObject {
         scoredCandidates(in: device.formats, width: width, height: height, fps: fps).first
     }
 
-    /// Slow-mo's 120/240fps formats aren't always available across the
-    /// whole zoom range - on many iPhones, high frame rate capture is
-    /// sourced only from the wide lens, and setting one of those formats
-    /// active narrows `minAvailableVideoZoomFactor` up to 1x for as long as
-    /// it's active, silently making 0.5x unreachable even though the
-    /// virtual/multi-lens device was correctly selected and genuinely does
-    /// support 120/240fps *somewhere* in its format list. There's no static
-    /// per-format flag for this - the only way to know is to make a
-    /// candidate format active and read the zoom range it actually leaves
-    /// available. This tries each width/height/fps-matching candidate, in
-    /// the same best-fit order bestFormat(...) would use, and picks the
-    /// first one that still reaches down to the ultra-wide switchover
-    /// point, so 0.5x shows up automatically on whichever iPhones have a
-    /// slow-mo format that keeps it - and otherwise falls back to the
-    /// previous best-fit pick unchanged.
     private static func bestSlowMoAwareFormat(for device: AVCaptureDevice, width: Int, height: Int, fps: Double) -> AVCaptureDevice.Format? {
         let ranked = scoredCandidates(in: device.formats, width: width, height: height, fps: fps)
         guard let fallback = ranked.first else { return nil }
@@ -623,15 +557,6 @@ final class CameraRecorder: NSObject, ObservableObject {
         ensureCorrectCameraDevice(for: settings.cameraMode)
         guard let device = cameraInput?.device else { return }
 
-        // Frame rates are checked per-resolution (using the same width/height
-        // gate as bestFormat) rather than "does any format on this device do
-        // this fps at all". Previously a phone whose 4K formats only reached
-        // 30fps but whose 1080p formats reached 60fps would report 60fps as
-        // globally "available", even though picking 60fps while at 4K
-        // silently got overridden. Now the list shown in Settings actually
-        // matches what's selectable at the resolution currently in use, and
-        // updates again automatically if the resolution changes (resolution
-        // rows call updateCaptureFormat()).
         let targetDims = settings.cameraMode == .slowMo
             ? settings.slowMoResolution.captureDimensions
             : settings.resolution.captureDimensions
@@ -685,14 +610,6 @@ final class CameraRecorder: NSObject, ObservableObject {
         let supportedSlowRates = SlowMoFrameRate.allCases.filter { slowRates.contains($0) }
         let supportedSlowRes = Resolution.allCases.filter { slowResolutions.contains($0) }
 
-        // NOTE: This runs synchronously on the main thread (not .async) so that
-        // applyActiveFormat() below runs immediately afterward, on the same
-        // sessionQueue hop. Previously this dispatched .async to main and then
-        // .async'd *back* to sessionQueue, which left the capture session briefly
-        // running with a stale/mismatched format on the new device - the visible
-        // flicker after flipping cameras, and a window during which the UI
-        // (record button, flip button) was still fully interactive even though
-        // the camera was mid-reconfiguration.
         DispatchQueue.main.sync {
             self.availableFrameRates = supportedRates.isEmpty ? [.fps30] : supportedRates
             self.availableResolutions = supportedResolutions.isEmpty ? [.p720] : supportedResolutions
@@ -757,21 +674,10 @@ final class CameraRecorder: NSObject, ObservableObject {
     }
 
     func flipCamera() {
-        // Also guards against the double-tap-to-flip gesture on the preview,
-        // and against a second flip firing while the first is still
-        // reconfiguring the session (which used to cause the visible
-        // flicker/glitch and left the record button tappable mid-switch).
         guard !isRecording, !isSwitchingCamera else { return }
 
         DispatchQueue.main.async {
             self.isSwitchingCamera = true
-            // Extend the ignore window generously - the reconfiguration below
-            // involves an AVCaptureSession commit plus a full device.formats
-            // scan, which can take noticeably longer than a moment on older
-            // hardware. If this window lapsed mid-flip, a spurious/late
-            // outputVolume KVO callback (e.g. from the audio route settling
-            // after the session reconfiguration) could be misread as a
-            // physical volume-button press and auto-start a recording.
             self.volumeObserver?.ignoreTemporarily(duration: 3.0)
         }
         setTorch(on: false)
@@ -795,10 +701,6 @@ final class CameraRecorder: NSObject, ObservableObject {
             self.session.commitConfiguration()
 
             self.configureVideoConnection()
-            // refreshCapabilitiesThenApplyFormat() now applies the new format
-            // synchronously before returning (see its implementation), so the
-            // session is never left running with a mismatched format for the
-            // new camera - that gap was the source of the flip flicker.
             self.refreshCapabilitiesThenApplyFormat()
             self.refreshTorchState()
             self.resetFocusAndExposureToAuto()
@@ -818,15 +720,6 @@ final class CameraRecorder: NSObject, ObservableObject {
             ]
             for type in virtualTypes {
                 guard let device = AVCaptureDevice.default(type, for: .video, position: .back) else { continue }
-                // Slow-mo used to hard-skip every virtual/multi-lens camera
-                // and always fall back to the plain 1x wide-angle lens, which
-                // has no ultra-wide element and therefore can never zoom out
-                // to 0.5x - even on iPhones whose virtual camera *does* have
-                // a 120/240fps-capable format. Only skip the virtual device
-                // here if it genuinely can't do slow-mo's frame rates; that
-                // way 0.5x shows up automatically on whichever iPhones
-                // actually support it, and older/other models silently keep
-                // the previous plain-lens behavior.
                 if mode == .slowMo && !supportsSlowMotion(device) { continue }
                 return device
             }
@@ -835,52 +728,18 @@ final class CameraRecorder: NSObject, ObservableObject {
             ?? AVCaptureDevice.default(for: .video)
     }
 
-    /// Whether this device has at least one format capable of ~120fps or
-    /// faster, i.e. usable for slow motion.
     private static func supportsSlowMotion(_ device: AVCaptureDevice) -> Bool {
         device.formats.contains { format in
             format.videoSupportedFrameRateRanges.contains { $0.maxFrameRate >= 119.0 }
         }
     }
 
-    /// 60fps at 1080p *or* 4K forces the plain physical wide lens. The
-    /// virtual/multi-lens "back camera" (Triple/DualWide/Dual) that devices
-    /// from the iPhone 11 onward default to often has no 4K60 format at all,
-    /// even on iPhones whose stock Camera app happily records 4K60 - Camera
-    /// itself falls back to the plain wide lens for that combo, same as
-    /// here. Without this, requesting 4K60 on those phones silently fails
-    /// to find a matching format and the app reports "not supported on this
-    /// camera" even though the hardware can do it. This previously only
-    /// covered 1080p60 (checking "height >= 1080", which also matched 4K)
-    /// and that broader check was narrowed to 1080p-only under the belief
-    /// that every iPhone's virtual camera supports 4K60 - it doesn't.
     private var wantsPhysicalWideForFrameRate: Bool {
         settings.cameraMode == .video
             && settings.frameRate == .fps60
             && (settings.resolution == .p1080 || settings.resolution == .p2160)
     }
 
-    /// Manual white-balance locking (custom device gains) is unreliable on
-    /// the *virtual* multi-lens "back camera" (triple/dual-wide/dual) that
-    /// devices from the iPhone 11 onward default to - AVFoundation reports
-    /// `isLockingWhiteBalanceWithCustomDeviceGainsSupported == false` for it,
-    /// which is why manual white balance presets only ever worked on older,
-    /// single-lens phones like the iPhone 7. Routing to the plain physical
-    /// wide-angle lens (same trick already used for 60fps) makes manual
-    /// white balance work on every iPhone again, at the cost of losing the
-    /// ultra-wide/telephoto zoom range while a manual preset is active.
-    /// Manual white-balance locking (custom device gains) is unsupported on
-    /// the *virtual* multi-lens "back camera" (triple/dual-wide/dual) on
-    /// some iPhones - AVFoundation reports
-    /// `isLockingWhiteBalanceWithCustomDeviceGainsSupported == false` for
-    /// it there. It used to be assumed *every* iPhone's virtual camera
-    /// lacks this, so every manual preset (anything but Auto) force-routed
-    /// to the plain physical wide lens - which works, but silently drops
-    /// the ultra-wide element and 0.5x zoom, even on the (increasingly
-    /// common) iPhones whose virtual camera *does* support locked gains.
-    /// setWhiteBalance(...) now checks the currently active device first
-    /// and only falls back to the physical lens if that check actually
-    /// fails, so 0.5x stays available on hardware that supports it.
     private var wantsPhysicalWideLens: Bool {
         wantsPhysicalWideForFrameRate
     }
@@ -905,9 +764,6 @@ final class CameraRecorder: NSObject, ObservableObject {
     func setWhiteBalance(_ preset: WhiteBalancePreset) {
         sessionQueue.async {
             if preset.kelvin == nil {
-                // Back to Auto - make sure we're not still stuck on the
-                // physical wide lens from an earlier manual preset that
-                // needed it (see below), so 0.5x/telephoto zoom returns.
                 self.ensureCorrectCameraDevice(for: self.settings.cameraMode)
                 guard let device = self.cameraInput?.device else { return }
                 do {
@@ -924,19 +780,10 @@ final class CameraRecorder: NSObject, ObservableObject {
 
             guard let values = preset.kelvin else { return }
 
-            // Try the currently active lens first - on iPhones whose
-            // virtual/multi-lens camera does support locked custom gains,
-            // this keeps 0.5x/telephoto zoom available while a manual
-            // preset is active.
             var device = self.cameraInput?.device
             var lostUltraWide = false
 
             if let d = device, !d.isLockingWhiteBalanceWithCustomDeviceGainsSupported {
-                // This lens genuinely can't lock custom gains - fall back
-                // to the plain physical wide lens, same as the 60fps
-                // workaround. This costs 0.5x/telephoto zoom while the
-                // preset stays active, but only on hardware that actually
-                // needs it.
                 if let fallback = Self.camera(at: self.position, mode: self.settings.cameraMode, preferPhysical: true) {
                     self.switchCameraInput(to: fallback)
                     device = self.cameraInput?.device
@@ -973,7 +820,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
     }
 
-    // MARK: Torch
+    // MARK: Torch (Fixed to full 100% brightness by default)
 
     private func refreshTorchState() {
         let device = cameraInput?.device
@@ -995,7 +842,7 @@ final class CameraRecorder: NSObject, ObservableObject {
             do {
                 try device.lockForConfiguration()
                 if on {
-                    let level: Float = self.settings.torchBrightness > 0 ? self.settings.torchBrightness : 0.15
+                    let level: Float = self.settings.torchBrightness > 0 ? self.settings.torchBrightness : 1.0
                     let targetLevel = min(level, AVCaptureDevice.maxAvailableTorchLevel)
                     try device.setTorchModeOn(level: targetLevel)
                 } else {
@@ -1515,16 +1362,6 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     // MARK: Physical Video Orientation Tagging
 
-    // Hard-locked to output native portrait rotation metadata. `width` and
-    // `height` are the raw landscape buffer's dimensions (as captured);
-    // after this transform's 90 degree rotation the saved portrait frame's
-    // width equals the original `height`.
-    //
-    // When `mirrored` is true, the flip is applied *after* the rotation
-    // (via `concatenating`, so it runs in the final portrait coordinate
-    // space) so it lands on the actual left-right axis of the saved video -
-    // see the long comment in configureVideoConnection() for why this can't
-    // just be AVCaptureConnection.isVideoMirrored on the un-rotated buffer.
     private static func transform(width: Int, height: Int, mirrored: Bool) -> CGAffineTransform {
         let h = CGFloat(height)
         let rotated = CGAffineTransform(translationX: h, y: 0).rotated(by: .pi / 2)
@@ -1678,10 +1515,6 @@ final class VolumeButtonObserver: NSObject {
 
     func ignoreTemporarily(duration: TimeInterval = 1.5) {
         let candidate = Date().addingTimeInterval(duration)
-        // Never shorten an already-active ignore window - a short call
-        // (e.g. from a settings tweak) racing after a long one (e.g. a
-        // camera flip still reconfiguring) should not re-expose the volume
-        // observer early.
         if candidate > ignoreUntil {
             ignoreUntil = candidate
         }
