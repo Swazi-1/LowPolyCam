@@ -255,7 +255,17 @@ final class CameraRecorder: NSObject, ObservableObject {
         refreshFreeSpace()
         recoverInterruptedRecording()
         loadLastSavedClip()
-        startMotionUpdates()
+        // Only start the 20Hz gyro/gravity feed when the level gauge is
+        // actually on screen (it's off by default). physicalOrientation,
+        // uiRotationAngle, rollAngle, and isLevel only ever feed the level
+        // gauge overlay - nothing else in the UI reads them - but they're
+        // all @Published, so every sample was forcing SwiftUI to re-diff
+        // the *entire* CameraScreen body (preview, HUD, pro tools drawer)
+        // 20 times a second even with the gauge off. That constant
+        // background churn was the main source of general jank/dropped
+        // frames, most visible as stutter whenever something else animates
+        // on screen at the same time - e.g. opening the pro tools drawer.
+        if settings.showLevelGauge { startMotionUpdates() }
 
         spaceTimer?.invalidate()
         spaceTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
@@ -347,9 +357,19 @@ final class CameraRecorder: NSObject, ObservableObject {
             // The live preview layer has its own connection and always
             // mirrors the front camera on its own (so filming feels like
             // looking in a mirror). This connection feeds the actual saved
-            // file, so it's controlled separately by the "Mirror Selfie
-            // Video" setting - off by default, matching stock iOS Camera.
-            c.isVideoMirrored = (position == .front) && settings.mirrorFrontCameraRecording
+            // file. It's kept un-mirrored here - the "Mirror Selfie Video"
+            // setting is applied later, baked into the clip's transform
+            // metadata in Self.transform(...), not on this connection.
+            // Reason: recording is locked to portrait by keeping this
+            // connection's videoOrientation fixed at .landscapeRight and
+            // rotating the whole frame 90 degrees via that transform at
+            // write time rather than physically rotating pixels. A mirror
+            // applied here happens in that same pre-rotation landscape
+            // space, so it flips along what becomes the *vertical* axis
+            // once the 90 degree rotation is applied - the saved video came
+            // out flipped top-to-bottom instead of mirrored left-to-right,
+            // which is why the setting looked broken.
+            c.isVideoMirrored = false
         }
         applyStabilization(to: c)
     }
@@ -776,15 +796,21 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
     }
 
-    /// Only 1080p60 forces the plain physical wide lens - that workaround
-    /// predates this fix and wasn't meant to apply at 4K. Previously it
-    /// checked "height >= 1080", which also matched 4K (2160 >= 1080) and
-    /// silently threw away the ultra-wide element - and with it 0.5x zoom -
-    /// on every iPhone that can actually do 4K60 on its virtual camera.
+    /// 60fps at 1080p *or* 4K forces the plain physical wide lens. The
+    /// virtual/multi-lens "back camera" (Triple/DualWide/Dual) that devices
+    /// from the iPhone 11 onward default to often has no 4K60 format at all,
+    /// even on iPhones whose stock Camera app happily records 4K60 - Camera
+    /// itself falls back to the plain wide lens for that combo, same as
+    /// here. Without this, requesting 4K60 on those phones silently fails
+    /// to find a matching format and the app reports "not supported on this
+    /// camera" even though the hardware can do it. This previously only
+    /// covered 1080p60 (checking "height >= 1080", which also matched 4K)
+    /// and that broader check was narrowed to 1080p-only under the belief
+    /// that every iPhone's virtual camera supports 4K60 - it doesn't.
     private var wantsPhysicalWideForFrameRate: Bool {
         settings.cameraMode == .video
             && settings.frameRate == .fps60
-            && settings.resolution == .p1080
+            && (settings.resolution == .p1080 || settings.resolution == .p2160)
     }
 
     /// Manual white-balance locking (custom device gains) is unreliable on
@@ -1026,7 +1052,8 @@ final class CameraRecorder: NSObject, ObservableObject {
         if settings.saveLocation == .photos { ensurePhotosAccess() }
 
         let newPlan = Encoder.plan(for: settings)
-        let transform = Self.transform(width: newPlan.width, height: newPlan.height)
+        let transform = Self.transform(width: newPlan.width, height: newPlan.height,
+                                        mirrored: isFrontCamera && settings.mirrorFrontCameraRecording)
 
         stopRequested = false
 
@@ -1399,10 +1426,22 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     // MARK: Physical Video Orientation Tagging
 
-    // Hard-locked to output native portrait rotation metadata
-    private static func transform(width: Int, height: Int) -> CGAffineTransform {
+    // Hard-locked to output native portrait rotation metadata. `width` and
+    // `height` are the raw landscape buffer's dimensions (as captured);
+    // after this transform's 90 degree rotation the saved portrait frame's
+    // width equals the original `height`.
+    //
+    // When `mirrored` is true, the flip is applied *after* the rotation
+    // (via `concatenating`, so it runs in the final portrait coordinate
+    // space) so it lands on the actual left-right axis of the saved video -
+    // see the long comment in configureVideoConnection() for why this can't
+    // just be AVCaptureConnection.isVideoMirrored on the un-rotated buffer.
+    private static func transform(width: Int, height: Int, mirrored: Bool) -> CGAffineTransform {
         let h = CGFloat(height)
-        return CGAffineTransform(translationX: h, y: 0).rotated(by: .pi / 2)
+        let rotated = CGAffineTransform(translationX: h, y: 0).rotated(by: .pi / 2)
+        guard mirrored else { return rotated }
+        let flip = CGAffineTransform(a: -1, b: 0, c: 0, d: 1, tx: h, ty: 0)
+        return rotated.concatenating(flip)
     }
 
     enum RecorderError: LocalizedError {
