@@ -191,19 +191,23 @@ final class CameraRecorder: NSObject, ObservableObject {
     // MARK: Volume Monitoring Control
 
     func pauseVolumeMonitoring() {
-        volumeObserver?.stop()
+        DispatchQueue.main.async {
+            self.volumeObserver?.stop()
+        }
     }
 
     func resumeVolumeMonitoring() {
-        if volumeObserver == nil {
-            let obs = VolumeButtonObserver()
-            obs.onVolumeTrigger = { [weak self] in
-                DispatchQueue.main.async { self?.toggleRecording() }
+        DispatchQueue.main.async {
+            if self.volumeObserver == nil {
+                let obs = VolumeButtonObserver()
+                obs.onVolumeTrigger = { [weak self] in
+                    DispatchQueue.main.async { self?.toggleRecording() }
+                }
+                obs.start()
+                self.volumeObserver = obs
+            } else {
+                self.volumeObserver?.start()
             }
-            obs.start()
-            volumeObserver = obs
-        } else {
-            volumeObserver?.start()
         }
     }
 
@@ -243,8 +247,7 @@ final class CameraRecorder: NSObject, ObservableObject {
     func stop() {
         spaceTimer?.invalidate()
         spaceTimer = nil
-        volumeObserver?.stop()
-        volumeObserver = nil
+        pauseVolumeMonitoring()
         stopMotionUpdates()
 
         if isRecording { stopRecording(notice: nil) }
@@ -322,7 +325,7 @@ final class CameraRecorder: NSObject, ObservableObject {
     private func ensureCorrectCameraDevice(for mode: CameraMode) {
         guard let targetDevice = Self.camera(at: position, mode: mode, preferPhysical: wantsPhysicalWideForFrameRate) else { return }
         if cameraInput?.device.uniqueID != targetDevice.uniqueID {
-            volumeObserver?.ignoreTemporarily()
+            DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
             session.beginConfiguration()
             if let old = cameraInput { session.removeInput(old) }
             if let input = try? AVCaptureDeviceInput(device: targetDevice), session.canAddInput(input) {
@@ -336,7 +339,7 @@ final class CameraRecorder: NSObject, ObservableObject {
     }
 
     private func applyActiveFormat() {
-        volumeObserver?.ignoreTemporarily()
+        DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
         ensureCorrectCameraDevice(for: settings.cameraMode)
         guard let device = cameraInput?.device else { return }
 
@@ -396,7 +399,7 @@ final class CameraRecorder: NSObject, ObservableObject {
                     }
                 } catch { }
                 refreshZoomLimits()
-                volumeObserver?.ignoreTemporarily()
+                DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
                 return
             }
 
@@ -424,7 +427,7 @@ final class CameraRecorder: NSObject, ObservableObject {
             DispatchQueue.main.async { self.notice = "Could not lock this camera's frame rate." }
         }
         refreshZoomLimits()
-        volumeObserver?.ignoreTemporarily()
+        DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
     }
 
     private func restoreProSettings(for device: AVCaptureDevice?) {
@@ -593,7 +596,7 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     private func addOrRemoveMic() {
         sessionQueue.async {
-            self.volumeObserver?.ignoreTemporarily() 
+            DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
             let want = self.settings.recordAudio
             if want, self.micInput == nil {
                 guard let mic = AVCaptureDevice.default(for: .audio),
@@ -615,7 +618,7 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     func flipCamera() {
         guard !isRecording else { return }
-        volumeObserver?.ignoreTemporarily()
+        DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
         setTorch(on: false)
         sessionQueue.async {
             let next: AVCaptureDevice.Position = (self.position == .back) ? .front : .back
@@ -638,6 +641,7 @@ final class CameraRecorder: NSObject, ObservableObject {
             self.configureVideoConnection()
             self.refreshCapabilitiesThenApplyFormat()
             self.refreshTorchState()
+            self.restoreProSettings(for: device)
             self.resetFocusAndExposureToAuto()
             DispatchQueue.main.async { self.isFrontCamera = (next == .front) }
         }
@@ -676,6 +680,7 @@ final class CameraRecorder: NSObject, ObservableObject {
                 let clamped = max(minBias, min(bias, maxBias))
                 device.setExposureTargetBias(clamped, completionHandler: nil)
                 device.unlockForConfiguration()
+                DispatchQueue.main.async { self.settings.exposureBias = clamped }
             } catch { }
         }
     }
@@ -706,6 +711,7 @@ final class CameraRecorder: NSObject, ObservableObject {
                     }
                 }
                 device.unlockForConfiguration()
+                DispatchQueue.main.async { self.settings.whiteBalance = preset }
             } catch { }
         }
     }
@@ -1397,15 +1403,17 @@ final class VolumeButtonObserver: NSObject {
             try audioSession.setActive(true, options: [])
         } catch { }
 
-        if volumeView == nil {
-            let v = MPVolumeView(frame: CGRect(x: -1000, y: -1000, width: 1, height: 1))
-            v.clipsToBounds = true
-            v.alpha = 0.01
-            if let window = UIApplication.shared.connectedScenes
-                .compactMap({ $0 as? UIWindowScene })
-                .first?.windows.first {
-                window.addSubview(v)
-                volumeView = v
+        DispatchQueue.main.async {
+            if self.volumeView == nil {
+                let v = MPVolumeView(frame: CGRect(x: -1000, y: -1000, width: 1, height: 1))
+                v.clipsToBounds = true
+                v.alpha = 0.01
+                if let window = UIApplication.shared.connectedScenes
+                    .compactMap({ $0 as? UIWindowScene })
+                    .first?.windows.first {
+                    window.addSubview(v)
+                    self.volumeView = v
+                }
             }
         }
 
@@ -1419,8 +1427,10 @@ final class VolumeButtonObserver: NSObject {
         guard isObserving else { return }
         audioSession.removeObserver(self, forKeyPath: "outputVolume")
         isObserving = false
-        volumeView?.removeFromSuperview()
-        volumeView = nil
+        DispatchQueue.main.async {
+            self.volumeView?.removeFromSuperview()
+            self.volumeView = nil
+        }
     }
 
     func ignoreTemporarily() {
