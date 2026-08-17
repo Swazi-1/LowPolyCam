@@ -20,13 +20,13 @@ enum Resolution: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Always 16:9 so nothing gets cropped when the capture is scaled down.
+    /// Always 16:9 (or closest mod-16 aligned) so nothing gets cropped when the capture is scaled down.
     var pixels: (w: Int, h: Int) {
         switch self {
         case .p2160: return (3840, 2160)
         case .p1080: return (1920, 1080)
         case .p720: return (1280, 720)
-        case .p480: return (854, 480)
+        case .p480: return (848, 480) // 848 is divisible by 16 for hardware VideoToolbox encoder alignment
         case .p320: return (568, 320)
         case .p144: return (256, 144)
         }
