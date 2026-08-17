@@ -305,9 +305,9 @@ final class CameraRecorder: NSObject, ObservableObject {
                     device.activeVideoMinFrameDuration = d
                     device.activeVideoMaxFrameDuration = d
                     
-                    // Disable cinematic smooth AF to ensure fast near-to-far focusing
+                    // Native iOS Camera app behavior: Smooth continuous autofocus
                     if device.isSmoothAutoFocusSupported {
-                        device.isSmoothAutoFocusEnabled = false
+                        device.isSmoothAutoFocusEnabled = true
                     }
                     
                     device.unlockForConfiguration()
@@ -336,9 +336,9 @@ final class CameraRecorder: NSObject, ObservableObject {
             device.activeVideoMinFrameDuration = d
             device.activeVideoMaxFrameDuration = d
             
-            // Disable cinematic smooth AF to ensure fast near-to-far focusing
+            // Native iOS Camera app behavior: Smooth continuous autofocus
             if device.isSmoothAutoFocusSupported {
-                device.isSmoothAutoFocusEnabled = false
+                device.isSmoothAutoFocusEnabled = true
             }
             
             device.unlockForConfiguration()
@@ -640,9 +640,10 @@ final class CameraRecorder: NSObject, ObservableObject {
     // MARK: Focus and exposure
 
     func focusAndExpose(at point: CGPoint) {
+        // Native Apple Camera behavior: Continuous Auto Focus tracking at the tapped point
         applyFocusAndExposure(at: point,
-                              focus: .autoFocus,
-                              exposure: .autoExpose,
+                              focus: .continuousAutoFocus,
+                              exposure: .continuousAutoExposure,
                               monitorSubjectArea: true)
     }
 
