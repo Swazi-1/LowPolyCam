@@ -57,10 +57,12 @@ struct CameraScreen: View {
                                 zoomGestureBase = recorder.zoomFactor
                             }
                             showZoomLabel = true
+                            recorder.suppressVolumeTriggerBriefly()
                             recorder.setZoom(factor: zoomGestureBase * value)
                         }
                         .onEnded { _ in
                             isPinching = false
+                            recorder.suppressVolumeTriggerBriefly()
                             scheduleHideZoomLabel()
                         }
                 )
@@ -517,8 +519,10 @@ struct CameraScreen: View {
             // Belt-and-suspenders: even though the button is visually
             // disabled while switching cameras, ignore any tap that sneaks
             // through (e.g. one already in flight when the state flips)
-            // rather than letting it start a recording.
-            guard !recorder.isSwitchingCamera else { return }
+            // rather than letting it start a recording. Also ignore while a
+            // pinch-to-zoom is in progress - guards against the rare case
+            // where a zoom gesture's touch-up lands on the shutter.
+            guard !recorder.isSwitchingCamera, !isPinching else { return }
             if recorder.isRecording {
                 stopHaptic.impactOccurred()
                 stopHaptic.prepare()
@@ -801,6 +805,18 @@ struct CameraScreen: View {
         return options
     }
 
+    /// Clean, fixed-precision zoom labels ("0.5x", "1x", "2x") - the old
+    /// version built these with raw string interpolation of a CGFloat
+    /// (`"\(preset)x"`), which for 0.5x could print with long floating-point
+    /// noise (e.g. "0.4999998x") that then wrapped inside the small circle.
+    /// A one-decimal String(format:) always gives a short, exact label.
+    private func zoomLabel(for preset: CGFloat) -> String {
+        if preset == preset.rounded() {
+            return "\(Int(preset))x"
+        }
+        return String(format: "%.1fx", preset)
+    }
+
     private var zoomPresetRow: some View {
         let zoomHaptic = UISelectionFeedbackGenerator()
         return HStack(spacing: 8) {
@@ -808,16 +824,19 @@ struct CameraScreen: View {
                 let isSelected = abs(recorder.zoomFactor - preset) < 0.05
                 Button(action: {
                     zoomHaptic.selectionChanged()
+                    recorder.suppressVolumeTriggerBriefly()
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                         recorder.setZoom(factor: preset)
                     }
                     showZoomLabel = true
                     scheduleHideZoomLabel()
                 }) {
-                    Text(preset == 1 ? "1x" : (preset.truncatingRemainder(dividingBy: 1) == 0 ? "\(Int(preset))x" : "\(preset)x"))
-                        .font(.system(size: isSelected ? 13 : 11, weight: .bold))
+                    Text(zoomLabel(for: preset))
+                        .font(.system(size: isSelected ? 12 : 10, weight: .bold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
                         .foregroundColor(isSelected ? .black : .white)
-                        .frame(width: isSelected ? 34 : 28, height: isSelected ? 34 : 28)
+                        .frame(width: isSelected ? 36 : 30, height: isSelected ? 36 : 30)
                         .background(isSelected ? settings.accentColor.bright : Color.black.opacity(0.35))
                         .clipShape(Circle())
                         .overlay(Circle().stroke(Color.white.opacity(0.25), lineWidth: 0.75))
