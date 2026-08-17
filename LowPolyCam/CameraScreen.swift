@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import AVKit
 
 struct CameraScreen: View {
 
@@ -7,6 +8,7 @@ struct CameraScreen: View {
     @ObservedObject var recorder: CameraRecorder
 
     @State private var showSettings = false
+    @State private var showPlayer = false
     @State private var dimmed = false
     @State private var savedBrightness: CGFloat = UIScreen.main.brightness
     @State private var blink = false
@@ -21,11 +23,6 @@ struct CameraScreen: View {
     @State private var focusPoint: CGPoint?
     @State private var focusHideToken = 0
 
-    // A freshly-created, unretained UIImpactFeedbackGenerator that fires
-    // immediately is a known way for haptics to silently do nothing - the
-    // Taptic Engine needs it "prepared" ahead of time, and it should stay
-    // alive rather than existing only for the one statement that uses it.
-    // Kept as state so it persists and stays warmed up between taps.
     @State private var startHaptic = UIImpactFeedbackGenerator(style: .medium)
     @State private var stopHaptic = UIImpactFeedbackGenerator(style: .light)
 
@@ -33,12 +30,7 @@ struct CameraScreen: View {
 
     var body: some View {
         ZStack {
-            // Full-bleed layer: the camera feed and anything positioned by
-            // raw tap coordinates. This is the one place safe area is
-            // ignored, so the feed fills the whole screen edge to edge and
-            // the focus reticle's `.position()` lands in the same coordinate
-            // space the tap gesture itself reports - splitting these two
-            // concerns is what fixed the reticle landing under the finger.
+            // Full-bleed layer
             ZStack {
                 Color.black
 
@@ -49,12 +41,6 @@ struct CameraScreen: View {
                 .gesture(
                     MagnificationGesture()
                         .onChanged { value in
-                            // The base is read fresh at the start of every
-                            // gesture rather than trusted from last time - a
-                            // camera flip or a Settings change resets the
-                            // actual zoom to 1x on its own, and a stale base
-                            // here would make the very next pinch jump from
-                            // the wrong point.
                             if !isPinching {
                                 isPinching = true
                                 zoomGestureBase = recorder.zoomFactor
@@ -80,10 +66,7 @@ struct CameraScreen: View {
             }
             .ignoresSafeArea()
 
-            // Safe-area-respecting layer: readable text and buttons, kept
-            // clear of the notch/Dynamic Island and the home indicator - the
-            // camera feed behind them is allowed to run under the notch,
-            // the text reading it is not.
+            // Safe area UI layer
             if recorder.permissionDenied {
                 permissionMessage
             } else {
@@ -102,15 +85,17 @@ struct CameraScreen: View {
             if dimmed { leaveDim() }
             recorder.stop()
         }
-        // Dim mode turns the screen brightness down to zero. Leaving the app
-        // while dimmed would otherwise strand the whole phone at zero
-        // brightness, so the original level is always put back.
         .onReceive(NotificationCenter.default.publisher(
             for: UIApplication.willResignActiveNotification)) { _ in
             if dimmed { leaveDim() }
         }
         .sheet(isPresented: $showSettings) {
             SettingsScreen(settings: settings, recorder: recorder)
+        }
+        .sheet(isPresented: $showPlayer) {
+            if let url = recorder.lastClipURL {
+                ClipPlayerView(url: url)
+            }
         }
     }
 
@@ -167,10 +152,6 @@ struct CameraScreen: View {
         )
     }
 
-    /// The "REC 00:00" line, now inline at the top of the info panel instead
-    /// of a separate bubble floating below it. Dropped frames get their own
-    /// line - keeping everything in one HStack let "dropped" wrap onto two
-    /// lines and squeeze the timer when the count went double digits.
     private var recordingStatusRow: some View {
         Group {
             if recorder.isRecording {
@@ -208,8 +189,6 @@ struct CameraScreen: View {
         }
     }
 
-    /// A plain reading, not a warning by default - it only turns amber/red as
-    /// the level that would actually make you stop and plug in.
     private var batteryIndicator: some View {
         let pct = recorder.batteryPercent
         let color: Color = recorder.batteryCharging ? Palette.mintBright
@@ -233,7 +212,6 @@ struct CameraScreen: View {
         .foregroundColor(color)
     }
 
-    /// has to answer "is the mic picking anything up," not show exact dB.
     private var audioLevelBar: some View {
         GeometryReader { geo in
             ZStack(alignment: .leading) {
@@ -253,12 +231,9 @@ struct CameraScreen: View {
             : Palette.mint
     }
 
-    /// The record button sits in a ZStack, not a shared HStack with the other
-    /// controls - a single row with Spacers between unevenly-counted buttons
-    /// pushes the middle button off true centre.
     private var bottomBar: some View {
         ZStack {
-            HStack {
+            HStack(spacing: 12) {
                 facetButton(system: "gearshape.fill") { showSettings = true }
                     .disabled(recorder.isRecording || recorder.isSaving)
                     .opacity((recorder.isRecording || recorder.isSaving) ? 0.35 : 1)
@@ -268,6 +243,22 @@ struct CameraScreen: View {
                                 tint: recorder.torchOn ? Palette.amber : Palette.mintBright) {
                         recorder.toggleTorch()
                     }
+                }
+
+                if !recorder.isRecording && !recorder.isSaving, let thumb = recorder.lastClipThumbnail {
+                    Button(action: { showPlayer = true }) {
+                        Image(uiImage: thumb)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(width: 50, height: 50)
+                            .clipShape(Facet(sides: 6, rotation: .pi / 6))
+                            .overlay(
+                                Facet(sides: 6, rotation: .pi / 6)
+                                    .stroke(Palette.mint, lineWidth: 1.5)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .transition(.scale.combined(with: .opacity))
                 }
 
                 Spacer()
@@ -291,19 +282,11 @@ struct CameraScreen: View {
         }
     }
 
-    /// Faceted lens rings around a red centre, echoing the icon.
-    ///
-    /// `contentShape` is the important part: the visible pieces are a stroked
-    /// ring and a small inner shape, and a stroke is only tappable *on the
-    /// line itself*. Without this, the actual tap target while recording was
-    /// the little stop square and a thin ring - which is why stopping
-    /// sometimes took a few tries. The whole 84pt disc is now tappable while
-    /// the artwork stays exactly the same size.
     private var recordButton: some View {
         Button {
             if recorder.isRecording {
                 stopHaptic.impactOccurred()
-                stopHaptic.prepare()   // re-arms it for the next tap
+                stopHaptic.prepare()
             } else {
                 startHaptic.impactOccurred()
                 startHaptic.prepare()
@@ -398,11 +381,8 @@ struct CameraScreen: View {
         .padding(30)
     }
 
-    // MARK: Zoom
+    // MARK: Zoom & Grid
 
-    /// Rule-of-thirds lines. `allowsHitTesting(false)` matters here - without
-    /// it this transparent layer would sit on top of the preview and eat the
-    /// pinch-to-zoom and tap-to-focus gestures underneath it.
     private var gridOverlay: some View {
         GeometryReader { geo in
             Path { path in
@@ -466,8 +446,6 @@ struct CameraScreen: View {
 
     // MARK: Dim mode
 
-    /// Screen off is not possible while recording - iOS stops the camera. This
-    /// is the next best thing: black screen, brightness at zero.
     private var dimOverlay: some View {
         Color.black
             .ignoresSafeArea()
@@ -499,5 +477,43 @@ struct CameraScreen: View {
         let perHour = plan.megabytesPerHour * 1_000_000
         guard perHour > 0 else { return 0 }
         return Double(max(0, recorder.freeBytes - CameraRecorder.reserveBytes)) / perHour
+    }
+}
+
+// MARK: - In-App Video Preview Player
+
+struct ClipPlayerView: View {
+    let url: URL
+    @Environment(\.presentationMode) private var presentation
+    @State private var player: AVPlayer?
+
+    var body: some View {
+        NavigationView {
+            ZStack {
+                Color.black.ignoresSafeArea()
+                if let player {
+                    VideoPlayer(player: player)
+                        .ignoresSafeArea(edges: .bottom)
+                } else {
+                    ProgressView().tint(Palette.mint)
+                }
+            }
+            .navigationBarTitle("Preview", displayMode: .inline)
+            .navigationBarItems(trailing: Button("Done") {
+                player?.pause()
+                presentation.wrappedValue.dismiss()
+            })
+        }
+        .navigationViewStyle(StackNavigationViewStyle())
+        .accentColor(Palette.mint)
+        .onAppear {
+            let p = AVPlayer(url: url)
+            player = p
+            p.play()
+        }
+        .onDisappear {
+            player?.pause()
+            player = nil
+        }
     }
 }
