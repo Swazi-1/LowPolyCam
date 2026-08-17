@@ -348,10 +348,6 @@ final class CameraRecorder: NSObject, ObservableObject {
         sessionQueue.async { self.applyStabilization() }
     }
 
-    func updateMirrorSetting() {
-        sessionQueue.async { self.configureVideoConnection() }
-    }
-
     private func ensureCorrectCameraDevice(for mode: CameraMode) {
         guard let targetDevice = Self.camera(at: position, mode: mode, preferPhysical: wantsPhysicalWideLens) else { return }
         switchCameraInput(to: targetDevice)
@@ -1004,9 +1000,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         if settings.saveLocation == .photos { ensurePhotosAccess() }
 
         let newPlan = Encoder.plan(for: settings)
-        let transform = Self.transform(width: newPlan.width, height: newPlan.height,
-                                       isFront: isFrontCamera,
-                                       mirrored: settings.mirrorFrontCameraRecording)
+        let transform = Self.transform(width: newPlan.width, height: newPlan.height, isFront: isFrontCamera)
 
         stopRequested = false
 
@@ -1369,23 +1363,16 @@ final class CameraRecorder: NSObject, ObservableObject {
         return clipsDirectory.appendingPathComponent("LowPolyCam_\(f.string(from: Date())).mov")
     }
 
-    // MARK: Video Matrix Orientation & Selfie Mirroring Fix
+    // MARK: Video Matrix Orientation
 
-    private static func transform(width: Int, height: Int, isFront: Bool, mirrored: Bool) -> CGAffineTransform {
+    private static func transform(width: Int, height: Int, isFront: Bool) -> CGAffineTransform {
         let w = CGFloat(width)
         let h = CGFloat(height)
 
         if !isFront {
-            // Back Camera: Standard clockwise 90-degree portrait transform
             return CGAffineTransform(translationX: h, y: 0).rotated(by: .pi / 2)
         } else {
-            if mirrored {
-                // Front Camera Mirrored: Exactly matches what you see on your preview screen
-                return CGAffineTransform(a: 0, b: 1, c: 1, d: 0, tx: 0, ty: 0)
-            } else {
-                // Front Camera Unmirrored: True-to-life orientation
-                return CGAffineTransform(a: 0, b: -1, c: -1, d: 0, tx: h, ty: w)
-            }
+            return CGAffineTransform(a: 0, b: -1, c: -1, d: 0, tx: h, ty: w)
         }
     }
 
