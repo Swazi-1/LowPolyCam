@@ -1,6 +1,7 @@
 import AVFoundation
 import UIKit
 import Photos
+import MediaPlayer
 import Combine
 
 /// Capture pipeline.
@@ -12,66 +13,44 @@ import Combine
 /// locking to it directly, rather than trusting a session preset to guess
 /// right; that is also what keeps 60 fps steady instead of stuttering.
 ///
-/// A recording is one continuous file, however long it runs, the way the
-/// built-in Camera app behaves. It is written as a *fragmented* movie: the
-/// playable index is flushed to disk every few seconds, so if the battery dies
-/// or iOS kills the app mid-recording, what was filmed up to that moment is
-/// still a valid video rather than a dead file. On the next launch
-/// `recoverInterruptedRecording` finds it and files it away properly.
+/// A recording is written as a *fragmented* movie: the playable index is flushed
+/// to disk every few seconds, so if the battery dies or iOS kills the app mid-recording,
+/// what was filmed up to that moment is still a valid video rather than a dead file.
 final class CameraRecorder: NSObject, ObservableObject {
 
     // MARK: Tunables
 
-    /// How often the movie index is flushed to disk. This is what makes an
-    /// interrupted recording survive - worst case you lose this many seconds
-    /// off the end, not the whole file.
+    /// How often the movie index is flushed to disk.
     static let fragmentSeconds: Double = 4
     /// Recording stops when free space drops below this.
     static let reserveBytes: Int64 = 300 * 1024 * 1024
-    /// Remembers the file being written, so a recording cut short by a flat
-    /// battery can be picked up again next launch.
+    /// Remembers the file being written for power-loss recovery.
     private static let inProgressKey = "inProgressClipName"
 
     // MARK: Published state
 
     @Published private(set) var isRecording = false
-    /// True from the moment "stop" is tapped until the clip is actually
-    /// written and delivered. The record button shows a spinner and ignores
-    /// taps during this window, so a slow save never looks like a dead tap.
     @Published private(set) var isSaving = false
     @Published private(set) var isSessionRunning = false
     @Published private(set) var permissionDenied = false
     @Published private(set) var elapsed: TimeInterval = 0
     @Published private(set) var clipsThisSession = 0
-    /// Frames the system threw away, plus any the encoder was not ready for.
-    /// Shown live while recording: if this stays at 0 the recording really is
-    /// hitting its full frame rate, and if it climbs we know precisely where
-    /// the loss is rather than having to infer it from the finished file.
     @Published private(set) var droppedFrames = 0
     @Published private(set) var freeBytes: Int64 = 0
     @Published private(set) var hasTorch = false
     @Published private(set) var torchOn = false
     @Published private(set) var isFrontCamera = false
     @Published private(set) var stabilizationSupported = true
-    /// What the camera currently in use can actually do. The front camera on
-    /// an iPhone 7 tops out at 30 fps, so the unavailable choices are shown
-    /// greyed out rather than silently doing nothing.
     @Published private(set) var availableFrameRates: [FrameRate] = FrameRate.allCases
     @Published private(set) var availableResolutions: [Resolution] = Resolution.allCases
-    /// -1 while the phone has not reported a level yet (simulators, or the
-    /// first instant after enabling monitoring).
     @Published private(set) var batteryPercent: Int = -1
     @Published private(set) var batteryCharging = false
-    /// Current zoom, so the UI can show "2.3x" without asking the device
-    /// directly from the main thread.
     @Published private(set) var zoomFactor: CGFloat = 1
     @Published private(set) var maxZoomFactor: CGFloat = 1
-    /// Below 1.0 only on a phone whose back camera folds an ultra-wide lens
-    /// into the same virtual device - stays 1.0 on a single-lens phone.
     @Published private(set) var minZoomFactor: CGFloat = 1
-    /// 0...1, read from the system's own per-channel level rather than
-    /// decoding PCM by hand - cheap enough to poll a few times a second.
     @Published private(set) var audioLevel: Float = 0
+    @Published private(set) var lastClipThumbnail: UIImage?
+    @Published private(set) var lastClipURL: URL?
     @Published var notice: String?
 
     let session = AVCaptureSession()
@@ -80,10 +59,6 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     private let settings: AppSettings
     private let sessionQueue = DispatchQueue(label: "lowpolycam.session")
-    /// Frames arrive on this queue and are handed straight to the encoder, so
-    /// it has to win against background work - at 60 fps there are only ~16 ms
-    /// between frames, and anything that delays this queue shows up directly
-    /// as a dropped frame.
     private let ioQueue = DispatchQueue(label: "lowpolycam.io", qos: .userInitiated)
 
     private let videoOutput = AVCaptureVideoDataOutput()
@@ -93,6 +68,7 @@ final class CameraRecorder: NSObject, ObservableObject {
     private var position: AVCaptureDevice.Position = .back
     private var isConfigured = false
     private var spaceTimer: Timer?
+    private var volumeObserver: VolumeButtonObserver?
 
     // Writer state. Only ever touched on ioQueue.
     private var writer: AVAssetWriter?
@@ -106,18 +82,8 @@ final class CameraRecorder: NSObject, ObservableObject {
     private var clipTransform = CGAffineTransform.identity
     private var freeBytesSnapshot: Int64 = .max
     private var lastElapsedPush = CMTime.invalid
-    /// Capture-queue-only running total, mirrored to `droppedFrames` for the UI.
     private var droppedFrameCount = 0
 
-    /// Set the instant stop is tapped, from whatever thread taps it.
-    ///
-    /// Frames are no longer discarded when they arrive late (that was costing
-    /// us frame rate), which means a burst of them can be sitting in the
-    /// capture queue at any moment. The block that actually closes the file is
-    /// queued behind those, so on its own "stop" could take visibly long to
-    /// happen - worst on the front camera, where a heavier fallback capture
-    /// format makes the backlog deeper. Checking this flag at the very top of
-    /// the frame handler lets that backlog drain in an instant instead.
     private let stopLock = NSLock()
     private var _stopRequested = false
     private var stopRequested: Bool {
@@ -125,10 +91,16 @@ final class CameraRecorder: NSObject, ObservableObject {
         set { stopLock.lock(); _stopRequested = newValue; stopLock.unlock() }
     }
 
+    // Zoom snapshots
+    private var rawMaxZoomSnapshot: CGFloat = 1
+    private var rawMinZoomSnapshot: CGFloat = 1
+    private var zoomBaselineSnapshot: CGFloat = 1
+
     init(settings: AppSettings) {
         self.settings = settings
         super.init()
         refreshFreeSpace()
+
         NotificationCenter.default.addObserver(
             self, selector: #selector(willResignActive),
             name: UIApplication.willResignActiveNotification, object: nil)
@@ -142,8 +114,6 @@ final class CameraRecorder: NSObject, ObservableObject {
             name: UIDevice.batteryStateDidChangeNotification, object: nil)
         refreshBattery()
 
-        // Posted by the capture device itself once the scene has moved on
-        // from whatever was tapped - the cue to stop holding that point.
         NotificationCenter.default.addObserver(
             self, selector: #selector(subjectAreaDidChange),
             name: .AVCaptureDeviceSubjectAreaDidChange, object: nil)
@@ -155,6 +125,7 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     deinit {
         spaceTimer?.invalidate()
+        volumeObserver?.stop()
         NotificationCenter.default.removeObserver(self)
         UIDevice.current.isBatteryMonitoringEnabled = false
     }
@@ -188,6 +159,15 @@ final class CameraRecorder: NSObject, ObservableObject {
             self?.refreshFreeSpace()
         }
 
+        if volumeObserver == nil {
+            let obs = VolumeButtonObserver()
+            obs.onVolumeTrigger = { [weak self] in
+                DispatchQueue.main.async { self?.toggleRecording() }
+            }
+            obs.start()
+            volumeObserver = obs
+        }
+
         requestAccess { [weak self] granted in
             guard let self = self else { return }
             guard granted else {
@@ -208,6 +188,9 @@ final class CameraRecorder: NSObject, ObservableObject {
     func stop() {
         spaceTimer?.invalidate()
         spaceTimer = nil
+        volumeObserver?.stop()
+        volumeObserver = nil
+
         if isRecording { stopRecording(notice: nil) }
         setTorch(on: false)
         sessionQueue.async {
@@ -228,10 +211,6 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     private func configureSession() {
         session.beginConfiguration()
-
-        // Resolution and frame rate are both driven by an explicitly chosen
-        // AVCaptureDevice.Format (see applyActiveFormat), not a canned preset -
-        // presets cannot express "1080p at 60 fps specifically."
         session.sessionPreset = .inputPriority
 
         if let device = Self.camera(at: position),
@@ -241,12 +220,6 @@ final class CameraRecorder: NSObject, ObservableObject {
             cameraInput = input
         }
 
-        // This is the frame-rate fix. Left at `true`, AVFoundation throws away
-        // any frame that arrives while the delegate queue is still busy with
-        // the previous one - at 1080p60 that quietly costs a fraction of a
-        // frame per second and is exactly why recordings measured ~59.35 fps
-        // instead of ~59.97. Set to false, a briefly-late frame waits its turn
-        // instead of being discarded.
         videoOutput.alwaysDiscardsLateVideoFrames = false
         videoOutput.videoSettings = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
@@ -262,20 +235,10 @@ final class CameraRecorder: NSObject, ObservableObject {
         configureVideoConnection()
         refreshCapabilitiesThenApplyFormat()
         refreshTorchState()
-        // Start in continuous auto explicitly rather than trusting whatever
-        // the device happened to default to.
         resetFocusAndExposureToAuto()
         syncMicInput()
     }
 
-    /// The buffers are kept in the sensor's own landscape orientation and the
-    /// rotation is stored as metadata on the file instead. Rotating pixels for
-    /// hours would cost real battery for no benefit.
-    ///
-    /// The front camera is mirrored here so the recording matches the
-    /// mirrored preview you were looking at while filming. Without this the
-    /// preview is a mirror but the saved clip is not, which reads as the
-    /// selfie video being "flipped" the moment you play it back.
     private func configureVideoConnection() {
         guard let c = videoOutput.connection(with: .video) else { return }
         if c.isVideoOrientationSupported { c.videoOrientation = .landscapeRight }
@@ -286,9 +249,6 @@ final class CameraRecorder: NSObject, ObservableObject {
         applyStabilization(to: c)
     }
 
-    /// OIS/video stabilisation. Not every camera or format supports it - the
-    /// front camera on older phones generally does not - so the UI is told
-    /// whether the switch actually does anything here.
     private func applyStabilization(to connection: AVCaptureConnection? = nil) {
         guard let c = connection ?? videoOutput.connection(with: .video) else { return }
         let supported = c.isVideoStabilizationSupported
@@ -298,21 +258,14 @@ final class CameraRecorder: NSObject, ObservableObject {
         DispatchQueue.main.async { self.stabilizationSupported = supported }
     }
 
-    /// Called when the toggle changes.
     func updateStabilization() {
         sessionQueue.async { self.applyStabilization() }
     }
 
-    /// Finds a real capture format for the resolution+frame rate currently
-    /// selected in Settings and locks the device to it. Called at setup, after
-    /// flipping cameras (front and back support different combinations), and
-    /// whenever the resolution or frame rate setting changes.
     private func applyActiveFormat() {
         guard let device = cameraInput?.device else { return }
         let dims = settings.resolution.captureDimensions
 
-        // 4K only holds up at 30 fps here - keep Settings in sync rather than
-        // silently hunting for an unsupported 4K+60 format.
         if let locked = settings.resolution.lockedFrameRate, settings.frameRate != locked {
             DispatchQueue.main.async {
                 self.settings.frameRate = locked
@@ -332,26 +285,16 @@ final class CameraRecorder: NSObject, ObservableObject {
             try device.lockForConfiguration()
             device.activeFormat = format
             let d = CMTime(value: 1, timescale: CMTimeScale(fps.rounded()))
-            // Clear max duration constraint before setting min duration to avoid crash
             device.activeVideoMaxFrameDuration = CMTime.invalid
             device.activeVideoMinFrameDuration = d
             device.activeVideoMaxFrameDuration = d
-            // Low-light boost quietly drops the effective frame rate to gather
-            // more light per frame - exactly what fights a steady 60 fps, so
-            // it stays off; a locked frame rate matters more here than
-            // brightness in dark scenes.
             device.unlockForConfiguration()
         } catch {
             DispatchQueue.main.async { self.notice = "Could not lock this camera's frame rate." }
         }
-        // The zoom ceiling depends on the format just chosen above.
         refreshZoomLimits()
     }
 
-    /// Searches the device's own formats for the smallest one that is still
-    /// big enough for `width`x`height` and actually supports `fps` - a session
-    /// preset cannot express an exact resolution+frame-rate combination like
-    /// "1080p at 60".
     private static func bestFormat(for device: AVCaptureDevice, width: Int, height: Int, fps: Double) -> AVCaptureDevice.Format? {
         var best: AVCaptureDevice.Format?
         var bestScore = Int.max
@@ -362,8 +305,6 @@ final class CameraRecorder: NSObject, ObservableObject {
                 $0.minFrameRate <= fps && fps <= $0.maxFrameRate
             }
             guard supportsFPS else { continue }
-            // Prefer the closest match in area, and penalise pixel-binned
-            // formats (lower real detail) when a same-size unbinned one exists.
             let areaDelta = Int(dims.width) * Int(dims.height) - width * height
             let score = areaDelta + (format.isVideoBinned ? 1_000_000 : 0)
             if score < bestScore {
@@ -374,16 +315,10 @@ final class CameraRecorder: NSObject, ObservableObject {
         return best
     }
 
-    /// Called from Settings when resolution or frame rate changes.
     func updateCaptureFormat() {
         sessionQueue.async { self.applyActiveFormat() }
     }
 
-    /// Works out what the camera now in use is actually capable of, corrects
-    /// the current selection if it is asking for something impossible (the
-    /// iPhone 7 front camera has no 60 fps mode at all), and only then applies
-    /// the format. Doing it in that order avoids a pointless "can't do that"
-    /// notice on every flip to the selfie camera.
     private func refreshCapabilitiesThenApplyFormat() {
         guard let device = cameraInput?.device else { return }
 
@@ -430,10 +365,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
     }
 
-    /// Adds or removes the microphone to match the setting. With audio off the
-    /// app never touches the audio session, so music keeps playing.
     func syncMicInput() {
-        // The mic prompt may not have been shown yet if sound was off at first launch.
         if settings.recordAudio,
            AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
             AVCaptureDevice.requestAccess(for: .audio) { [weak self] _ in
@@ -487,20 +419,11 @@ final class CameraRecorder: NSObject, ObservableObject {
             self.configureVideoConnection()
             self.refreshCapabilitiesThenApplyFormat()
             self.refreshTorchState()
-            // A point tapped on the old camera means nothing on the new one.
             self.resetFocusAndExposureToAuto()
             DispatchQueue.main.async { self.isFrontCamera = (next == .front) }
         }
     }
 
-    /// On the back camera, prefers a "virtual device" spanning multiple
-    /// physical lenses over a single fixed one - that is what lets one
-    /// continuous pinch sweep from ultra-wide through wide to telephoto, the
-    /// system switching lenses automatically at the right zoom factor, the
-    /// same way the built-in Camera app behaves. Tried widest-range first,
-    /// falling all the way back to a single lens on a phone (like the
-    /// iPhone 7) that only has one to begin with. The front camera is always
-    /// a single lens on every iPhone to date, so it skips straight to that.
     private static func camera(at position: AVCaptureDevice.Position) -> AVCaptureDevice? {
         if position == .back {
             let virtualTypes: [AVCaptureDevice.DeviceType] = [
@@ -537,7 +460,13 @@ final class CameraRecorder: NSObject, ObservableObject {
             guard let device = self.cameraInput?.device, device.hasTorch else { return }
             do {
                 try device.lockForConfiguration()
-                device.torchMode = on ? .on : .off
+                if on {
+                    let level: Float = self.settings.lowTorch ? 0.15 : 1.0
+                    let targetLevel = min(level, AVCaptureDevice.maxAvailableTorchLevel)
+                    try device.setTorchModeOn(level: targetLevel)
+                } else {
+                    device.torchMode = .off
+                }
                 device.unlockForConfiguration()
                 DispatchQueue.main.async { self.torchOn = on }
             } catch {
@@ -548,31 +477,6 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     // MARK: Zoom
 
-    /// Everything the app shows and accepts is "display zoom", the scale
-    /// people actually read: 1.0 is the normal wide lens, 0.5 is ultra-wide,
-    /// 2.0 is telephoto. AVFoundation's own `videoZoomFactor` uses a
-    /// different scale on a multi-lens virtual device - there, 1.0 means the
-    /// *widest* constituent lens, so on a phone with an ultra-wide, raw 1.0
-    /// is what a user calls 0.5x and the normal lens only starts at raw 2.0.
-    /// These snapshots hold the raw values; `zoomBaseline` converts between
-    /// the two scales.
-    ///
-    /// Session-queue-owned, because `setZoom` runs there and must not read
-    /// the `@Published` copies directly - the same class of cross-thread read
-    /// that caused the front-camera orientation bug earlier.
-    private var rawMaxZoomSnapshot: CGFloat = 1
-    private var rawMinZoomSnapshot: CGFloat = 1
-    /// The raw `videoZoomFactor` that corresponds to display 1.0x.
-    private var zoomBaselineSnapshot: CGFloat = 1
-
-    /// Finds the raw zoom factor at which the ordinary wide-angle lens takes
-    /// over - that is the point a user would call "1x".
-    ///
-    /// On a single-lens phone (iPhone 7) there are no constituents and this
-    /// is simply 1.0. On an iPhone 11 (ultra-wide + wide) the wide lens is
-    /// the second constituent, so the answer is the first switch-over value,
-    /// normally 2.0. On a wide + telephoto phone the wide lens is already
-    /// first, so it is 1.0 again.
     private static func wideAngleBaseline(for device: AVCaptureDevice) -> CGFloat {
         let constituents = device.constituentDevices
         guard !constituents.isEmpty,
@@ -591,9 +495,6 @@ final class CameraRecorder: NSObject, ObservableObject {
         guard let device = cameraInput?.device else { return }
 
         let baseline = Self.wideAngleBaseline(for: device)
-        // Cap at 8x *as displayed*, since `videoMaxZoomFactor` on some
-        // formats reports numbers in the thousands - digital crop far past
-        // anything usable.
         let rawCeiling = min(device.activeFormat.videoMaxZoomFactor, baseline * 8)
         let rawFloor = device.minAvailableVideoZoomFactor
 
@@ -601,16 +502,11 @@ final class CameraRecorder: NSObject, ObservableObject {
         rawMaxZoomSnapshot = rawCeiling
         rawMinZoomSnapshot = rawFloor
 
-        // Start on the ordinary wide lens, which means raw `baseline` - not
-        // raw 1.0. Setting raw 1.0 here is what previously made the app open
-        // on the ultra-wide lens while the label claimed 1.0x.
         do {
             try device.lockForConfiguration()
             device.videoZoomFactor = baseline
             device.unlockForConfiguration()
-        } catch {
-            // Not fatal - the zoom just stays wherever it already was.
-        }
+        } catch { }
 
         DispatchQueue.main.async {
             self.maxZoomFactor = rawCeiling / baseline
@@ -619,9 +515,6 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
     }
 
-    /// `factor` is an absolute *display* zoom (1.0 = the normal lens), not a
-    /// delta - the caller (a pinch gesture) tracks the running value itself
-    /// and hands over where it wants to land.
     func setZoom(factor: CGFloat) {
         sessionQueue.async {
             guard let device = self.cameraInput?.device else { return }
@@ -633,26 +526,12 @@ final class CameraRecorder: NSObject, ObservableObject {
                 device.videoZoomFactor = clamped
                 device.unlockForConfiguration()
                 DispatchQueue.main.async { self.zoomFactor = clamped / baseline }
-            } catch {
-                // Not fatal - the zoom just does not change this time.
-            }
+            } catch { }
         }
     }
 
     // MARK: Focus and exposure
 
-    /// `point` is in the device's own 0...1 coordinate space, already
-    /// converted from the tap location by the preview layer - the recorder
-    /// itself has no idea how the preview is laid out on screen.
-    ///
-    /// `.autoFocus`/`.autoExpose` are *one-shot* modes: they adjust once at
-    /// the given point and then hold, which is what a tap should do. On its
-    /// own that means the exposure never recovers afterwards - walk into a
-    /// darker room and the picture stays stuck at the old brightness. So
-    /// subject-area monitoring is switched on at the same time, and when the
-    /// scene changes enough the device posts a notification and control goes
-    /// back to continuous auto. That is the behaviour the built-in Camera app
-    /// has.
     func focusAndExpose(at point: CGPoint) {
         applyFocusAndExposure(at: point,
                               focus: .autoFocus,
@@ -660,8 +539,6 @@ final class CameraRecorder: NSObject, ObservableObject {
                               monitorSubjectArea: true)
     }
 
-    /// Hands focus and exposure back to the camera, metering off the centre
-    /// of the frame again.
     func resetFocusAndExposureToAuto() {
         applyFocusAndExposure(at: CGPoint(x: 0.5, y: 0.5),
                               focus: .continuousAutoFocus,
@@ -687,14 +564,10 @@ final class CameraRecorder: NSObject, ObservableObject {
                 }
                 device.isSubjectAreaChangeMonitoringEnabled = monitorSubjectArea
                 device.unlockForConfiguration()
-            } catch {
-                // Not fatal - focus/exposure just stay where they were.
-            }
+            } catch { }
         }
     }
 
-    /// Fired by the device once the scene has changed enough that the point
-    /// tapped earlier is no longer meaningful.
     @objc private func subjectAreaDidChange() {
         resetFocusAndExposureToAuto()
     }
@@ -742,13 +615,7 @@ final class CameraRecorder: NSObject, ObservableObject {
     func stopRecording(notice message: String?) {
         guard isRecording else { return }
 
-        // Takes effect immediately, ahead of anything already queued, so any
-        // backlog of frames is skipped rather than encoded first.
         stopRequested = true
-
-        // isSaving flips the record button into a spinner immediately, so the
-        // tap is never left looking like it did nothing while the clip
-        // finishes writing and (if Photos is the destination) importing.
         isRecording = false
         isSaving = true
         audioLevel = 0
@@ -756,8 +623,6 @@ final class CameraRecorder: NSObject, ObservableObject {
         notice = message
         refreshFreeSpace()
 
-        // Keep the app alive long enough to close the file - and, for Photos,
-        // to finish the import - if we are on the way to the background.
         var task: UIBackgroundTaskIdentifier = .invalid
         task = UIApplication.shared.beginBackgroundTask(withName: "finishClip") {
             if task != .invalid {
@@ -779,13 +644,11 @@ final class CameraRecorder: NSObject, ObservableObject {
     }
 
     @objc private func willResignActive() {
-        // iOS shuts the camera down in the background, there is no entitlement
-        // that changes this. Close the file cleanly instead of losing it.
         guard isRecording else { return }
         stopRecording(notice: "Recording stopped - the app left the screen.")
     }
 
-    // MARK: Segments
+    // MARK: Segments & Rolling Split
 
     private func startSegment(at pts: CMTime) {
         guard let plan = plan else { return }
@@ -802,8 +665,6 @@ final class CameraRecorder: NSObject, ObservableObject {
 
         do {
             let url = Self.newClipURL()
-            // Remembered before a single frame is written, so an interrupted
-            // recording can be found again on the next launch.
             UserDefaults.standard.set(url.lastPathComponent, forKey: Self.inProgressKey)
 
             let w = try AVAssetWriter(outputURL: url, fileType: .mov)
@@ -875,8 +736,6 @@ final class CameraRecorder: NSObject, ObservableObject {
             w.endSession(atSourceTime: end)
         }
         w.finishWriting {
-            // The file is closed either way, so it is no longer "in progress"
-            // and must not be picked up again by the recovery pass.
             UserDefaults.standard.removeObject(forKey: Self.inProgressKey)
 
             guard w.status == .completed else {
@@ -888,10 +747,8 @@ final class CameraRecorder: NSObject, ObservableObject {
                 completion?()
                 return
             }
-            // completion (which ends the background task and clears isSaving)
-            // waits for the Photos import too, not just the file write - a
-            // backgrounded app was previously free to get its background time
-            // revoked mid-import, which could silently drop the clip.
+
+            self.generateThumbnail(for: url)
             self.deliver(url, to: destination) {
                 DispatchQueue.main.async { self.refreshFreeSpace() }
                 completion?()
@@ -899,10 +756,35 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
     }
 
-    /// AVAssetWriterInput does not throw on invalid settings - it raises an
-    /// Objective-C exception, which crashes the app outright since Swift has no
-    /// way to catch it. Every candidate is checked with `canApply` before it is
-    /// ever handed to a real input, so a bad bitrate degrades quietly instead.
+    private func rotateSegment(at pts: CMTime) {
+        guard let oldWriter = writer, let oldVideoIn = videoIn else { return }
+        let oldAudioIn = audioIn
+        let oldEnd = lastVideoPTS
+        let oldStart = segmentStart
+        let oldUrl = oldWriter.outputURL
+        let destination = plan?.saveLocation ?? .files
+
+        writer = nil; videoIn = nil; audioIn = nil
+        segmentStart = .invalid
+
+        if oldWriter.status == .writing {
+            oldVideoIn.markAsFinished()
+            oldAudioIn?.markAsFinished()
+            if oldEnd.isValid, oldStart.isValid, CMTimeCompare(oldEnd, oldStart) > 0 {
+                oldWriter.endSession(atSourceTime: oldEnd)
+            }
+            oldWriter.finishWriting {
+                self.generateThumbnail(for: oldUrl)
+                self.deliver(oldUrl, to: destination) {
+                    DispatchQueue.main.async { self.refreshFreeSpace() }
+                }
+            }
+        }
+
+        // Start next file segment seamlessly on the current sample frame
+        startSegment(at: pts)
+    }
+
     private func audioSettings(for plan: EncodePlan, writer w: AVAssetWriter) -> [String: Any]? {
 
         func valid(_ s: [String: Any]) -> Bool {
@@ -913,8 +795,6 @@ final class CameraRecorder: NSObject, ObservableObject {
             let recommended = s
             s[AVEncoderBitRateKey] = plan.audioBitrate
             if valid(s) { return s }
-            // Our bitrate override made it invalid - the untouched recommended
-            // settings are guaranteed valid, so use those instead of crashing.
             if valid(recommended) { return recommended }
         }
 
@@ -925,17 +805,11 @@ final class CameraRecorder: NSObject, ObservableObject {
             AVEncoderBitRateKey: plan.audioBitrate
         ]
         if valid(fallback) { return fallback }
-
-        // Nothing validated - record video-only rather than crash.
         return nil
     }
 
-    // MARK: Recovering an interrupted recording
+    // MARK: Recovering interrupted recordings
 
-    /// If the battery died (or iOS killed the app) while filming, the movie is
-    /// still on disk and - because it was written in fragments - still
-    /// playable up to the last few seconds before the cut. This picks it up on
-    /// the next launch and files it where the rest of the recordings go.
     private func recoverInterruptedRecording() {
         let defaults = UserDefaults.standard
         guard let name = defaults.string(forKey: Self.inProgressKey) else { return }
@@ -943,8 +817,6 @@ final class CameraRecorder: NSObject, ObservableObject {
         let url = Self.clipsDirectory.appendingPathComponent(name)
         let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
 
-        // An empty or missing file is just leftover bookkeeping - clear it and
-        // say nothing.
         guard size > 0 else {
             defaults.removeObject(forKey: Self.inProgressKey)
             try? FileManager.default.removeItem(at: url)
@@ -953,6 +825,7 @@ final class CameraRecorder: NSObject, ObservableObject {
 
         defaults.removeObject(forKey: Self.inProgressKey)
         let destination = settings.saveLocation
+        generateThumbnail(for: url)
         deliver(url, to: destination) { [weak self] in
             DispatchQueue.main.async {
                 self?.notice = "Recovered the recording that was cut short."
@@ -961,7 +834,30 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
     }
 
-    // MARK: Delivering finished clips
+    // MARK: Delivering finished clips & Thumbnails
+
+    private func generateThumbnail(for url: URL) {
+        DispatchQueue.global(qos: .utility).async {
+            let asset = AVURLAsset(url: url)
+            let generator = AVAssetImageGenerator(asset: asset)
+            generator.appliesPreferredTrackTransform = true
+            generator.maximumSize = CGSize(width: 140, height: 140)
+            let time = CMTime(seconds: 0.5, preferredTimescale: 600)
+            if let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) {
+                let img = UIImage(cgImage: cgImage)
+                DispatchQueue.main.async {
+                    self.lastClipThumbnail = img
+                    self.lastClipURL = url
+                }
+            } else if let cgImage = try? generator.copyCGImage(at: .zero, actualTime: nil) {
+                let img = UIImage(cgImage: cgImage)
+                DispatchQueue.main.async {
+                    self.lastClipThumbnail = img
+                    self.lastClipURL = url
+                }
+            }
+        }
+    }
 
     private func ensurePhotosAccess() {
         guard PHPhotoLibrary.authorizationStatus(for: .addOnly) == .notDetermined else { return }
@@ -987,7 +883,6 @@ final class CameraRecorder: NSObject, ObservableObject {
         PHPhotoLibrary.shared().performChanges {
             let request = PHAssetCreationRequest.forAsset()
             let options = PHAssetResourceCreationOptions()
-            // Move rather than copy, so a clip never takes up space twice.
             options.shouldMoveFile = true
             request.addResource(with: .video, fileURL: url, options: options)
         } completionHandler: { success, error in
@@ -1033,11 +928,6 @@ final class CameraRecorder: NSObject, ObservableObject {
             .first?.interfaceOrientation ?? .portrait
     }
 
-    /// The buffers arrive in `.landscapeRight`. This is the rotation and translation a player
-    /// has to apply to show the clip the way the phone was held.
-    ///
-    /// Translating the origin back into positive coordinate space ensures video players
-    /// do not render off-screen or produce black frames.
     private static func transform(forInterface o: UIInterfaceOrientation, width: Int, height: Int) -> CGAffineTransform {
         let w = CGFloat(width)
         let h = CGFloat(height)
@@ -1070,9 +960,6 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
                        didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
 
-        // Anything still queued when stop was tapped is dropped on the floor
-        // rather than encoded, so the block that closes the file gets to run
-        // straight away instead of waiting out the backlog.
         if stopRequested { return }
 
         guard CMSampleBufferDataIsReady(sampleBuffer) else { return }
@@ -1084,9 +971,15 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
             return
         }
 
-        // One file per recording, no matter how long it runs.
-        if isVideo, writer == nil {
-            startSegment(at: pts)
+        if isVideo {
+            if writer == nil {
+                startSegment(at: pts)
+            } else if let splitLimit = plan?.splitInterval.seconds, segmentStart.isValid {
+                let duration = CMTimeGetSeconds(CMTimeSubtract(pts, segmentStart))
+                if duration >= splitLimit {
+                    rotateSegment(at: pts)
+                }
+            }
         }
 
         guard let w = writer, w.status == .writing else { return }
@@ -1097,9 +990,6 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
                 videoIn?.append(sampleBuffer)
                 lastVideoPTS = pts
             } else {
-                // The encoder could not take this frame in time. Counted so a
-                // shortfall is visible live rather than only showing up as an
-                // odd frame rate in the finished file.
                 countDroppedFrame()
             }
             pushElapsed(pts)
@@ -1110,8 +1000,6 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
         }
     }
 
-    /// Fires when AVFoundation itself discards a frame before it ever reaches
-    /// us - the other half of the same picture.
     func captureOutput(_ output: AVCaptureOutput,
                        didDrop sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
@@ -1119,24 +1007,16 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
         countDroppedFrame()
     }
 
-    /// Counted on the capture queue only. Publishing to the main thread on
-    /// every drop would mean a burst of drops causes a burst of main-thread
-    /// work - the measurement making the problem it measures worse - so the
-    /// running total is pushed alongside the elapsed time instead, four times
-    /// a second.
     private func countDroppedFrame() {
         droppedFrameCount += 1
     }
 
-    /// Publishes the running time about four times a second instead of thirty.
     private func pushElapsed(_ pts: CMTime) {
         guard recordStartPTS.isValid else { return }
         if lastElapsedPush.isValid,
            CMTimeGetSeconds(CMTimeSubtract(pts, lastElapsedPush)) < 0.25 { return }
         lastElapsedPush = pts
 
-        // A recording is no longer chopped into segments, so this is the only
-        // place left that can notice the disk filling up mid-recording.
         if freeBytesSnapshot <= Self.reserveBytes {
             DispatchQueue.main.async {
                 self.stopRecording(notice: "Stopped - storage is almost full.")
@@ -1154,15 +1034,56 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
         }
     }
 
-    /// Reads the system's own per-channel power level rather than decoding
-    /// PCM samples by hand - cheap enough to call from here, four times a
-    /// second, without adding real load to the capture path.
     private func currentAudioLevel() -> Float {
         guard let channel = audioOutput.connection(with: .audio)?.audioChannels.first else { return 0 }
-        // averagePowerLevel is roughly -160 (silence) to 0 (loudest) dBFS.
-        // -50 dB is a quiet room; anything below that reads as silence here.
         let db = channel.averagePowerLevel
         let normalized = (db + 50) / 50
         return Float(max(0, min(1, normalized)))
+    }
+}
+
+// MARK: - Volume Shutter Observer
+
+final class VolumeButtonObserver: NSObject {
+    private var audioSession: AVAudioSession { AVAudioSession.sharedInstance() }
+    private var volumeView: MPVolumeView?
+    private var isObserving = false
+    var onVolumeTrigger: (() -> Void)?
+
+    func start() {
+        guard !isObserving else { return }
+        do {
+            try audioSession.setActive(true, options: [])
+        } catch { }
+
+        // Invisible off-screen MPVolumeView to suppress the stock volume HUD
+        if volumeView == nil {
+            let v = MPVolumeView(frame: CGRect(x: -1000, y: -1000, width: 1, height: 1))
+            v.clipsToBounds = true
+            v.alpha = 0.01
+            if let window = UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene })
+                .first?.windows.first {
+                window.addSubview(v)
+                volumeView = v
+            }
+        }
+
+        audioSession.addObserver(self, forKeyPath: "outputVolume", options: [.new], context: nil)
+        isObserving = true
+    }
+
+    func stop() {
+        guard isObserving else { return }
+        audioSession.removeObserver(self, forKeyPath: "outputVolume")
+        isObserving = false
+        volumeView?.removeFromSuperview()
+        volumeView = nil
+    }
+
+    override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey : Any]?, context: UnsafeMutableRawPointer?) {
+        if keyPath == "outputVolume" {
+            onVolumeTrigger?()
+        }
     }
 }
