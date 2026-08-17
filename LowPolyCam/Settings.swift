@@ -58,10 +58,6 @@ enum Resolution: String, CaseIterable, Identifiable {
         }
     }
 
-    var lockedFrameRate: FrameRate? {
-        self == .p2160 ? .fps30 : nil
-    }
-
     var detail: String {
         let p = pixels
         return "\(p.w) x \(p.h)"
@@ -235,7 +231,7 @@ enum WhiteBalancePreset: String, CaseIterable, Identifiable {
         case .daylight: return "Sunny"
         case .indoor: return "Warm"
         case .fluorescent: return "Cool"
-        case .cloudy: return "Cloudy"
+        case .cloudy: return "Golden"
         }
     }
 
@@ -243,19 +239,19 @@ enum WhiteBalancePreset: String, CaseIterable, Identifiable {
         switch self {
         case .auto: return "sparkles"
         case .daylight: return "sun.max.fill"
-        case .indoor: return "lightbulb.fill"
-        case .fluorescent: return "building.2.fill"
-        case .cloudy: return "cloud.fill"
+        case .indoor: return "flame.fill"
+        case .fluorescent: return "snowflake"
+        case .cloudy: return "sun.dust.fill"
         }
     }
 
     var kelvin: (temp: Float, tint: Float)? {
         switch self {
         case .auto: return nil
-        case .daylight: return (5500, 0)
-        case .indoor: return (3000, 0)
-        case .fluorescent: return (4000, 10)
-        case .cloudy: return (6500, 0)
+        case .daylight: return (5200, 0)
+        case .indoor: return (7200, 5)
+        case .fluorescent: return (3800, -5)
+        case .cloudy: return (8200, 0)
         }
     }
 }
