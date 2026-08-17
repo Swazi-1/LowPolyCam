@@ -1,6 +1,5 @@
 import SwiftUI
 
-// Custom label style that perfectly mimics Apple's native Settings app icons
 struct SettingsLabelStyle: LabelStyle {
     var color: Color
     func makeBody(configuration: Configuration) -> some View {
@@ -12,7 +11,7 @@ struct SettingsLabelStyle: LabelStyle {
                 .background(color)
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                 .shadow(color: color.opacity(0.3), radius: 3, x: 0, y: 2)
-            
+
             configuration.title
                 .font(.system(size: 16, weight: .medium))
         }
@@ -71,7 +70,7 @@ struct SettingsScreen: View {
                     .background(Palette.violet)
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .shadow(color: Palette.violet.opacity(0.3), radius: 4, x: 0, y: 2)
-                
+
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Selfie camera")
                         .font(.system(size: 16, weight: .bold))
@@ -175,11 +174,10 @@ struct SettingsScreen: View {
             .onChange(of: settings.stabilization) { _ in recorder.updateStabilization() }
             .disabled(!recorder.stabilizationSupported)
 
-            Toggle(isOn: $settings.lowTorch) {
-                Label("Low-power torch", systemImage: "flashlight.on.fill")
-                    .labelStyle(SettingsLabelStyle(color: Palette.amber))
+            Toggle(isOn: $settings.showLevelGauge) {
+                Label("Horizon level meter", systemImage: "gyroscope")
+                    .labelStyle(SettingsLabelStyle(color: Palette.mint))
             }
-            .disabled(!recorder.hasTorch)
 
             Toggle(isOn: $settings.recordAudio) {
                 Label("Record sound", systemImage: "mic.fill")
@@ -199,7 +197,7 @@ struct SettingsScreen: View {
                 footer: Text(settings.useHEVC
                              ? "HEVC gets the same picture into roughly half the space. Plays on the iPhone and in VLC. Switch to H.264 if some other player refuses the files."
                              : "H.264 plays everywhere but needs about 60% more space for the same picture as HEVC.")) {
-            
+
             row(title: "HEVC", subtitle: "Smaller files, the modern default", icon: "sparkles", iconColor: Palette.mintDeep, selected: settings.useHEVC) {
                 settings.useHEVC = true
             }
@@ -215,6 +213,9 @@ struct SettingsScreen: View {
                 .font(.footnote)
                 .foregroundColor(.secondary)
             Text("Filming stops when the app leaves the screen. iOS gives no app permission to keep the camera running in the background, so the screen has to stay on. The moon button dims it to black while recording.")
+                .font(.footnote)
+                .foregroundColor(.secondary)
+            Text("Double-tap anywhere on the preview to quickly flip between cameras.")
                 .font(.footnote)
                 .foregroundColor(.secondary)
             Text("Physical Volume Up and Volume Down buttons also act as a shutter to start and stop recording.")
@@ -279,7 +280,7 @@ struct SettingsScreen: View {
                         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                         .shadow(color: enabled ? color.opacity(0.3) : .clear, radius: 3, x: 0, y: 2)
                 }
-                
+
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title)
                         .font(.system(size: 16, weight: .medium))
