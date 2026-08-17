@@ -147,6 +147,16 @@ final class CameraRecorder: NSObject, ObservableObject {
         NotificationCenter.default.addObserver(
             self, selector: #selector(subjectAreaDidChange),
             name: .AVCaptureDeviceSubjectAreaDidChange, object: nil)
+
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleAudioInterruption),
+            name: AVAudioSession.interruptionNotification, object: nil)
+    }
+
+    deinit {
+        spaceTimer?.invalidate()
+        NotificationCenter.default.removeObserver(self)
+        UIDevice.current.isBatteryMonitoringEnabled = false
     }
 
     @objc private func refreshBattery() {
@@ -155,6 +165,16 @@ final class CameraRecorder: NSObject, ObservableObject {
         DispatchQueue.main.async {
             self.batteryPercent = level < 0 ? -1 : Int((level * 100).rounded())
             self.batteryCharging = (state == .charging || state == .full)
+        }
+    }
+
+    @objc private func handleAudioInterruption(_ notification: Notification) {
+        guard let info = notification.userInfo,
+              let typeValue = info[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
+
+        if type == .began {
+            DispatchQueue.main.async { self.audioLevel = 0 }
         }
     }
 
@@ -312,6 +332,8 @@ final class CameraRecorder: NSObject, ObservableObject {
             try device.lockForConfiguration()
             device.activeFormat = format
             let d = CMTime(value: 1, timescale: CMTimeScale(fps.rounded()))
+            // Clear max duration constraint before setting min duration to avoid crash
+            device.activeVideoMaxFrameDuration = CMTime.invalid
             device.activeVideoMinFrameDuration = d
             device.activeVideoMaxFrameDuration = d
             // Low-light boost quietly drops the effective frame rate to gather
@@ -693,7 +715,9 @@ final class CameraRecorder: NSObject, ObservableObject {
         if settings.saveLocation == .photos { ensurePhotosAccess() }
 
         let newPlan = Encoder.plan(for: settings)
-        let transform = Self.transform(forInterface: currentInterfaceOrientation())
+        let transform = Self.transform(forInterface: currentInterfaceOrientation(),
+                                       width: newPlan.width,
+                                       height: newPlan.height)
 
         stopRequested = false
 
@@ -734,7 +758,13 @@ final class CameraRecorder: NSObject, ObservableObject {
 
         // Keep the app alive long enough to close the file - and, for Photos,
         // to finish the import - if we are on the way to the background.
-        var task = UIApplication.shared.beginBackgroundTask(withName: "finishClip")
+        var task: UIBackgroundTaskIdentifier = .invalid
+        task = UIApplication.shared.beginBackgroundTask(withName: "finishClip") {
+            if task != .invalid {
+                UIApplication.shared.endBackgroundTask(task)
+                task = .invalid
+            }
+        }
 
         ioQueue.async {
             self.wantsRecording = false
@@ -826,6 +856,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
         let a = audioIn
         let end = lastVideoPTS
+        let start = segmentStart
         let destination = plan?.saveLocation ?? .files
         let url = w.outputURL
 
@@ -840,7 +871,9 @@ final class CameraRecorder: NSObject, ObservableObject {
 
         v.markAsFinished()
         a?.markAsFinished()
-        if end.isValid { w.endSession(atSourceTime: end) }
+        if end.isValid, start.isValid, CMTimeCompare(end, start) > 0 {
+            w.endSession(atSourceTime: end)
+        }
         w.finishWriting {
             // The file is closed either way, so it is no longer "in progress"
             // and must not be picked up again by the recovery pass.
@@ -1000,25 +1033,26 @@ final class CameraRecorder: NSObject, ObservableObject {
             .first?.interfaceOrientation ?? .portrait
     }
 
-    /// The buffers arrive in `.landscapeRight`. This is the rotation a player
+    /// The buffers arrive in `.landscapeRight`. This is the rotation and translation a player
     /// has to apply to show the clip the way the phone was held.
     ///
-    /// Deliberately identical for both cameras: setting `videoOrientation` on
-    /// the connection already normalises each sensor's own mounting, so a
-    /// front-camera special case here would be double-correcting. An earlier
-    /// version added 180 degrees for the front camera and, because it read a
-    /// value published asynchronously to the main thread, produced clips that
-    /// were upside down only some of the time.
-    private static func transform(forInterface o: UIInterfaceOrientation) -> CGAffineTransform {
-        let angle: CGFloat
+    /// Translating the origin back into positive coordinate space ensures video players
+    /// do not render off-screen or produce black frames.
+    private static func transform(forInterface o: UIInterfaceOrientation, width: Int, height: Int) -> CGAffineTransform {
+        let w = CGFloat(width)
+        let h = CGFloat(height)
         switch o {
-        case .portrait:           angle = .pi / 2
-        case .landscapeRight:     angle = 0
-        case .landscapeLeft:      angle = .pi
-        case .portraitUpsideDown: angle = -.pi / 2
-        default:                  angle = .pi / 2
+        case .portrait:
+            return CGAffineTransform(translationX: h, y: 0).rotated(by: .pi / 2)
+        case .landscapeLeft:
+            return CGAffineTransform(translationX: w, y: h).rotated(by: .pi)
+        case .portraitUpsideDown:
+            return CGAffineTransform(translationX: 0, y: w).rotated(by: -.pi / 2)
+        case .landscapeRight:
+            return .identity
+        default:
+            return CGAffineTransform(translationX: h, y: 0).rotated(by: .pi / 2)
         }
-        return CGAffineTransform(rotationAngle: angle)
     }
 
     enum RecorderError: LocalizedError {
