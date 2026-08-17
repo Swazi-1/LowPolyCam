@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import Combine
+import SwiftUI
 
 // MARK: - Physical Device Orientation
 
@@ -58,9 +59,12 @@ enum Resolution: String, CaseIterable, Identifiable {
         }
     }
 
-    var lockedFrameRate: FrameRate? {
-        self == .p2160 ? .fps30 : nil
-    }
+    /// Historically 4K was force-locked to 30fps here, which broke 4K60 on every
+    /// iPhone that actually supports it (iPhone 11 and newer). Frame-rate
+    /// availability is now decided per-device by CameraRecorder (which asks
+    /// AVFoundation what the current lens can actually do), so this no longer
+    /// hardcodes a ceiling.
+    var lockedFrameRate: FrameRate? { nil }
 
     var detail: String {
         let p = pixels
@@ -322,6 +326,17 @@ final class AppSettings: ObservableObject {
     @Published var showGrid: Bool {
         didSet { store.set(showGrid, forKey: "showGrid") }
     }
+    /// Off by default, matching stock iOS Camera: the front-camera preview
+    /// always mirrors while you're filming (so it feels like a mirror), but
+    /// the saved clip is true-to-life by default so any text/writing in
+    /// frame reads correctly. Turning this on saves selfie clips mirrored
+    /// too, matching what you see in the preview.
+    @Published var mirrorFrontCameraRecording: Bool {
+        didSet { store.set(mirrorFrontCameraRecording, forKey: "mirrorFrontCameraRecording") }
+    }
+    @Published var accentColor: AccentColor {
+        didSet { store.set(accentColor.rawValue, forKey: "accentColor") }
+    }
 
     private init() {
         cameraMode       = CameraMode(rawValue: store.string(forKey: "cameraMode") ?? "") ?? .video
@@ -342,6 +357,52 @@ final class AppSettings: ObservableObject {
         stabilization    = store.object(forKey: "stabilization") as? Bool ?? true
         useHEVC          = store.object(forKey: "useHEVC") as? Bool ?? true
         showGrid         = store.object(forKey: "showGrid") as? Bool ?? false
+        mirrorFrontCameraRecording = store.object(forKey: "mirrorFrontCameraRecording") as? Bool ?? false
+        accentColor      = AccentColor(rawValue: store.string(forKey: "accentColor") ?? "") ?? .mint
+    }
+}
+
+// MARK: - Accent Colour
+
+enum AccentColor: String, CaseIterable, Identifiable {
+    case mint, violet, amber, red
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .mint: return "Mint"
+        case .violet: return "Violet"
+        case .amber: return "Amber"
+        case .red: return "Red"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .mint: return Palette.mint
+        case .violet: return Palette.violet
+        case .amber: return Palette.amber
+        case .red: return Palette.record
+        }
+    }
+
+    var bright: Color {
+        switch self {
+        case .mint: return Palette.mintBright
+        case .violet: return Palette.violet.opacity(0.85)
+        case .amber: return Palette.amber
+        case .red: return Color(hex: 0xFF7A70)
+        }
+    }
+
+    var deep: Color {
+        switch self {
+        case .mint: return Palette.mintDeep
+        case .violet: return Color(hex: 0x7A2F9E)
+        case .amber: return Color(hex: 0xC79A00)
+        case .red: return Palette.record
+        }
     }
 }
 
