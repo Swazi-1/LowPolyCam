@@ -93,6 +93,15 @@ final class CameraRecorder: NSObject, ObservableObject {
     private var rawMinZoomSnapshot: CGFloat = 1
     private var zoomBaselineSnapshot: CGFloat = 1
 
+    // Continuity tracking for the level-gauge roll angle. atan2 wraps at
+    // ±180°, so the raw angle can jump ~360° in a single sample right at that
+    // boundary (e.g. 179.6° -> -179.8° from a hair of gravity-sensor noise).
+    // Animating straight off that raw value spins the gauge the long way
+    // around - the "bugs out at 180°, fine at 181°" glitch. We unwrap it into
+    // a continuous value instead.
+    private var lastRawRollAngle: Double?
+    private var unwrappedRollAngle: Double = 0
+
     init(settings: AppSettings) {
         self.settings = settings
         super.init()
@@ -151,6 +160,7 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     func startMotionUpdates() {
         guard motionManager.isDeviceMotionAvailable else { return }
+        lastRawRollAngle = nil
         motionManager.deviceMotionUpdateInterval = 1.0 / 20.0
         motionManager.startDeviceMotionUpdates(using: .xArbitraryZVertical, to: .main) { [weak self] motion, _ in
             guard let self = self, let motion = motion else { return }
@@ -176,7 +186,19 @@ final class CameraRecorder: NSObject, ObservableObject {
                 self.uiRotationAngle = targetUIAngle
             }
 
-            self.rollAngle = angle
+            // Unwrap so the displayed/animated value never has to jump the
+            // long way around when the raw atan2 angle crosses ±180°.
+            if let last = self.lastRawRollAngle {
+                var delta = angle - last
+                if delta > 180 { delta -= 360 }
+                if delta < -180 { delta += 360 }
+                self.unwrappedRollAngle += delta
+            } else {
+                self.unwrappedRollAngle = angle
+            }
+            self.lastRawRollAngle = angle
+
+            self.rollAngle = self.unwrappedRollAngle
             let remainder = abs(angle.truncatingRemainder(dividingBy: 90))
             let isLevelNow = remainder < 1.2 || remainder > 88.8
             if self.isLevel != isLevelNow {
@@ -187,6 +209,7 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     func stopMotionUpdates() {
         motionManager.stopDeviceMotionUpdates()
+        lastRawRollAngle = nil
     }
 
     // MARK: Volume Monitoring Control
@@ -683,18 +706,35 @@ final class CameraRecorder: NSObject, ObservableObject {
     }
 
     private static func camera(at position: AVCaptureDevice.Position, mode: CameraMode, preferPhysical: Bool = false) -> AVCaptureDevice? {
-        if position == .back && mode != .slowMo && !preferPhysical {
+        if position == .back && !preferPhysical {
             let virtualTypes: [AVCaptureDevice.DeviceType] = [
                 .builtInTripleCamera, .builtInDualWideCamera, .builtInDualCamera
             ]
             for type in virtualTypes {
-                if let device = AVCaptureDevice.default(type, for: .video, position: .back) {
-                    return device
-                }
+                guard let device = AVCaptureDevice.default(type, for: .video, position: .back) else { continue }
+                // Slow-mo used to hard-skip every virtual/multi-lens camera
+                // and always fall back to the plain 1x wide-angle lens, which
+                // has no ultra-wide element and therefore can never zoom out
+                // to 0.5x - even on iPhones whose virtual camera *does* have
+                // a 120/240fps-capable format. Only skip the virtual device
+                // here if it genuinely can't do slow-mo's frame rates; that
+                // way 0.5x shows up automatically on whichever iPhones
+                // actually support it, and older/other models silently keep
+                // the previous plain-lens behavior.
+                if mode == .slowMo && !supportsSlowMotion(device) { continue }
+                return device
             }
         }
         return AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position)
             ?? AVCaptureDevice.default(for: .video)
+    }
+
+    /// Whether this device has at least one format capable of ~120fps or
+    /// faster, i.e. usable for slow motion.
+    private static func supportsSlowMotion(_ device: AVCaptureDevice) -> Bool {
+        device.formats.contains { format in
+            format.videoSupportedFrameRateRanges.contains { $0.maxFrameRate >= 119.0 }
+        }
     }
 
     private var wantsPhysicalWideForFrameRate: Bool {
