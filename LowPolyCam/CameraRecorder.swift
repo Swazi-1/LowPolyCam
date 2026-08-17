@@ -154,18 +154,10 @@ final class CameraRecorder: NSObject, ObservableObject {
     func start() {
         refreshFreeSpace()
         recoverInterruptedRecording()
+        loadLastSavedClip()
         spaceTimer?.invalidate()
         spaceTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             self?.refreshFreeSpace()
-        }
-
-        if volumeObserver == nil {
-            let obs = VolumeButtonObserver()
-            obs.onVolumeTrigger = { [weak self] in
-                DispatchQueue.main.async { self?.toggleRecording() }
-            }
-            obs.start()
-            volumeObserver = obs
         }
 
         requestAccess { [weak self] granted in
@@ -180,7 +172,18 @@ final class CameraRecorder: NSObject, ObservableObject {
                     self.isConfigured = true
                 }
                 if !self.session.isRunning { self.session.startRunning() }
-                DispatchQueue.main.async { self.isSessionRunning = self.session.isRunning }
+                DispatchQueue.main.async {
+                    self.isSessionRunning = self.session.isRunning
+                    // Only start volume shutter observer after session is actively running
+                    if self.volumeObserver == nil {
+                        let obs = VolumeButtonObserver()
+                        obs.onVolumeTrigger = { [weak self] in
+                            DispatchQueue.main.async { self?.toggleRecording() }
+                        }
+                        obs.start()
+                        self.volumeObserver = obs
+                    }
+                }
             }
         }
     }
@@ -883,18 +886,59 @@ final class CameraRecorder: NSObject, ObservableObject {
         PHPhotoLibrary.shared().performChanges {
             let request = PHAssetCreationRequest.forAsset()
             let options = PHAssetResourceCreationOptions()
-            options.shouldMoveFile = true
+            options.shouldMoveFile = false
             request.addResource(with: .video, fileURL: url, options: options)
-        } completionHandler: { success, error in
+        } completionHandler: { [weak self] success, error in
             DispatchQueue.main.async {
+                guard let self = self else { return }
                 if success {
                     self.notice = "Clip saved to Photos."
+                    self.cleanupOlderClipsExcept(url)
                 } else {
                     let reason = error?.localizedDescription ?? "unknown error"
                     self.notice = "Photos refused the clip (\(reason)) - it is still in Files."
                 }
             }
             done()
+        }
+    }
+
+    private func cleanupOlderClipsExcept(_ currentURL: URL?) {
+        guard settings.saveLocation == .photos else { return }
+        DispatchQueue.global(qos: .background).async {
+            let fm = FileManager.default
+            guard let files = try? fm.contentsOfDirectory(at: Self.clipsDirectory, includingPropertiesForKeys: [.creationDateKey], options: [.skipsHiddenFiles]) else { return }
+            for file in files {
+                let ext = file.pathExtension.lowercased()
+                guard ext == "mov" || ext == "mp4" else { continue }
+                if let current = currentURL, file.lastPathComponent == current.lastPathComponent {
+                    continue
+                }
+                try? fm.removeItem(at: file)
+            }
+        }
+    }
+
+    private func loadLastSavedClip() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self = self else { return }
+            let fm = FileManager.default
+            guard let files = try? fm.contentsOfDirectory(at: Self.clipsDirectory, includingPropertiesForKeys: [.creationDateKey, .fileSizeKey], options: [.skipsHiddenFiles]) else { return }
+            let validClips = files.filter { url in
+                let ext = url.pathExtension.lowercased()
+                return ext == "mov" || ext == "mp4"
+            }.sorted { (u1, u2) -> Bool in
+                let d1 = (try? u1.resourceValues(forKeys: [.creationDateKey]))?.creationDate ?? .distantPast
+                let d2 = (try? u2.resourceValues(forKeys: [.creationDateKey]))?.creationDate ?? .distantPast
+                return d1 > d2
+            }
+
+            if let latest = validClips.first {
+                let size = (try? latest.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+                if size > 0 {
+                    self.generateThumbnail(for: latest)
+                }
+            }
         }
     }
 
@@ -1048,7 +1092,8 @@ final class VolumeButtonObserver: NSObject {
     private var audioSession: AVAudioSession { AVAudioSession.sharedInstance() }
     private var volumeView: MPVolumeView?
     private var isObserving = false
-    private var ignoreUntil: Date?
+    private var lastVolume: Float?
+    private var ignoreUntil: Date = .distantFuture
     var onVolumeTrigger: (() -> Void)?
 
     func start() {
@@ -1070,9 +1115,10 @@ final class VolumeButtonObserver: NSObject {
             }
         }
 
-        // Ignore initial KVO notifications caused by adding the observer and activating the session
-        ignoreUntil = Date().addingTimeInterval(1.0)
-        audioSession.addObserver(self, forKeyPath: "outputVolume", options: [.new], context: nil)
+        // Store baseline volume and ignore startup KVO events for 2.5 seconds
+        lastVolume = audioSession.outputVolume
+        ignoreUntil = Date().addingTimeInterval(2.5)
+        audioSession.addObserver(self, forKeyPath: "outputVolume", options: [.new, .old], context: nil)
         isObserving = true
     }
 
@@ -1086,8 +1132,20 @@ final class VolumeButtonObserver: NSObject {
 
     override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey : Any]?, context: UnsafeMutableRawPointer?) {
         if keyPath == "outputVolume" {
-            if let ignore = ignoreUntil, Date() < ignore { return }
-            onVolumeTrigger?()
+            let currentVol = audioSession.outputVolume
+            if Date() < ignoreUntil {
+                lastVolume = currentVol
+                return
+            }
+            if let prev = lastVolume {
+                // Ensure a physical button press delta (standard iOS volume step is ~0.0625)
+                if abs(currentVol - prev) > 0.01 {
+                    lastVolume = currentVol
+                    onVolumeTrigger?()
+                }
+            } else {
+                lastVolume = currentVol
+            }
         }
     }
 }

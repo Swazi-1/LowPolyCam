@@ -488,14 +488,28 @@ struct ClipPlayerView: View {
     let url: URL
     @Environment(\.presentationMode) private var presentation
     @State private var player: AVPlayer?
+    @State private var loadFailed = false
 
     var body: some View {
         NavigationView {
             ZStack {
                 Color.black.ignoresSafeArea()
-                if let player {
+                if let player, !loadFailed {
                     VideoPlayer(player: player)
                         .ignoresSafeArea(edges: .bottom)
+                } else if loadFailed {
+                    VStack(spacing: 12) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.system(size: 36))
+                            .foregroundColor(Palette.amber)
+                        Text("Unable to play video preview")
+                            .font(.headline)
+                            .foregroundColor(.white)
+                        Text("The clip file could not be found or opened.")
+                            .font(.subheadline)
+                            .foregroundColor(.white.opacity(0.6))
+                    }
+                    .padding()
                 } else {
                     ProgressView().tint(Palette.mint)
                 }
@@ -509,6 +523,11 @@ struct ClipPlayerView: View {
         .navigationViewStyle(StackNavigationViewStyle())
         .accentColor(Palette.mint)
         .onAppear {
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                loadFailed = true
+                return
+            }
+            try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: [])
             let p = AVPlayer(url: url)
             player = p
             p.play()
