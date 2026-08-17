@@ -233,6 +233,7 @@ struct CameraScreen: View {
 
     private var bottomBar: some View {
         ZStack {
+            // LEFT CONTROLS
             HStack(spacing: 12) {
                 facetButton(system: "gearshape.fill") { showSettings = true }
                     .disabled(recorder.isRecording || recorder.isSaving)
@@ -244,6 +245,12 @@ struct CameraScreen: View {
                         recorder.toggleTorch()
                     }
                 }
+                Spacer()
+            }
+
+            // RIGHT CONTROLS
+            HStack(spacing: 12) {
+                Spacer()
 
                 if !recorder.isRecording && !recorder.isSaving, let thumb = recorder.lastClipThumbnail {
                     Button(action: { showPlayer = true }) {
@@ -261,12 +268,6 @@ struct CameraScreen: View {
                     .transition(.scale.combined(with: .opacity))
                 }
 
-                Spacer()
-            }
-
-            HStack {
-                Spacer()
-
                 if recorder.isRecording {
                     facetButton(system: "moon.fill") { enterDim() }
                 } else {
@@ -277,7 +278,8 @@ struct CameraScreen: View {
                     .opacity(recorder.isSaving ? 0.35 : 1)
                 }
             }
-
+            
+            // CENTER RECORD BUTTON
             recordButton
         }
     }
