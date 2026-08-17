@@ -10,25 +10,22 @@ extension Color {
     }
 }
 
-/// Colours lifted from the app icon: the slate camera body, its mint lens,
-/// and the purple and amber buttons on top.
+/// Upgraded vibrant, modern palette. Deep OLED blacks with neon-tinted accents.
 enum Palette {
-    static let slateDeep   = Color(hex: 0x2B333F)
-    static let slate       = Color(hex: 0x4A5567)
-    static let slateLight  = Color(hex: 0x6E7A8E)
+    static let slateDeep   = Color(hex: 0x15161A) // Deep OLED-friendly dark
+    static let slate       = Color(hex: 0x24262D)
+    static let slateLight  = Color(hex: 0x4A4E5C)
 
-    static let mint        = Color(hex: 0x8FD3C4)
-    static let mintBright  = Color(hex: 0xB2E5D8)
-    static let mintDeep    = Color(hex: 0x5FA396)
+    static let mint        = Color(hex: 0x00F0B5) // Vibrant neon mint
+    static let mintBright  = Color(hex: 0x80FFDF)
+    static let mintDeep    = Color(hex: 0x00A87E)
 
-    static let violet      = Color(hex: 0xA78BC9)
-    static let amber       = Color(hex: 0xE6D06B)
+    static let violet      = Color(hex: 0xAF52DE) // Apple's native system purple
+    static let amber       = Color(hex: 0xFFD60A) // Apple's native system yellow
 
-    /// Kept a true red - it is the one colour in the interface that has to
-    /// read as "recording" before it reads as part of a palette.
-    static let record      = Color(hex: 0xE64A38)
+    static let record      = Color(hex: 0xFF453A) // Brighter, classic Apple record red
 
-    static let panel       = Color(hex: 0x1B212B)
+    static let panel       = Color(hex: 0x111112)
 }
 
 /// A regular polygon - the faceted motif the icon is built from. Used instead
