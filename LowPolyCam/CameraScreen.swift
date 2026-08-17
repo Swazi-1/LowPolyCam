@@ -106,6 +106,10 @@ struct CameraScreen: View {
             topBar
             Spacer()
             if let notice = recorder.notice { noticeBar(notice) }
+            if !recorder.isRecording && !recorder.isSaving {
+                modeSelector
+                    .padding(.bottom, 14)
+            }
             bottomBar
         }
         .padding(.horizontal, 20)
@@ -119,9 +123,15 @@ struct CameraScreen: View {
                     if recorder.isRecording || recorder.isSaving {
                         recordingStatusRow
                     }
-                    Text("\(settings.resolution.label) · \(settings.quality.label)")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundColor(Palette.mintBright)
+                    if settings.cameraMode == .slowMo {
+                        Text("SLO-MO · \(settings.slowMoFrameRate.label) (\(settings.slowMoFrameRate.multiplierLabel))")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundColor(Palette.amber)
+                    } else {
+                        Text("\(settings.resolution.label) · \(settings.quality.label)")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundColor(Palette.mintBright)
+                    }
                     Text(plan.sizeLabel)
                         .font(.system(size: 12))
                         .foregroundColor(.white.opacity(0.55))
@@ -321,6 +331,66 @@ struct CameraScreen: View {
         .buttonStyle(.plain)
         .disabled(recorder.isSaving)
         .animation(.easeInOut(duration: 0.18), value: recorder.isRecording)
+    }
+
+    // MARK: Mode Selector
+
+    @State private var modeSelectorOffset: CGFloat = 0
+
+    private var modeSelector: some View {
+        let modes = CameraMode.allCases
+        let modeHaptic = UISelectionFeedbackGenerator()
+
+        return HStack(spacing: 0) {
+            ForEach(modes) { mode in
+                let isActive = settings.cameraMode == mode
+                Button {
+                    guard settings.cameraMode != mode else { return }
+                    modeHaptic.selectionChanged()
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                        settings.cameraMode = mode
+                    }
+                    recorder.updateCaptureFormat()
+                } label: {
+                    Text(mode.label)
+                        .font(.system(size: 14, weight: isActive ? .bold : .medium))
+                        .foregroundColor(isActive
+                            ? (mode == .slowMo ? Palette.amber : Palette.mintBright)
+                            : .white.opacity(0.45))
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .background(
+            Capsule()
+                .fill(Color.white.opacity(0.08))
+        )
+        .overlay(
+            Capsule()
+                .stroke(Color.white.opacity(0.12), lineWidth: 1)
+        )
+        .gesture(
+            DragGesture(minimumDistance: 20)
+                .onEnded { value in
+                    let horizontal = value.translation.width
+                    if horizontal < -20, settings.cameraMode == .video {
+                        modeHaptic.selectionChanged()
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                            settings.cameraMode = .slowMo
+                        }
+                        recorder.updateCaptureFormat()
+                    } else if horizontal > 20, settings.cameraMode == .slowMo {
+                        modeHaptic.selectionChanged()
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                            settings.cameraMode = .video
+                        }
+                        recorder.updateCaptureFormat()
+                    }
+                }
+        )
+        .animation(.spring(response: 0.3, dampingFraction: 0.75), value: settings.cameraMode)
     }
 
     private func facetButton(system: String,

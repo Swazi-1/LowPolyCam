@@ -12,9 +12,14 @@ struct SettingsScreen: View {
         NavigationView {
             List {
                 if recorder.isFrontCamera { frontCameraBanner }
-                resolutionSection
+                if settings.cameraMode == .slowMo {
+                    slowMoFrameRateSection
+                    slowMoResolutionSection
+                } else {
+                    resolutionSection
+                    frameRateSection
+                }
                 qualitySection
-                frameRateSection
                 saveSection
                 splitSection
                 estimateSection
@@ -182,6 +187,42 @@ struct SettingsScreen: View {
             Text("Physical Volume Up and Volume Down buttons also act as a shutter to start and stop recording.")
                 .font(.footnote)
                 .foregroundColor(.secondary)
+        }
+    }
+
+    // MARK: Slow-Mo sections
+
+    private var slowMoFrameRateSection: some View {
+        Section(header: Text("Slow-Mo Speed"),
+                footer: Text(recorder.isSlowMoSupportedOnCurrentLens
+                             ? "Higher fps = smoother, slower playback."
+                             : "Slow motion is not available on this camera lens.")) {
+            ForEach(SlowMoFrameRate.allCases) { rate in
+                let available = recorder.availableSlowMoRates.contains(rate)
+                row(title: "\(rate.label)  (\(rate.multiplierLabel) slow)",
+                    subtitle: available ? rate.detail : "Not available on this camera",
+                    selected: settings.slowMoFrameRate == rate,
+                    enabled: available) {
+                    settings.slowMoFrameRate = rate
+                    recorder.updateCaptureFormat()
+                }
+            }
+        }
+    }
+
+    private var slowMoResolutionSection: some View {
+        Section(header: Text("Slow-Mo Resolution"),
+                footer: Text("Some frame rates limit the maximum resolution on this iPhone.")) {
+            ForEach(Resolution.allCases) { r in
+                let available = recorder.availableSlowMoResolutions.contains(r)
+                row(title: r.label,
+                    subtitle: available ? r.detail : "Not available at \(settings.slowMoFrameRate.label)",
+                    selected: settings.slowMoResolution == r,
+                    enabled: available) {
+                    settings.slowMoResolution = r
+                    recorder.updateCaptureFormat()
+                }
+            }
         }
     }
 

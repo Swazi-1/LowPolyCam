@@ -43,6 +43,9 @@ final class CameraRecorder: NSObject, ObservableObject {
     @Published private(set) var stabilizationSupported = true
     @Published private(set) var availableFrameRates: [FrameRate] = FrameRate.allCases
     @Published private(set) var availableResolutions: [Resolution] = Resolution.allCases
+    @Published private(set) var availableSlowMoRates: [SlowMoFrameRate] = SlowMoFrameRate.allCases
+    @Published private(set) var availableSlowMoResolutions: [Resolution] = [.p1080, .p720]
+    @Published private(set) var isSlowMoSupportedOnCurrentLens = true
     @Published private(set) var batteryPercent: Int = -1
     @Published private(set) var batteryCharging = false
     @Published private(set) var zoomFactor: CGFloat = 1
@@ -267,17 +270,57 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     private func applyActiveFormat() {
         guard let device = cameraInput?.device else { return }
-        let dims = settings.resolution.captureDimensions
+        let isSlow = settings.cameraMode == .slowMo
+        let dims: (w: Int, h: Int)
+        let fps: Double
 
-        if let locked = settings.resolution.lockedFrameRate, settings.frameRate != locked {
-            DispatchQueue.main.async {
-                self.settings.frameRate = locked
-                self.notice = "\(self.settings.resolution.label) films at \(locked.label) only - switched to \(locked.label)."
+        if isSlow {
+            guard isSlowMoSupportedOnCurrentLens, !availableSlowMoRates.isEmpty else {
+                DispatchQueue.main.async {
+                    self.notice = "Slow motion is not supported on this camera lens."
+                }
+                return
             }
+            if !availableSlowMoRates.contains(settings.slowMoFrameRate) {
+                let fallback = availableSlowMoRates.first ?? .fps120
+                DispatchQueue.main.async {
+                    self.settings.slowMoFrameRate = fallback
+                }
+            }
+            fps = Double(settings.slowMoFrameRate.value)
+            dims = settings.slowMoResolution.captureDimensions
+        } else {
+            dims = settings.resolution.captureDimensions
+            if let locked = settings.resolution.lockedFrameRate, settings.frameRate != locked {
+                DispatchQueue.main.async {
+                    self.settings.frameRate = locked
+                    self.notice = "\(self.settings.resolution.label) films at \(locked.label) only - switched to \(locked.label)."
+                }
+            }
+            fps = Double((settings.resolution.lockedFrameRate ?? settings.frameRate).value)
         }
-        let fps = Double((settings.resolution.lockedFrameRate ?? settings.frameRate).value)
 
         guard let format = Self.bestFormat(for: device, width: dims.w, height: dims.h, fps: fps) else {
+            if isSlow, let fallbackFormat = Self.bestSlowMoFormat(for: device, fps: fps) {
+                do {
+                    try device.lockForConfiguration()
+                    device.activeFormat = fallbackFormat
+                    let d = CMTime(value: 1, timescale: CMTimeScale(fps.rounded()))
+                    device.activeVideoMaxFrameDuration = CMTime.invalid
+                    device.activeVideoMinFrameDuration = d
+                    device.activeVideoMaxFrameDuration = d
+                    device.unlockForConfiguration()
+                    DispatchQueue.main.async {
+                        let dDims = CMVideoFormatDescriptionGetDimensions(fallbackFormat.formatDescription)
+                        let closestRes: Resolution = dDims.height >= 1080 ? .p1080 : .p720
+                        self.settings.slowMoResolution = closestRes
+                        self.notice = "\(self.settings.slowMoFrameRate.label) runs at \(closestRes.label) on this iPhone."
+                    }
+                } catch { }
+                refreshZoomLimits()
+                return
+            }
+
             DispatchQueue.main.async {
                 self.notice = "This camera can't do \(dims.w)x\(dims.h) at \(Int(fps)) fps here - using its closest mode instead."
             }
@@ -296,6 +339,24 @@ final class CameraRecorder: NSObject, ObservableObject {
             DispatchQueue.main.async { self.notice = "Could not lock this camera's frame rate." }
         }
         refreshZoomLimits()
+    }
+
+    private static func bestSlowMoFormat(for device: AVCaptureDevice, fps: Double) -> AVCaptureDevice.Format? {
+        var best: AVCaptureDevice.Format?
+        var maxArea = 0
+        for format in device.formats {
+            let supportsFPS = format.videoSupportedFrameRateRanges.contains {
+                $0.minFrameRate <= fps && fps <= $0.maxFrameRate
+            }
+            guard supportsFPS else { continue }
+            let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+            let area = Int(dims.width) * Int(dims.height)
+            if area > maxArea {
+                maxArea = area
+                best = format
+            }
+        }
+        return best
     }
 
     private static func bestFormat(for device: AVCaptureDevice, width: Int, height: Int, fps: Double) -> AVCaptureDevice.Format? {
@@ -327,8 +388,12 @@ final class CameraRecorder: NSObject, ObservableObject {
 
         var rates = Set<FrameRate>()
         var widestPixels = 0
+        var slowRates = Set<SlowMoFrameRate>()
+        var slowResolutions = Set<Resolution>()
+
         for format in device.formats {
             let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+            let h = Int(dims.height)
             widestPixels = max(widestPixels, Int(dims.width) * Int(dims.height))
             for rate in FrameRate.allCases {
                 let fps = Double(rate.value)
@@ -336,6 +401,24 @@ final class CameraRecorder: NSObject, ObservableObject {
                     $0.minFrameRate <= fps && fps <= $0.maxFrameRate
                 }) {
                     rates.insert(rate)
+                }
+            }
+            for range in format.videoSupportedFrameRateRanges {
+                if range.maxFrameRate >= 120 {
+                    slowRates.insert(.fps120)
+                    if h >= 1080 { slowResolutions.insert(.p1080) }
+                    if h >= 720 { slowResolutions.insert(.p720) }
+                    if h >= 480 { slowResolutions.insert(.p480) }
+                    slowResolutions.insert(.p320)
+                    slowResolutions.insert(.p144)
+                }
+                if range.maxFrameRate >= 240 {
+                    slowRates.insert(.fps240)
+                    if h >= 1080 { slowResolutions.insert(.p1080) }
+                    if h >= 720 { slowResolutions.insert(.p720) }
+                    if h >= 480 { slowResolutions.insert(.p480) }
+                    slowResolutions.insert(.p320)
+                    slowResolutions.insert(.p144)
                 }
             }
         }
@@ -346,11 +429,16 @@ final class CameraRecorder: NSObject, ObservableObject {
         let supportedResolutions = Resolution.allCases.filter {
             ($0 != .p1080 || canDo1080) && ($0 != .p2160 || canDo4K)
         }
+        let supportedSlowRates = SlowMoFrameRate.allCases.filter { slowRates.contains($0) }
+        let supportedSlowRes = Resolution.allCases.filter { slowResolutions.contains($0) }
 
         DispatchQueue.main.async {
             let previousResolution = self.settings.resolution
             self.availableFrameRates = supportedRates.isEmpty ? [.fps30] : supportedRates
             self.availableResolutions = supportedResolutions.isEmpty ? [.p720] : supportedResolutions
+            self.availableSlowMoRates = supportedSlowRates
+            self.availableSlowMoResolutions = supportedSlowRes.isEmpty ? [.p720] : supportedSlowRes
+            self.isSlowMoSupportedOnCurrentLens = !supportedSlowRates.isEmpty
 
             if !self.availableFrameRates.contains(self.settings.frameRate) {
                 let fallback: FrameRate = self.availableFrameRates.contains(.fps30)
@@ -362,6 +450,14 @@ final class CameraRecorder: NSObject, ObservableObject {
                 let fallback: Resolution = self.availableResolutions.first ?? .p720
                 self.settings.resolution = fallback
                 self.notice = "This camera does not go up to \(previousResolution.label) - switched to \(fallback.label)."
+            }
+
+            if self.settings.cameraMode == .slowMo {
+                if !self.isSlowMoSupportedOnCurrentLens {
+                    self.notice = "Slow motion is not supported on the selfie camera."
+                } else if !self.availableSlowMoRates.contains(self.settings.slowMoFrameRate) {
+                    self.settings.slowMoFrameRate = self.availableSlowMoRates.first ?? .fps120
+                }
             }
 
             self.sessionQueue.async { self.applyActiveFormat() }
@@ -681,7 +777,7 @@ final class CameraRecorder: NSObject, ObservableObject {
             w.add(v)
 
             var a: AVAssetWriterInput?
-            if plan.hasAudio, let aSettings = audioSettings(for: plan, writer: w) {
+            if plan.hasAudio && !plan.isSlowMo, let aSettings = audioSettings(for: plan, writer: w) {
                 let ai = AVAssetWriterInput(mediaType: .audio, outputSettings: aSettings)
                 ai.expectsMediaDataInRealTime = true
                 if w.canAdd(ai) { w.add(ai); a = ai }
@@ -1031,14 +1127,41 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
 
         if isVideo {
             if videoIn?.isReadyForMoreMediaData == true {
-                videoIn?.append(sampleBuffer)
-                lastVideoPTS = pts
+                var bufferToWrite = sampleBuffer
+                if let p = plan, p.isSlowMo, segmentStart.isValid {
+                    let delta = CMTimeSubtract(pts, segmentStart)
+                    let scaledDelta = CMTimeMultiplyByFloat64(delta, multiplier: p.slowMoMultiplier)
+                    let scaledPTS = CMTimeAdd(segmentStart, scaledDelta)
+
+                    var timingInfo = CMSampleTimingInfo(
+                        duration: CMTime(value: 1, timescale: 30),
+                        presentationTimeStamp: scaledPTS,
+                        decodeTimeStamp: .invalid
+                    )
+
+                    var retimedBuffer: CMSampleBuffer?
+                    if CMSampleBufferCreateCopyWithNewTiming(
+                        allocator: kCFAllocatorDefault,
+                        sampleBuffer: sampleBuffer,
+                        numSampleTimingEntries: 1,
+                        sampleTimingArray: &timingInfo,
+                        sampleBufferOut: &retimedBuffer
+                    ) == noErr, let retimed = retimedBuffer {
+                        bufferToWrite = retimed
+                        lastVideoPTS = scaledPTS
+                    } else {
+                        lastVideoPTS = pts
+                    }
+                } else {
+                    lastVideoPTS = pts
+                }
+                videoIn?.append(bufferToWrite)
             } else {
                 countDroppedFrame()
             }
             pushElapsed(pts)
         } else {
-            if audioIn?.isReadyForMoreMediaData == true {
+            if plan?.isSlowMo != true, audioIn?.isReadyForMoreMediaData == true {
                 audioIn?.append(sampleBuffer)
             }
         }

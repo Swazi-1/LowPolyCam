@@ -55,6 +55,16 @@ enum Resolution: String, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - Camera Mode
+
+enum CameraMode: String, CaseIterable, Identifiable {
+    case video = "VIDEO"
+    case slowMo = "SLO-MO"
+
+    var id: String { rawValue }
+    var label: String { rawValue }
+}
+
 // MARK: - Frame rate
 
 enum FrameRate: Int, CaseIterable, Identifiable {
@@ -71,6 +81,33 @@ enum FrameRate: Int, CaseIterable, Identifiable {
         case .fps30: return "Standard, smallest files"
         case .fps60: return "Smoothest motion, largest files"
         }
+    }
+}
+
+// MARK: - Slow-Mo Frame Rate
+
+enum SlowMoFrameRate: Int, CaseIterable, Identifiable {
+    case fps120 = 120
+    case fps240 = 240
+
+    var id: Int { rawValue }
+    var value: Int { rawValue }
+
+    var label: String { "\(rawValue) fps" }
+
+    var multiplierLabel: String {
+        self == .fps120 ? "4x" : "8x"
+    }
+
+    var detail: String {
+        switch self {
+        case .fps120: return "4x slow motion (smooth, standard high speed)"
+        case .fps240: return "8x slow motion (ultra slow speed)"
+        }
+    }
+
+    var speedFactor: Double {
+        Double(rawValue) / 30.0
     }
 }
 
@@ -162,6 +199,15 @@ final class AppSettings: ObservableObject {
 
     private let store = UserDefaults.standard
 
+    @Published var cameraMode: CameraMode {
+        didSet { store.set(cameraMode.rawValue, forKey: "cameraMode") }
+    }
+    @Published var slowMoFrameRate: SlowMoFrameRate {
+        didSet { store.set(slowMoFrameRate.rawValue, forKey: "slowMoFrameRate") }
+    }
+    @Published var slowMoResolution: Resolution {
+        didSet { store.set(slowMoResolution.rawValue, forKey: "slowMoResolution") }
+    }
     @Published var resolution: Resolution {
         didSet { store.set(resolution.rawValue, forKey: "resolution") }
     }
@@ -201,22 +247,26 @@ final class AppSettings: ObservableObject {
     }
 
     private init() {
-        resolution    = Resolution(rawValue: store.string(forKey: "resolution") ?? "") ?? .p720
-        quality       = Quality(rawValue: store.string(forKey: "quality") ?? "") ?? .medium
-        frameRate     = FrameRate(rawValue: store.integer(forKey: "frameRate")) ?? .fps30
-        saveLocation  = SaveLocation(rawValue: store.string(forKey: "saveLocation") ?? "") ?? .photos
-        splitInterval = SplitInterval(rawValue: store.string(forKey: "splitInterval") ?? "") ?? .off
-        lowTorch      = store.object(forKey: "lowTorch") as? Bool ?? true
-        recordAudio   = store.object(forKey: "recordAudio") as? Bool ?? true
-        stabilization = store.object(forKey: "stabilization") as? Bool ?? true
-        useHEVC       = store.object(forKey: "useHEVC") as? Bool ?? true
-        showGrid      = store.object(forKey: "showGrid") as? Bool ?? false
+        cameraMode       = CameraMode(rawValue: store.string(forKey: "cameraMode") ?? "") ?? .video
+        slowMoFrameRate  = SlowMoFrameRate(rawValue: store.integer(forKey: "slowMoFrameRate")) ?? .fps120
+        slowMoResolution = Resolution(rawValue: store.string(forKey: "slowMoResolution") ?? "") ?? .p1080
+        resolution       = Resolution(rawValue: store.string(forKey: "resolution") ?? "") ?? .p720
+        quality          = Quality(rawValue: store.string(forKey: "quality") ?? "") ?? .medium
+        frameRate        = FrameRate(rawValue: store.integer(forKey: "frameRate")) ?? .fps30
+        saveLocation     = SaveLocation(rawValue: store.string(forKey: "saveLocation") ?? "") ?? .photos
+        splitInterval    = SplitInterval(rawValue: store.string(forKey: "splitInterval") ?? "") ?? .off
+        lowTorch         = store.object(forKey: "lowTorch") as? Bool ?? true
+        recordAudio      = store.object(forKey: "recordAudio") as? Bool ?? true
+        stabilization    = store.object(forKey: "stabilization") as? Bool ?? true
+        useHEVC          = store.object(forKey: "useHEVC") as? Bool ?? true
+        showGrid         = store.object(forKey: "showGrid") as? Bool ?? false
     }
 }
 
 // MARK: - Encode plan
 
 struct EncodePlan {
+    var cameraMode: CameraMode
     var width: Int
     var height: Int
     var videoBitrate: Int       // bits per second
@@ -228,6 +278,11 @@ struct EncodePlan {
     var saveLocation: SaveLocation
     var splitInterval: SplitInterval
 
+    var isSlowMo: Bool { cameraMode == .slowMo }
+    var slowMoPlaybackFPS: Int { 30 }
+    /// Scales capture timestamps so that e.g. 120 fps → 30 fps playback (4x slow).
+    var slowMoMultiplier: Double { 30.0 / Double(frameRate) }
+
     var totalBitrate: Int { videoBitrate + audioBitrate }
 
     /// Megabytes written per hour of recording.
@@ -235,15 +290,17 @@ struct EncodePlan {
         Double(totalBitrate) * 3600.0 / 8.0 / 1_000_000.0
     }
 
-    var sizeLabel: String { "\(width) x \(height) · \(frameRate) fps" }
+    var sizeLabel: String {
+        if isSlowMo {
+            return "\(width) x \(height) · \(frameRate) fps (\(Int(slowMoMultiplier))x Slow-Mo)"
+        }
+        return "\(width) x \(height) · \(frameRate) fps"
+    }
 }
 
 enum Encoder {
 
-    // Video bitrate in kbit/s at 30 fps, assuming HEVC. Tweak freely, these
-    // are the only numbers that decide how much space an hour of footage
-    // takes at the standard frame rate; other rates scale off this via
-    // fpsMultiplier below.
+    // Video bitrate in kbit/s at 30 fps, assuming HEVC.
     private static let videoKbps: [Resolution: [Quality: Int]] = [
         .p2160: [.high: 13500, .medium: 8000, .low: 4000, .ultraLow: 1800],
         .p1080: [.high: 4500, .medium: 2200, .low: 1000, .ultraLow: 400],
@@ -257,38 +314,42 @@ enum Encoder {
         .high: 64, .medium: 48, .low: 32, .ultraLow: 24
     ]
 
-    /// Seconds between keyframes. Longer = smaller files, but seeking gets
-    /// coarser and a corrupted spot costs you more.
     private static let keyFrameSeconds: [Quality: Int] = [
         .high: 2, .medium: 4, .low: 6, .ultraLow: 10
     ]
 
-    /// H.264 needs roughly 60% more bits for the same picture as HEVC.
     private static let h264Multiplier = 1.6
 
-    /// More frames per second need more total bits to hold picture quality
-    /// steady, since each individual frame gets a smaller slice of the
-    /// average bitrate otherwise. Scaled relative to 30 fps.
     private static let fpsMultiplier: [FrameRate: Double] = [
         .fps24: 0.85, .fps30: 1.0, .fps60: 1.6
     ]
 
     static func plan(for settings: AppSettings) -> EncodePlan {
-        let px = settings.resolution.pixels
-        let baseKbps = videoKbps[settings.resolution]?[settings.quality] ?? 600
+        let isSlow = settings.cameraMode == .slowMo
+        let res = isSlow ? settings.slowMoResolution : settings.resolution
+        let fps = isSlow ? settings.slowMoFrameRate.value : settings.frameRate.value
+        let px = res.pixels
+
+        let baseKbps = videoKbps[res]?[settings.quality] ?? 600
         let codecMultiplier = settings.useHEVC ? 1.0 : h264Multiplier
-        let fpsFactor = fpsMultiplier[settings.frameRate] ?? 1.0
+        let fpsFactor: Double
+        if isSlow {
+            fpsFactor = fps >= 240 ? 4.2 : 2.5
+        } else {
+            fpsFactor = fpsMultiplier[settings.frameRate] ?? 1.0
+        }
+
         let kbps = Double(baseKbps) * codecMultiplier * fpsFactor
         let gopSeconds = keyFrameSeconds[settings.quality] ?? 4
         let aKbps = settings.recordAudio ? (audioKbps[settings.quality] ?? 32) : 0
-        let fps = settings.frameRate.value
 
         return EncodePlan(
+            cameraMode: settings.cameraMode,
             width: px.w,
             height: px.h,
             videoBitrate: Int(kbps * 1000.0),
             audioBitrate: aKbps * 1000,
-            keyFrameInterval: gopSeconds * fps,
+            keyFrameInterval: gopSeconds * (isSlow ? 30 : fps),
             frameRate: fps,
             codec: settings.useHEVC ? .hevc : .h264,
             hasAudio: settings.recordAudio,
@@ -307,7 +368,7 @@ enum Encoder {
             var compression: [String: Any] = [
                 AVVideoAverageBitRateKey: plan.videoBitrate,
                 AVVideoMaxKeyFrameIntervalKey: plan.keyFrameInterval,
-                AVVideoExpectedSourceFrameRateKey: plan.frameRate,
+                AVVideoExpectedSourceFrameRateKey: plan.isSlowMo ? 30 : plan.frameRate,
                 AVVideoAllowFrameReorderingKey: true
             ]
             if codec == .h264 {
