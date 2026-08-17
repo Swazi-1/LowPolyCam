@@ -43,6 +43,7 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     // Level Telemetry & Physical Orientation
     @Published private(set) var physicalOrientation: PhysicalOrientation = .portrait
+    @Published private(set) var uiRotationAngle: Double = 0
     @Published private(set) var isLevel: Bool = false
     @Published private(set) var rollAngle: Double = 0
     @Published var notice: String?
@@ -145,7 +146,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
     }
 
-    // MARK: Motion & Gravity Horizon
+    // MARK: Motion, Orientation Tracking & Gravity Horizon
 
     func startMotionUpdates() {
         guard motionManager.isDeviceMotionAvailable else { return }
@@ -157,14 +158,21 @@ final class CameraRecorder: NSObject, ObservableObject {
             let angle = atan2(gx, -gy) * (180.0 / .pi)
 
             let absAngle = abs(angle)
+            let newOrientation: PhysicalOrientation
             if absAngle < 45 {
-                self.physicalOrientation = .portrait
+                newOrientation = .portrait
             } else if angle >= 45 && angle < 135 {
-                self.physicalOrientation = .landscapeLeft
+                newOrientation = .landscapeLeft
             } else if angle <= -45 && angle > -135 {
-                self.physicalOrientation = .landscapeRight
+                newOrientation = .landscapeRight
             } else {
-                self.physicalOrientation = .portraitUpsideDown
+                newOrientation = .portraitUpsideDown
+            }
+
+            let targetUIAngle = newOrientation.rotationAngle
+            if self.physicalOrientation != newOrientation {
+                self.physicalOrientation = newOrientation
+                self.uiRotationAngle = targetUIAngle
             }
 
             self.rollAngle = angle
@@ -283,6 +291,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         configureVideoConnection()
         refreshCapabilitiesThenApplyFormat()
         refreshTorchState()
+        restoreProSettings(for: cameraInput?.device)
         resetFocusAndExposureToAuto()
         syncMicInput()
     }
@@ -310,11 +319,10 @@ final class CameraRecorder: NSObject, ObservableObject {
         sessionQueue.async { self.applyStabilization() }
     }
 
-    /// Automatically switches to the physical wide camera if entering slow-mo on newer iPhones
     private func ensureCorrectCameraDevice(for mode: CameraMode) {
         guard let targetDevice = Self.camera(at: position, mode: mode, preferPhysical: wantsPhysicalWideForFrameRate) else { return }
         if cameraInput?.device.uniqueID != targetDevice.uniqueID {
-            volumeObserver?.ignoreTemporarily() // Mute volume shutter to prevent 0-sec clip bug
+            volumeObserver?.ignoreTemporarily()
             session.beginConfiguration()
             if let old = cameraInput { session.removeInput(old) }
             if let input = try? AVCaptureDeviceInput(device: targetDevice), session.canAddInput(input) {
@@ -328,7 +336,7 @@ final class CameraRecorder: NSObject, ObservableObject {
     }
 
     private func applyActiveFormat() {
-        volumeObserver?.ignoreTemporarily() // Mute volume shutter during format change
+        volumeObserver?.ignoreTemporarily()
         ensureCorrectCameraDevice(for: settings.cameraMode)
         guard let device = cameraInput?.device else { return }
 
@@ -350,11 +358,9 @@ final class CameraRecorder: NSObject, ObservableObject {
             fps = Double(settings.frameRate.value)
         }
 
-        // Try exact match (including 4K 60fps)
         var targetFPS = fps
         var format = Self.bestFormat(for: device, width: dims.w, height: dims.h, fps: targetFPS)
 
-        // If 4K 60fps is not supported on this hardware (like iPhone 7), gracefully drop to 30fps
         if format == nil && targetFPS == 60 {
             targetFPS = 30
             format = Self.bestFormat(for: device, width: dims.w, height: dims.h, fps: targetFPS)
@@ -380,6 +386,7 @@ final class CameraRecorder: NSObject, ObservableObject {
                         device.isSmoothAutoFocusEnabled = true
                     }
                     
+                    restoreProSettings(for: device)
                     device.unlockForConfiguration()
                     DispatchQueue.main.async {
                         let dDims = CMVideoFormatDescriptionGetDimensions(fallbackFormat.formatDescription)
@@ -389,7 +396,7 @@ final class CameraRecorder: NSObject, ObservableObject {
                     }
                 } catch { }
                 refreshZoomLimits()
-                volumeObserver?.ignoreTemporarily() // Reconfiguration actually finished here - re-arm the mute window to cover it
+                volumeObserver?.ignoreTemporarily()
                 return
             }
 
@@ -411,19 +418,38 @@ final class CameraRecorder: NSObject, ObservableObject {
                 device.isSmoothAutoFocusEnabled = true
             }
             
+            restoreProSettings(for: device)
             device.unlockForConfiguration()
         } catch {
             DispatchQueue.main.async { self.notice = "Could not lock this camera's frame rate." }
         }
         refreshZoomLimits()
-        // The chain that got us here (device swap -> main-thread capability
-        // check -> back onto this queue) can run past the mute window
-        // ignoreTemporarily() opened when it started, especially now that
-        // 4K made device.formats longer to scan. A stray volume-button KVO
-        // landing in that gap would otherwise be read as a real shutter
-        // press. Re-arming here, at the point reconfiguration actually
-        // finishes, closes that race.
         volumeObserver?.ignoreTemporarily()
+    }
+
+    private func restoreProSettings(for device: AVCaptureDevice?) {
+        guard let device = device else { return }
+        
+        let minBias = device.minExposureTargetBias
+        let maxBias = device.maxExposureTargetBias
+        let clampedBias = max(minBias, min(settings.exposureBias, maxBias))
+        device.setExposureTargetBias(clampedBias, completionHandler: nil)
+
+        if let values = settings.whiteBalance.kelvin {
+            if device.isLockingWhiteBalanceWithCustomDeviceGainsSupported {
+                let tempAndTint = AVCaptureDevice.WhiteBalanceTemperatureAndTintValues(temperature: values.temp, tint: values.tint)
+                var gains = device.deviceWhiteBalanceGains(for: tempAndTint)
+                let maxGain = device.maxWhiteBalanceGain
+                gains.redGain = max(1.0, min(gains.redGain.isFinite ? gains.redGain : 1.0, maxGain))
+                gains.greenGain = max(1.0, min(gains.greenGain.isFinite ? gains.greenGain : 1.0, maxGain))
+                gains.blueGain = max(1.0, min(gains.blueGain.isFinite ? gains.blueGain : 1.0, maxGain))
+                device.setWhiteBalanceModeLocked(with: gains, completionHandler: nil)
+            }
+        } else {
+            if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) {
+                device.whiteBalanceMode = .continuousAutoWhiteBalance
+            }
+        }
     }
 
     private static func bestSlowMoFormat(for device: AVCaptureDevice, fps: Double) -> AVCaptureDevice.Format? {
@@ -444,7 +470,6 @@ final class CameraRecorder: NSObject, ObservableObject {
         return best
     }
 
-    /// Selects best format while penalizing 10-bit HDR on newer iPhones to prevent blown-out colors
     private static func bestFormat(for device: AVCaptureDevice, width: Int, height: Int, fps: Double) -> AVCaptureDevice.Format? {
         var best: AVCaptureDevice.Format?
         var bestScore = Int.max
@@ -457,7 +482,6 @@ final class CameraRecorder: NSObject, ObservableObject {
             guard supportsFPS else { continue }
             let areaDelta = Int(dims.width) * Int(dims.height) - width * height
             
-            // Prefer clean 8-bit SDR formats over 10-bit HDR to avoid blown-out highlights
             let isHDR = format.supportedColorSpaces.contains(.HLG_BT2020)
             let colorScore = isHDR ? 10_000_000 : 0
             let score = areaDelta + (format.isVideoBinned ? 1_000_000 : 0) + colorScore
@@ -569,7 +593,7 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     private func addOrRemoveMic() {
         sessionQueue.async {
-            self.volumeObserver?.ignoreTemporarily() // Mute volume shutter during mic switch
+            self.volumeObserver?.ignoreTemporarily() 
             let want = self.settings.recordAudio
             if want, self.micInput == nil {
                 guard let mic = AVCaptureDevice.default(for: .audio),
@@ -591,7 +615,7 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     func flipCamera() {
         guard !isRecording else { return }
-        volumeObserver?.ignoreTemporarily() // Mute volume shutter during camera flip
+        volumeObserver?.ignoreTemporarily()
         setTorch(on: false)
         sessionQueue.async {
             let next: AVCaptureDevice.Position = (self.position == .back) ? .front : .back
@@ -614,6 +638,7 @@ final class CameraRecorder: NSObject, ObservableObject {
             self.configureVideoConnection()
             self.refreshCapabilitiesThenApplyFormat()
             self.refreshTorchState()
+            self.restoreProSettings(for: device)
             self.resetFocusAndExposureToAuto()
             DispatchQueue.main.async { self.isFrontCamera = (next == .front) }
         }
@@ -634,10 +659,6 @@ final class CameraRecorder: NSObject, ObservableObject {
             ?? AVCaptureDevice.default(for: .video)
     }
 
-    /// The virtual "Triple/Dual Camera" (used so pinch-zoom can sweep across
-    /// lenses smoothly) tops out lower than the physical wide lens on many
-    /// iPhones. At 1080p/4K + 60fps, ask for the physical lens directly
-    /// instead of silently losing 60fps to the virtual device's ceiling.
     private var wantsPhysicalWideForFrameRate: Bool {
         settings.cameraMode == .video
             && settings.frameRate == .fps60
@@ -656,7 +677,6 @@ final class CameraRecorder: NSObject, ObservableObject {
                 let clamped = max(minBias, min(bias, maxBias))
                 device.setExposureTargetBias(clamped, completionHandler: nil)
                 device.unlockForConfiguration()
-                DispatchQueue.main.async { self.settings.exposureBias = clamped }
             } catch { }
         }
     }
@@ -667,14 +687,6 @@ final class CameraRecorder: NSObject, ObservableObject {
             do {
                 try device.lockForConfiguration()
                 if let values = preset.kelvin {
-                    // isWhiteBalanceModeSupported(.locked) only confirms the
-                    // mode can be entered - it does NOT guarantee custom
-                    // gains are accepted. Calling setWhiteBalanceModeLocked
-                    // with gains when isLockingWhiteBalanceWithCustomDevice-
-                    // GainsSupported is false throws an Objective-C
-                    // exception that Swift's do/catch cannot stop, which
-                    // crashes the app. This is the check Apple's docs
-                    // actually call for before using custom gains.
                     guard device.isLockingWhiteBalanceWithCustomDeviceGainsSupported else {
                         device.unlockForConfiguration()
                         DispatchQueue.main.async {
@@ -695,7 +707,6 @@ final class CameraRecorder: NSObject, ObservableObject {
                     }
                 }
                 device.unlockForConfiguration()
-                DispatchQueue.main.async { self.settings.whiteBalance = preset }
             } catch { }
         }
     }
@@ -777,13 +788,6 @@ final class CameraRecorder: NSObject, ObservableObject {
         return value > 0 ? value : 1
     }
 
-    /// A brand-new AVCaptureDeviceInput defaults to raw zoom 1.0, which on a
-    /// virtual multi-lens device is the ultra-wide lens (a much wider field
-    /// of view than "1x"). Without this, every camera swap - flipping
-    /// front/rear, or switching Video <-> Slow-Mo - visibly flashes
-    /// zoomed-out for a moment before refreshZoomLimits() catches up.
-    /// Setting the baseline immediately, right where the input is swapped,
-    /// closes that gap.
     private static func primeZoom(for device: AVCaptureDevice) {
         let baseline = wideAngleBaseline(for: device)
         do {
@@ -1420,9 +1424,6 @@ final class VolumeButtonObserver: NSObject {
         volumeView = nil
     }
 
-    /// Temporarily mutes the volume trigger to prevent false 0-sec clips during camera/mode/mic reconfigurations.
-    /// Re-armed a second time at the true end of each reconfiguration (see CameraRecorder.applyActiveFormat),
-    /// so this only needs to cover the gap until that re-arm, not the whole operation.
     func ignoreTemporarily() {
         ignoreUntil = Date().addingTimeInterval(1.5)
     }
