@@ -39,7 +39,6 @@ enum Resolution: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Always 16:9 (or closest mod-16 aligned) so nothing gets cropped when the capture is scaled down.
     var pixels: (w: Int, h: Int) {
         switch self {
         case .p2160: return (3840, 2160)
@@ -59,11 +58,6 @@ enum Resolution: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Historically 4K was force-locked to 30fps here, which broke 4K60 on every
-    /// iPhone that actually supports it (iPhone 11 and newer). Frame-rate
-    /// availability is now decided per-device by CameraRecorder (which asks
-    /// AVFoundation what the current lens can actually do), so this no longer
-    /// hardcodes a ceiling.
     var lockedFrameRate: FrameRate? { nil }
 
     var detail: String {
@@ -326,11 +320,6 @@ final class AppSettings: ObservableObject {
     @Published var showGrid: Bool {
         didSet { store.set(showGrid, forKey: "showGrid") }
     }
-    /// Off by default, matching stock iOS Camera: the front-camera preview
-    /// always mirrors while you're filming (so it feels like a mirror), but
-    /// the saved clip is true-to-life by default so any text/writing in
-    /// frame reads correctly. Turning this on saves selfie clips mirrored
-    /// too, matching what you see in the preview.
     @Published var mirrorFrontCameraRecording: Bool {
         didSet { store.set(mirrorFrontCameraRecording, forKey: "mirrorFrontCameraRecording") }
     }
@@ -351,8 +340,9 @@ final class AppSettings: ObservableObject {
         showLevelGauge   = store.object(forKey: "showLevelGauge") as? Bool ?? false
         exposureBias     = store.object(forKey: "exposureBias") as? Float ?? 0.0
         whiteBalance     = WhiteBalancePreset(rawValue: store.string(forKey: "whiteBalance") ?? "") ?? .auto
-        torchBrightness  = store.object(forKey: "torchBrightness") as? Float ?? 0.15
-        lowTorch         = store.object(forKey: "lowTorch") as? Bool ?? true
+        // Default to full 1.0 (100% brightness) so flashlight isn't dim
+        torchBrightness  = store.object(forKey: "torchBrightness") as? Float ?? 1.0
+        lowTorch         = store.object(forKey: "lowTorch") as? Bool ?? false
         recordAudio      = store.object(forKey: "recordAudio") as? Bool ?? true
         stabilization    = store.object(forKey: "stabilization") as? Bool ?? true
         useHEVC          = store.object(forKey: "useHEVC") as? Bool ?? true
@@ -371,10 +361,10 @@ enum AccentColor: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .mint: return "Mint"
-        case .violet: return "Violet"
-        case .amber: return "Amber"
-        case .red: return "Red"
+        case .mint: return "Lens Mint"
+        case .violet: return "Dial Lavender"
+        case .amber: return "Button Gold"
+        case .red: return "Record Red"
         }
     }
 
@@ -390,8 +380,8 @@ enum AccentColor: String, CaseIterable, Identifiable {
     var bright: Color {
         switch self {
         case .mint: return Palette.mintBright
-        case .violet: return Palette.violet.opacity(0.85)
-        case .amber: return Palette.amber
+        case .violet: return Palette.violet.opacity(0.9)
+        case .amber: return Palette.amberBright
         case .red: return Color(hex: 0xFF7A70)
         }
     }
@@ -399,8 +389,8 @@ enum AccentColor: String, CaseIterable, Identifiable {
     var deep: Color {
         switch self {
         case .mint: return Palette.mintDeep
-        case .violet: return Color(hex: 0x7A2F9E)
-        case .amber: return Color(hex: 0xC79A00)
+        case .violet: return Palette.violetDeep
+        case .amber: return Palette.amberDeep
         case .red: return Palette.record
         }
     }
