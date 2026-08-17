@@ -28,6 +28,9 @@ struct CameraScreen: View {
     @State private var focusPoint: CGPoint?
     @State private var focusHideToken = 0
 
+    // Notice Auto-Dismiss
+    @State private var noticeHideToken = 0
+
     @State private var startHaptic = UIImpactFeedbackGenerator(style: .medium)
     @State private var stopHaptic = UIImpactFeedbackGenerator(style: .light)
     @State private var levelHaptic = UISelectionFeedbackGenerator()
@@ -94,8 +97,14 @@ struct CameraScreen: View {
             } else {
                 VStack(spacing: 0) {
                     topHUD
+
+                    if let notice = recorder.notice {
+                        noticeBar(notice)
+                            .transition(.move(edge: .top).combined(with: .opacity).combined(with: .scale(scale: 0.9)))
+                            .padding(.top, 8)
+                    }
+
                     Spacer()
-                    if let notice = recorder.notice { noticeBar(notice) }
                     
                     if showProMenu && !recorder.isRecording && !recorder.isSaving {
                         proToolsDrawer
@@ -128,6 +137,18 @@ struct CameraScreen: View {
         .onChange(of: recorder.isLevel) { isLevel in
             if isLevel && settings.showLevelGauge {
                 levelHaptic.selectionChanged()
+            }
+        }
+        .onChange(of: recorder.notice) { newNotice in
+            guard newNotice != nil else { return }
+            noticeHideToken += 1
+            let token = noticeHideToken
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                if noticeHideToken == token {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
+                        recorder.notice = nil
+                    }
+                }
             }
         }
         .onChange(of: showSettings) { isPresented in
@@ -209,7 +230,6 @@ struct CameraScreen: View {
             if recorder.isRecording || recorder.isSaving {
                 recordingStatusRow
             } else {
-                // Row 1: Badge + Quality + Data Rate
                 HStack(spacing: 6) {
                     if settings.cameraMode == .slowMo {
                         Text("SLO-MO")
@@ -250,7 +270,6 @@ struct CameraScreen: View {
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
 
-                // Row 2: Free Storage + Battery Percentage
                 HStack(spacing: 6) {
                     HStack(spacing: 3) {
                         Image(systemName: "internaldrive")
@@ -367,11 +386,10 @@ struct CameraScreen: View {
             : settings.accentColor.color
     }
 
-    // MARK: Enhanced Pro Tools Menu (Reactive Theme Accent)
+    // MARK: Enhanced Pro Tools Menu
 
     private var proToolsDrawer: some View {
         VStack(spacing: 16) {
-            // Header Bar
             HStack {
                 HStack(spacing: 8) {
                     Facet(sides: 6, rotation: .pi / 6)
@@ -404,7 +422,6 @@ struct CameraScreen: View {
                 .buttonStyle(.plain)
             }
 
-            // EV Exposure Section
             VStack(spacing: 8) {
                 HStack {
                     HStack(spacing: 5) {
@@ -449,7 +466,6 @@ struct CameraScreen: View {
             .background(Palette.slate.opacity(0.45))
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
 
-            // White Balance Presets
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 5) {
                     Image(systemName: "paintpalette.fill")
@@ -500,9 +516,7 @@ struct CameraScreen: View {
                 }
             }
 
-            // Bottom Tools Row: Level Meter & Countdown Timer
             HStack(spacing: 12) {
-                // Horizon Level Toggle
                 Button(action: {
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
                         settings.showLevelGauge.toggle()
@@ -540,7 +554,6 @@ struct CameraScreen: View {
                 }
                 .buttonStyle(.plain)
 
-                // Shutter Timer Selector
                 HStack(spacing: 4) {
                     Image(systemName: "timer")
                         .font(.system(size: 12, weight: .bold))
@@ -869,24 +882,32 @@ struct CameraScreen: View {
         countdownRemaining = 0
     }
 
+    // Sleek, compact auto-dismissing toast pill
     private func noticeBar(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 13, weight: .medium))
-            .foregroundColor(.white)
-            .multilineTextAlignment(.center)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .background(Palette.panel.opacity(0.9))
-            .environment(\.colorScheme, .dark)
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Palette.slateLight.opacity(0.4), lineWidth: 0.8))
-            .shadow(color: .black.opacity(0.2), radius: 8, x: 0, y: 4)
-            .padding(.bottom, 10)
-            .onTapGesture {
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                    recorder.notice = nil
-                }
+        HStack(spacing: 6) {
+            Image(systemName: "info.circle.fill")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundColor(settings.accentColor.bright)
+
+            Text(text)
+                .font(.system(size: 12, weight: .bold, design: .rounded))
+                .foregroundColor(.white.opacity(0.95))
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
+        .background(Palette.panel.opacity(0.92))
+        .environment(\.colorScheme, .dark)
+        .clipShape(Capsule())
+        .overlay(
+            Capsule()
+                .stroke(settings.accentColor.bright.opacity(0.4), lineWidth: 0.8)
+        )
+        .shadow(color: .black.opacity(0.35), radius: 8, x: 0, y: 4)
+        .onTapGesture {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                recorder.notice = nil
             }
+        }
     }
 
     private var permissionMessage: some View {
