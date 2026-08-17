@@ -167,7 +167,7 @@ struct CameraScreen: View {
         HStack(alignment: .center, spacing: 10) {
             if recorder.hasTorch {
                 facetButton(system: recorder.torchOn ? "bolt.fill" : "bolt.slash.fill",
-                            tint: recorder.torchOn ? Palette.amber : .white) {
+                            tint: recorder.torchOn ? settings.accentColor.bright : .white) {
                     recorder.toggleTorch()
                 }
             } else {
@@ -217,7 +217,7 @@ struct CameraScreen: View {
                             .foregroundColor(Palette.slateDeep)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
-                            .background(Palette.amber)
+                            .background(settings.accentColor.bright)
                             .clipShape(Capsule())
 
                         Text(settings.slowMoFrameRate.label)
@@ -230,7 +230,7 @@ struct CameraScreen: View {
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
                             .background(
-                                LinearGradient(colors: [Palette.mintBright, Palette.mint], startPoint: .topLeading, endPoint: .bottomTrailing)
+                                LinearGradient(colors: [settings.accentColor.bright, settings.accentColor.color], startPoint: .topLeading, endPoint: .bottomTrailing)
                             )
                             .clipShape(Capsule())
 
@@ -245,7 +245,7 @@ struct CameraScreen: View {
 
                     Text(dataRateLabel)
                         .font(.system(size: 11, weight: .bold, design: .monospaced))
-                        .foregroundColor(Palette.amber)
+                        .foregroundColor(settings.accentColor.bright)
                 }
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
@@ -291,7 +291,7 @@ struct CameraScreen: View {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(
                     LinearGradient(
-                        colors: [Palette.mint.opacity(0.4), Palette.slateLight.opacity(0.2), Palette.amber.opacity(0.2)],
+                        colors: [settings.accentColor.bright.opacity(0.4), Palette.slateLight.opacity(0.2), settings.accentColor.color.opacity(0.2)],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     ),
@@ -319,13 +319,13 @@ struct CameraScreen: View {
                 if recorder.droppedFrames > 0 {
                     Text("\(recorder.droppedFrames)d")
                         .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(Palette.amber)
+                        .foregroundColor(settings.accentColor.bright)
                 }
             } else if recorder.isSaving {
-                ProgressView().tint(Palette.mintBright).scaleEffect(0.7)
+                ProgressView().tint(settings.accentColor.bright).scaleEffect(0.7)
                 Text("Saving…")
                     .font(.system(size: 12, weight: .bold))
-                    .foregroundColor(Palette.mintBright)
+                    .foregroundColor(settings.accentColor.bright)
             }
         }
         .foregroundColor(.white)
@@ -335,9 +335,9 @@ struct CameraScreen: View {
 
     private var batteryIndicator: some View {
         let pct = recorder.batteryPercent
-        let color: Color = recorder.batteryCharging ? Palette.mintBright
+        let color: Color = recorder.batteryCharging ? settings.accentColor.bright
             : pct <= 20 ? Palette.record
-            : pct <= 40 ? Palette.amber
+            : pct <= 40 ? settings.accentColor.bright
             : .white.opacity(0.8)
         return HStack(spacing: 3) {
             Image(systemName: recorder.batteryCharging ? "battery.100.bolt" : "battery.75")
@@ -353,7 +353,7 @@ struct CameraScreen: View {
             ZStack(alignment: .leading) {
                 Capsule().fill(Color.white.opacity(0.15))
                 Capsule()
-                    .fill(LinearGradient(colors: [Palette.mintDeep, audioLevelColor], startPoint: .leading, endPoint: .trailing))
+                    .fill(LinearGradient(colors: [settings.accentColor.deep, audioLevelColor], startPoint: .leading, endPoint: .trailing))
                     .frame(width: max(3, geo.size.width * CGFloat(recorder.audioLevel)))
                     .animation(.spring(response: 0.2, dampingFraction: 0.8), value: recorder.audioLevel)
             }
@@ -363,11 +363,11 @@ struct CameraScreen: View {
 
     private var audioLevelColor: Color {
         recorder.audioLevel > 0.85 ? Palette.record
-            : recorder.audioLevel > 0.6 ? Palette.amber
-            : Palette.mintBright
+            : recorder.audioLevel > 0.6 ? settings.accentColor.bright
+            : settings.accentColor.color
     }
 
-    // MARK: Enhanced Pro Tools Menu (Matched to App Icon Aesthetic)
+    // MARK: Enhanced Pro Tools Menu (Reactive Theme Accent)
 
     private var proToolsDrawer: some View {
         VStack(spacing: 16) {
@@ -375,7 +375,7 @@ struct CameraScreen: View {
             HStack {
                 HStack(spacing: 8) {
                     Facet(sides: 6, rotation: .pi / 6)
-                        .fill(LinearGradient(colors: [Palette.mintBright, Palette.mintDeep], startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .fill(LinearGradient(colors: [settings.accentColor.bright, settings.accentColor.deep], startPoint: .topLeading, endPoint: .bottomTrailing))
                         .frame(width: 20, height: 20)
                         .overlay(
                             Image(systemName: "slider.horizontal.3")
@@ -410,7 +410,7 @@ struct CameraScreen: View {
                     HStack(spacing: 5) {
                         Image(systemName: "sun.max.fill")
                             .font(.system(size: 11, weight: .bold))
-                            .foregroundColor(Palette.amber)
+                            .foregroundColor(settings.accentColor.bright)
                         Text("Exposure (EV)")
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundColor(.white.opacity(0.85))
@@ -420,7 +420,7 @@ struct CameraScreen: View {
 
                     Text(String(format: "%@%.1f EV", settings.exposureBias > 0 ? "+" : "", settings.exposureBias))
                         .font(.system(size: 12, weight: .bold, design: .monospaced))
-                        .foregroundColor(settings.exposureBias == 0 ? .white.opacity(0.7) : Palette.amber)
+                        .foregroundColor(settings.exposureBias == 0 ? .white.opacity(0.7) : settings.accentColor.bright)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
                         .background(Palette.slate.opacity(0.8))
@@ -434,13 +434,13 @@ struct CameraScreen: View {
                             }
                         }
                         .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(Palette.mintBright)
+                        .foregroundColor(settings.accentColor.bright)
                         .padding(.leading, 4)
                     }
                 }
 
                 Slider(value: $settings.exposureBias, in: -2.0...2.0, step: 0.1)
-                    .tint(Palette.amber)
+                    .tint(settings.accentColor.bright)
                     .onChange(of: settings.exposureBias) { val in
                         recorder.setExposureBias(val)
                     }
@@ -454,7 +454,7 @@ struct CameraScreen: View {
                 HStack(spacing: 5) {
                     Image(systemName: "paintpalette.fill")
                         .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(Palette.mint)
+                        .foregroundColor(settings.accentColor.bright)
                     Text("White Balance")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundColor(.white.opacity(0.85))
@@ -477,7 +477,7 @@ struct CameraScreen: View {
                                 .background(
                                     ZStack {
                                         if isSelected {
-                                            LinearGradient(colors: [Palette.mintBright, Palette.mint], startPoint: .topLeading, endPoint: .bottomTrailing)
+                                            LinearGradient(colors: [settings.accentColor.bright, settings.accentColor.color], startPoint: .topLeading, endPoint: .bottomTrailing)
                                         } else {
                                             Palette.slate.opacity(0.65)
                                         }
@@ -486,9 +486,9 @@ struct CameraScreen: View {
                                 .clipShape(Capsule())
                                 .overlay(
                                     Capsule()
-                                        .stroke(isSelected ? Palette.mintBright.opacity(0.6) : Palette.slateLight.opacity(0.25), lineWidth: 0.8)
+                                        .stroke(isSelected ? settings.accentColor.bright.opacity(0.7) : Palette.slateLight.opacity(0.25), lineWidth: 0.8)
                                 )
-                                .shadow(color: isSelected ? Palette.mint.opacity(0.4) : .clear, radius: 6, x: 0, y: 2)
+                                .shadow(color: isSelected ? settings.accentColor.color.opacity(0.4) : .clear, radius: 6, x: 0, y: 2)
                             }
                             .buttonStyle(.plain)
                         }
@@ -525,7 +525,7 @@ struct CameraScreen: View {
                     .background(
                         ZStack {
                             if settings.showLevelGauge {
-                                LinearGradient(colors: [Palette.mintBright, Palette.mint], startPoint: .topLeading, endPoint: .bottomTrailing)
+                                LinearGradient(colors: [settings.accentColor.bright, settings.accentColor.color], startPoint: .topLeading, endPoint: .bottomTrailing)
                             } else {
                                 Palette.slate.opacity(0.6)
                             }
@@ -534,9 +534,9 @@ struct CameraScreen: View {
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .overlay(
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .stroke(settings.showLevelGauge ? Palette.mintBright.opacity(0.6) : Palette.slateLight.opacity(0.3), lineWidth: 0.8)
+                            .stroke(settings.showLevelGauge ? settings.accentColor.bright.opacity(0.7) : Palette.slateLight.opacity(0.3), lineWidth: 0.8)
                     )
-                    .shadow(color: settings.showLevelGauge ? Palette.mint.opacity(0.35) : .clear, radius: 6)
+                    .shadow(color: settings.showLevelGauge ? settings.accentColor.color.opacity(0.35) : .clear, radius: 6)
                 }
                 .buttonStyle(.plain)
 
@@ -544,7 +544,7 @@ struct CameraScreen: View {
                 HStack(spacing: 4) {
                     Image(systemName: "timer")
                         .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(Palette.amber)
+                        .foregroundColor(settings.accentColor.bright)
                         .padding(.leading, 6)
 
                     ForEach(CountdownTimer.allCases) { timer in
@@ -558,7 +558,7 @@ struct CameraScreen: View {
                                 .background(
                                     ZStack {
                                         if isSelected {
-                                            LinearGradient(colors: [Palette.amberBright, Palette.amber], startPoint: .topLeading, endPoint: .bottomTrailing)
+                                            LinearGradient(colors: [settings.accentColor.bright, settings.accentColor.color], startPoint: .topLeading, endPoint: .bottomTrailing)
                                         } else {
                                             Color.clear
                                         }
@@ -591,7 +591,7 @@ struct CameraScreen: View {
             RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .stroke(
                     LinearGradient(
-                        colors: [Palette.mint.opacity(0.5), Palette.slateLight.opacity(0.2), Palette.amber.opacity(0.3)],
+                        colors: [settings.accentColor.bright.opacity(0.5), Palette.slateLight.opacity(0.2), settings.accentColor.color.opacity(0.3)],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     ),
@@ -646,7 +646,7 @@ struct CameraScreen: View {
                             .aspectRatio(contentMode: .fill)
                             .frame(width: 50, height: 50)
                             .clipShape(Facet(sides: 6, rotation: .pi / 6))
-                            .overlay(Facet(sides: 6, rotation: .pi / 6).stroke(Palette.mint.opacity(0.6), lineWidth: 1.5))
+                            .overlay(Facet(sides: 6, rotation: .pi / 6).stroke(settings.accentColor.color.opacity(0.7), lineWidth: 1.5))
                             .shadow(color: .black.opacity(0.3), radius: 5)
                     }
                     .buttonStyle(.plain)
@@ -751,7 +751,7 @@ struct CameraScreen: View {
                     Text(mode.label)
                         .font(.system(size: 13, weight: isActive ? .bold : .medium))
                         .foregroundColor(isActive
-                            ? (mode == .slowMo ? Palette.amber : settings.accentColor.bright)
+                            ? settings.accentColor.bright
                             : .white.opacity(0.6))
                         .padding(.horizontal, 16)
                         .padding(.vertical, 8)
@@ -829,8 +829,8 @@ struct CameraScreen: View {
             VStack(spacing: 8) {
                 Text("\(countdownRemaining)")
                     .font(.system(size: 84, weight: .black, design: .rounded))
-                    .foregroundColor(Palette.amber)
-                    .shadow(color: Palette.amber.opacity(0.6), radius: 20)
+                    .foregroundColor(settings.accentColor.bright)
+                    .shadow(color: settings.accentColor.color.opacity(0.6), radius: 20)
                     .scaleEffect(1.1)
                     .animation(.spring(response: 0.3, dampingFraction: 0.6), value: countdownRemaining)
 
@@ -893,8 +893,8 @@ struct CameraScreen: View {
         VStack(spacing: 16) {
             Image(systemName: "camera.fill")
                 .font(.system(size: 44))
-                .foregroundColor(Palette.mint)
-                .shadow(color: Palette.mint.opacity(0.5), radius: 10)
+                .foregroundColor(settings.accentColor.bright)
+                .shadow(color: settings.accentColor.color.opacity(0.5), radius: 10)
             Text("Camera access is off")
                 .font(.system(size: 20, weight: .bold))
             Text("Turn it on in Settings › LowPolyCam.")
@@ -906,7 +906,7 @@ struct CameraScreen: View {
                 }
             }
             .font(.system(size: 16, weight: .bold))
-            .foregroundColor(Palette.mintBright)
+            .foregroundColor(settings.accentColor.bright)
             .padding(.top, 8)
         }
         .foregroundColor(.white)
@@ -974,9 +974,9 @@ struct CameraScreen: View {
                         .minimumScaleFactor(0.7)
                         .foregroundColor(isSelected ? Palette.slateDeep : .white)
                         .frame(width: isSelected ? 36 : 30, height: isSelected ? 36 : 30)
-                        .background(isSelected ? Palette.mintBright : Palette.panel.opacity(0.85))
+                        .background(isSelected ? settings.accentColor.bright : Palette.panel.opacity(0.85))
                         .clipShape(Circle())
-                        .overlay(Circle().stroke(isSelected ? Palette.mintBright : Palette.slateLight.opacity(0.35), lineWidth: 0.8))
+                        .overlay(Circle().stroke(isSelected ? settings.accentColor.bright : Palette.slateLight.opacity(0.35), lineWidth: 0.8))
                 }
                 .buttonStyle(.plain)
                 .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isSelected)
