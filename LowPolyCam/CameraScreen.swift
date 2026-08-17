@@ -9,9 +9,14 @@ struct CameraScreen: View {
 
     @State private var showSettings = false
     @State private var showPlayer = false
+    @State private var showProMenu = false
     @State private var dimmed = false
     @State private var savedBrightness: CGFloat = UIScreen.main.brightness
     @State private var blink = false
+
+    // Countdown State
+    @State private var countdownRemaining = 0
+    @State private var countdownTimer: Timer?
 
     // Zoom
     @State private var zoomGestureBase: CGFloat = 1
@@ -25,19 +30,25 @@ struct CameraScreen: View {
 
     @State private var startHaptic = UIImpactFeedbackGenerator(style: .medium)
     @State private var stopHaptic = UIImpactFeedbackGenerator(style: .light)
+    @State private var levelHaptic = UISelectionFeedbackGenerator()
 
     private var plan: EncodePlan { Encoder.plan(for: settings) }
 
     var body: some View {
         ZStack {
-            // Full-bleed layer
+            // Full-bleed preview layer
             ZStack {
                 Color.black
 
-                CameraPreview(session: recorder.session) { devicePoint, viewPoint in
+                CameraPreview(session: recorder.session, onTap: { devicePoint, viewPoint in
+                    if showProMenu {
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { showProMenu = false }
+                    }
                     recorder.focusAndExpose(at: devicePoint)
                     showFocusReticle(at: viewPoint)
-                }
+                }, onDoubleTap: {
+                    recorder.flipCamera()
+                })
                 .gesture(
                     MagnificationGesture()
                         .onChanged { value in
@@ -60,17 +71,35 @@ struct CameraScreen: View {
 
                 if settings.showGrid { gridOverlay }
 
+                if settings.showLevelGauge { levelGaugeOverlay }
+
                 if showZoomLabel { zoomLabel }
+
+                if countdownRemaining > 0 { countdownOverlay }
 
                 if dimmed { dimOverlay }
             }
             .ignoresSafeArea()
 
-            // Safe area UI layer
+            // Safe area HUD
             if recorder.permissionDenied {
                 permissionMessage
             } else {
-                controls
+                VStack(spacing: 0) {
+                    topHUD
+                    Spacer()
+                    if let notice = recorder.notice { noticeBar(notice) }
+                    
+                    if showProMenu && !recorder.isRecording && !recorder.isSaving {
+                        proToolsDrawer
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                            .padding(.bottom, 8)
+                    }
+
+                    bottomHUD
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
             }
         }
         .statusBar(hidden: true)
@@ -80,13 +109,19 @@ struct CameraScreen: View {
             recorder.start()
             startHaptic.prepare()
             stopHaptic.prepare()
+            levelHaptic.prepare()
         }
         .onDisappear {
             if dimmed { leaveDim() }
             recorder.stop()
+            countdownTimer?.invalidate()
         }
-        .onReceive(NotificationCenter.default.publisher(
-            for: UIApplication.willResignActiveNotification)) { _ in
+        .onChange(of: recorder.isLevel) { isLevel in
+            if isLevel && settings.showLevelGauge {
+                levelHaptic.selectionChanged()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
             if dimmed { leaveDim() }
         }
         .sheet(isPresented: $showSettings) {
@@ -99,109 +134,111 @@ struct CameraScreen: View {
         }
     }
 
-    // MARK: Controls
+    // MARK: Top HUD Bar
 
-    private var controls: some View {
-        VStack(spacing: 0) {
-            topBar
-            Spacer()
-            if let notice = recorder.notice { noticeBar(notice) }
-            if !recorder.isRecording && !recorder.isSaving {
-                modeSelector
-                    .padding(.bottom, 14)
+    private var topHUD: some View {
+        HStack(alignment: .center, spacing: 12) {
+            // Top Left: Flashlight Button
+            if recorder.hasTorch {
+                facetButton(system: recorder.torchOn ? "bolt.fill" : "bolt.slash.fill",
+                            tint: recorder.torchOn ? Palette.amber : .white) {
+                    recorder.toggleTorch()
+                }
+            } else {
+                Spacer().frame(width: 48, height: 48)
             }
-            bottomBar
+
+            Spacer()
+
+            // Center Compact Pill (Fits perfectly on all iPhone screens)
+            compactInfoPill
+
+            Spacer()
+
+            // Top Right: Settings Button
+            facetButton(system: "gearshape.fill") { showSettings = true }
+                .disabled(recorder.isRecording || recorder.isSaving)
+                .opacity((recorder.isRecording || recorder.isSaving) ? 0.35 : 1)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
     }
 
-    private var topBar: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 4) {
-                    if recorder.isRecording || recorder.isSaving {
-                        recordingStatusRow
-                    }
-                    if settings.cameraMode == .slowMo {
-                        Text("SLO-MO · \(settings.slowMoFrameRate.label) (\(settings.slowMoFrameRate.multiplierLabel))")
-                            .font(.system(size: 15, weight: .bold))
-                            .foregroundColor(Palette.amber)
-                            .shadow(color: .black.opacity(0.5), radius: 2, x: 0, y: 1)
-                    } else {
-                        Text("\(settings.resolution.label) · \(settings.quality.label)")
-                            .font(.system(size: 15, weight: .bold))
-                            .foregroundColor(Palette.mintBright)
-                            .shadow(color: .black.opacity(0.5), radius: 2, x: 0, y: 1)
-                    }
-                    Text(plan.sizeLabel)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.white.opacity(0.7))
-                }
-                Spacer()
-                VStack(alignment: .trailing, spacing: 4) {
-                    if recorder.batteryPercent >= 0 { batteryIndicator }
-                    Text("\(Int(plan.megabytesPerHour.rounded())) MB / hour")
+    private var compactInfoPill: some View {
+        VStack(spacing: 2) {
+            if recorder.isRecording || recorder.isSaving {
+                recordingStatusRow
+            } else {
+                HStack(spacing: 6) {
+                    Text(settings.cameraMode == .slowMo
+                         ? "SLO-MO · \(settings.slowMoFrameRate.label)"
+                         : "\(settings.resolution.label) · \(settings.quality.label)")
                         .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(settings.cameraMode == .slowMo ? Palette.amber : Palette.mintBright)
+
+                    Text("·")
+                        .foregroundColor(.white.opacity(0.4))
+
+                    Text("\(Int(plan.megabytesPerHour.rounded())) MB/h")
+                        .font(.system(size: 12, weight: .semibold))
                         .foregroundColor(Palette.amber)
-                        .shadow(color: .black.opacity(0.5), radius: 2, x: 0, y: 1)
-                    Text("\(Fmt.size(recorder.freeBytes)) free · about \(Fmt.hours(hoursLeft))")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.white.opacity(0.7))
+                }
+
+                HStack(spacing: 6) {
+                    Text(Fmt.size(recorder.freeBytes) + " free")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.white.opacity(0.65))
+
+                    if recorder.batteryPercent >= 0 {
+                        Text("·")
+                            .foregroundColor(.white.opacity(0.4))
+                        batteryIndicator
+                    }
                 }
             }
-            if recorder.isRecording && settings.recordAudio { audioLevelBar }
+
+            if recorder.isRecording && settings.recordAudio {
+                audioLevelBar
+                    .padding(.top, 2)
+            }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
         .background(.ultraThinMaterial)
         .environment(\.colorScheme, .dark)
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color.white.opacity(0.15), lineWidth: 0.5)
-        )
-        .shadow(color: .black.opacity(0.2), radius: 10, x: 0, y: 5)
+        .clipShape(Capsule())
+        .overlay(Capsule().stroke(Color.white.opacity(0.15), lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.25), radius: 8, x: 0, y: 4)
     }
 
     private var recordingStatusRow: some View {
-        Group {
+        HStack(spacing: 8) {
             if recorder.isRecording {
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 8) {
-                        Facet(sides: 6)
-                            .fill(Palette.record)
-                            .frame(width: 12, height: 12)
-                            .shadow(color: Palette.record, radius: blink ? 6 : 0)
-                            .opacity(blink ? 0.3 : 1)
-                            .animation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true), value: blink)
-                        
-                        Text("REC")
-                            .font(.system(size: 13, weight: .black))
-                            .shadow(color: .black.opacity(0.5), radius: 2)
-                        Text(Fmt.duration(recorder.elapsed))
-                            .font(.system(size: 15, weight: .bold, design: .monospaced))
-                            .shadow(color: .black.opacity(0.5), radius: 2)
-                    }
-                    .fixedSize()
-                    if recorder.droppedFrames > 0 {
-                        Text("\(recorder.droppedFrames) frame\(recorder.droppedFrames == 1 ? "" : "s") dropped")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(Palette.amber)
-                    }
+                Facet(sides: 6)
+                    .fill(Palette.record)
+                    .frame(width: 10, height: 10)
+                    .shadow(color: Palette.record, radius: blink ? 5 : 0)
+                    .opacity(blink ? 0.3 : 1)
+                    .animation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true), value: blink)
+
+                Text("REC")
+                    .font(.system(size: 12, weight: .black))
+                Text(Fmt.duration(recorder.elapsed))
+                    .font(.system(size: 14, weight: .bold, design: .monospaced))
+
+                if recorder.droppedFrames > 0 {
+                    Text("\(recorder.droppedFrames)d")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(Palette.amber)
                 }
-                .foregroundColor(.white)
-                .onAppear { blink = true }
-                .onDisappear { blink = false }
             } else if recorder.isSaving {
-                HStack(spacing: 8) {
-                    ProgressView().tint(Palette.mintBright).scaleEffect(0.8)
-                    Text("Saving…")
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundColor(Palette.mintBright)
-                }
+                ProgressView().tint(Palette.mintBright).scaleEffect(0.7)
+                Text("Saving…")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(Palette.mintBright)
             }
         }
+        .foregroundColor(.white)
+        .onAppear { blink = true }
+        .onDisappear { blink = false }
     }
 
     private var batteryIndicator: some View {
@@ -209,23 +246,14 @@ struct CameraScreen: View {
         let color: Color = recorder.batteryCharging ? Palette.mintBright
             : pct <= 20 ? Palette.record
             : pct <= 40 ? Palette.amber
-            : .white.opacity(0.9)
-        let symbol: String = {
-            if recorder.batteryCharging { return "battery.100.bolt" }
-            switch pct {
-            case ..<13: return "battery.0"
-            case ..<38: return "battery.25"
-            case ..<63: return "battery.50"
-            case ..<88: return "battery.75"
-            default: return "battery.100"
-            }
-        }()
-        return HStack(spacing: 4) {
-            Image(systemName: symbol).font(.system(size: 13))
-            Text("\(pct)%").font(.system(size: 12, weight: .bold))
+            : .white.opacity(0.8)
+        return HStack(spacing: 3) {
+            Image(systemName: recorder.batteryCharging ? "battery.100.bolt" : "battery.75")
+                .font(.system(size: 10))
+            Text("\(pct)%")
+                .font(.system(size: 11, weight: .semibold))
         }
         .foregroundColor(color)
-        .shadow(color: .black.opacity(0.5), radius: 2)
     }
 
     private var audioLevelBar: some View {
@@ -238,7 +266,7 @@ struct CameraScreen: View {
                     .animation(.spring(response: 0.2, dampingFraction: 0.8), value: recorder.audioLevel)
             }
         }
-        .frame(width: 90, height: 5)
+        .frame(width: 80, height: 4)
     }
 
     private var audioLevelColor: Color {
@@ -247,27 +275,161 @@ struct CameraScreen: View {
             : Palette.mintBright
     }
 
-    private var bottomBar: some View {
-        ZStack {
-            // LEFT CONTROLS
-            HStack(spacing: 12) {
-                facetButton(system: "gearshape.fill") { showSettings = true }
-                    .disabled(recorder.isRecording || recorder.isSaving)
-                    .opacity((recorder.isRecording || recorder.isSaving) ? 0.35 : 1)
+    // MARK: Floating Pro Mini-Window
 
-                if recorder.hasTorch {
-                    facetButton(system: recorder.torchOn ? "bolt.fill" : "bolt.slash.fill",
-                                tint: recorder.torchOn ? Palette.amber : .white) {
-                        recorder.toggleTorch()
-                    }
-                }
+    private var proToolsDrawer: some View {
+        VStack(spacing: 12) {
+            HStack {
+                Label("PRO TOOLS", systemImage: "slider.horizontal.3")
+                    .font(.system(size: 12, weight: .black))
+                    .foregroundColor(Palette.mintBright)
+
                 Spacer()
+
+                Button(action: {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { showProMenu = false }
+                }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 18))
+                        .foregroundColor(.white.opacity(0.5))
+                }
+                .buttonStyle(.plain)
             }
 
-            // RIGHT CONTROLS
-            HStack(spacing: 12) {
+            // EV Exposure Slider
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("Exposure (EV)")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.white.opacity(0.7))
+                    Spacer()
+                    Text(String(format: "%@%.1f EV", settings.exposureBias > 0 ? "+" : "", settings.exposureBias))
+                        .font(.system(size: 12, weight: .bold, design: .monospaced))
+                        .foregroundColor(Palette.amber)
+
+                    Button("Reset") {
+                        recorder.setExposureBias(0.0)
+                    }
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(Palette.mint)
+                    .padding(.leading, 6)
+                }
+
+                Slider(value: Binding(
+                    get: { settings.exposureBias },
+                    set: { val in recorder.setExposureBias(val) }
+                ), in: -2.0...2.0, step: 0.1)
+                .tint(Palette.amber)
+            }
+
+            // White Balance Presets
+            VStack(alignment: .leading, spacing: 6) {
+                Text("White Balance")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.white.opacity(0.7))
+
+                HStack(spacing: 6) {
+                    ForEach(WhiteBalancePreset.allCases) { preset in
+                        let isSelected = settings.whiteBalance == preset
+                        Button(action: { recorder.setWhiteBalance(preset) }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: preset.icon)
+                                Text(preset.label)
+                            }
+                            .font(.system(size: 11, weight: isSelected ? .bold : .medium))
+                            .foregroundColor(isSelected ? .black : .white)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(isSelected ? Palette.mintBright : Color.white.opacity(0.12))
+                            .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
+            // Quick Toggles Row: Level Meter & Countdown Timer
+            HStack(spacing: 10) {
+                // Level Toggle
+                Button(action: {
+                    withAnimation { settings.showLevelGauge.toggle() }
+                }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "gyroscope")
+                        Text("Level Meter")
+                    }
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(settings.showLevelGauge ? .black : .white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(settings.showLevelGauge ? Palette.mintBright : Color.white.opacity(0.12))
+                    .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+
                 Spacer()
 
+                // Timer Pills
+                HStack(spacing: 4) {
+                    Image(systemName: "timer")
+                        .font(.system(size: 12))
+                        .foregroundColor(.white.opacity(0.7))
+
+                    ForEach(CountdownTimer.allCases) { timer in
+                        let isSelected = settings.countdownTimer == timer
+                        Button(action: { settings.countdownTimer = timer }) {
+                            Text(timer.label)
+                                .font(.system(size: 11, weight: isSelected ? .bold : .medium))
+                                .foregroundColor(isSelected ? .black : .white)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 6)
+                                .background(isSelected ? Palette.amber : Color.white.opacity(0.12))
+                                .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .background(.ultraThinMaterial)
+        .environment(\.colorScheme, .dark)
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(Color.white.opacity(0.18), lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.35), radius: 15, x: 0, y: 8)
+    }
+
+    // MARK: Bottom HUD Bar
+
+    private var bottomHUD: some View {
+        VStack(spacing: 12) {
+            // Mode Selector + Quick Pro (...) Button
+            HStack {
+                if !recorder.isRecording && !recorder.isSaving {
+                    modeSelector
+
+                    Button(action: {
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                            showProMenu.toggle()
+                        }
+                    }) {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundColor(showProMenu ? Palette.mintBright : .white)
+                            .frame(width: 36, height: 36)
+                            .background(.ultraThinMaterial)
+                            .environment(\.colorScheme, .dark)
+                            .clipShape(Circle())
+                            .overlay(Circle().stroke(Color.white.opacity(0.15), lineWidth: 0.5))
+                            .shadow(color: .black.opacity(0.2), radius: 4)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            // Bottom Shutter Row (Gallery Left, Record Center, Flip Right)
+            HStack(alignment: .center) {
+                // Left: Gallery Thumbnail
                 if !recorder.isRecording && !recorder.isSaving, let thumb = recorder.lastClipThumbnail {
                     Button(action: { showPlayer = true }) {
                         Image(uiImage: thumb)
@@ -275,29 +437,33 @@ struct CameraScreen: View {
                             .aspectRatio(contentMode: .fill)
                             .frame(width: 50, height: 50)
                             .clipShape(Facet(sides: 6, rotation: .pi / 6))
-                            .overlay(
-                                Facet(sides: 6, rotation: .pi / 6)
-                                    .stroke(Color.white.opacity(0.3), lineWidth: 1.5)
-                            )
-                            .shadow(color: .black.opacity(0.3), radius: 5, x: 0, y: 3)
+                            .overlay(Facet(sides: 6, rotation: .pi / 6).stroke(Color.white.opacity(0.35), lineWidth: 1.5))
+                            .shadow(color: .black.opacity(0.3), radius: 5)
                     }
                     .buttonStyle(.plain)
-                    .transition(.scale.combined(with: .opacity))
+                } else {
+                    Spacer().frame(width: 50, height: 50)
                 }
 
+                Spacer()
+
+                // Center: Record Button
+                recordButton
+
+                Spacer()
+
+                // Right: Enlarged Camera Flip Button (or Moon Screen Dimmer while recording)
                 if recorder.isRecording {
-                    facetButton(system: "moon.fill") { enterDim() }
+                    facetButton(system: "moon.fill", size: 56) { enterDim() }
                 } else {
-                    facetButton(system: "arrow.triangle.2.circlepath.camera.fill") {
+                    facetButton(system: "arrow.triangle.2.circlepath.camera.fill", size: 56) {
                         recorder.flipCamera()
                     }
                     .disabled(recorder.isSaving)
                     .opacity(recorder.isSaving ? 0.35 : 1)
                 }
             }
-            
-            // CENTER RECORD BUTTON
-            recordButton
+            .padding(.horizontal, 8)
         }
     }
 
@@ -306,20 +472,25 @@ struct CameraScreen: View {
             if recorder.isRecording {
                 stopHaptic.impactOccurred()
                 stopHaptic.prepare()
+                recorder.toggleRecording()
             } else {
-                startHaptic.impactOccurred()
-                startHaptic.prepare()
+                if countdownRemaining > 0 {
+                    cancelCountdown()
+                } else if settings.countdownTimer != .off {
+                    startCountdown()
+                } else {
+                    startHaptic.impactOccurred()
+                    startHaptic.prepare()
+                    recorder.toggleRecording()
+                }
             }
-            recorder.toggleRecording()
         } label: {
             ZStack {
-                // Outer ring
                 Facet(sides: 12)
                     .stroke(LinearGradient(colors: [Palette.mintBright, Palette.mintDeep], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 4)
                     .frame(width: 78, height: 78)
-                    .shadow(color: Palette.mint.opacity(0.3), radius: 6, x: 0, y: 0)
+                    .shadow(color: Palette.mint.opacity(0.3), radius: 6)
 
-                // Inner track
                 Facet(sides: 12)
                     .stroke(Palette.mintDeep.opacity(0.3), lineWidth: 1.5)
                     .frame(width: 66, height: 66)
@@ -330,7 +501,11 @@ struct CameraScreen: View {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .fill(LinearGradient(colors: [Palette.record, Palette.record.opacity(0.8)], startPoint: .top, endPoint: .bottom))
                         .frame(width: 32, height: 32)
-                        .shadow(color: Palette.record.opacity(0.6), radius: 10, x: 0, y: 0) // Glowing effect
+                        .shadow(color: Palette.record.opacity(0.6), radius: 10)
+                } else if countdownRemaining > 0 {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 24, weight: .bold))
+                        .foregroundColor(.white)
                 } else {
                     Facet(sides: 12)
                         .fill(LinearGradient(colors: [Palette.record, Palette.record.opacity(0.85)], startPoint: .topLeading, endPoint: .bottomTrailing))
@@ -345,9 +520,6 @@ struct CameraScreen: View {
         .disabled(recorder.isSaving)
         .animation(.spring(response: 0.35, dampingFraction: 0.7), value: recorder.isRecording)
     }
-
-    // Glassmorphic mode selector
-    @State private var modeSelectorOffset: CGFloat = 0
 
     private var modeSelector: some View {
         let modes = CameraMode.allCases
@@ -369,9 +541,8 @@ struct CameraScreen: View {
                         .foregroundColor(isActive
                             ? (mode == .slowMo ? Palette.amber : Palette.mintBright)
                             : .white.opacity(0.6))
-                        .padding(.horizontal, 18)
+                        .padding(.horizontal, 16)
                         .padding(.vertical, 8)
-                        .shadow(color: isActive ? .black.opacity(0.5) : .clear, radius: 2)
                 }
                 .buttonStyle(.plain)
             }
@@ -380,36 +551,18 @@ struct CameraScreen: View {
         .environment(\.colorScheme, .dark)
         .clipShape(Capsule())
         .overlay(Capsule().stroke(Color.white.opacity(0.15), lineWidth: 0.5))
-        .shadow(color: .black.opacity(0.2), radius: 8, x: 0, y: 4)
-        .gesture(
-            DragGesture(minimumDistance: 20)
-                .onEnded { value in
-                    let horizontal = value.translation.width
-                    if horizontal < -20, settings.cameraMode == .video {
-                        modeHaptic.selectionChanged()
-                        withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
-                            settings.cameraMode = .slowMo
-                        }
-                        recorder.updateCaptureFormat()
-                    } else if horizontal > 20, settings.cameraMode == .slowMo {
-                        modeHaptic.selectionChanged()
-                        withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
-                            settings.cameraMode = .video
-                        }
-                        recorder.updateCaptureFormat()
-                    }
-                }
-        )
+        .shadow(color: .black.opacity(0.2), radius: 6, x: 0, y: 3)
     }
 
     private func facetButton(system: String,
+                             size: CGFloat = 48,
                              tint: Color = .white,
                              action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: system)
-                .font(.system(size: 19, weight: .medium))
+                .font(.system(size: size * 0.38, weight: .medium))
                 .foregroundColor(tint)
-                .frame(width: 52, height: 52)
+                .frame(width: size, height: size)
                 .background(.ultraThinMaterial)
                 .environment(\.colorScheme, .dark)
                 .clipShape(Facet(sides: 6, rotation: .pi / 6))
@@ -423,7 +576,89 @@ struct CameraScreen: View {
         .buttonStyle(.plain)
     }
 
-    private func noticeBar(_ text: String) -> some View {
+    // MARK: Overlays (Level Meter & Countdown)
+
+    private var levelGaugeOverlay: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            let h = geo.size.height
+            let isLevel = recorder.isLevel
+
+            ZStack {
+                // Center Crosshair
+                Circle()
+                    .stroke(isLevel ? Palette.mintBright : Color.white.opacity(0.3), lineWidth: 1.5)
+                    .frame(width: 12, height: 12)
+
+                // Left and Right Horizon Lines
+                HStack(spacing: 24) {
+                    Rectangle()
+                        .fill(isLevel ? Palette.mintBright : Color.white.opacity(0.3))
+                        .frame(width: 40, height: 1.5)
+
+                    Spacer().frame(width: 12)
+
+                    Rectangle()
+                        .fill(isLevel ? Palette.mintBright : Color.white.opacity(0.3))
+                        .frame(width: 40, height: 1.5)
+                }
+                .rotationEffect(.degrees(-recorder.rollAngle))
+                .animation(.spring(response: 0.2, dampingFraction: 0.8), value: recorder.rollAngle)
+            }
+            .position(x: w / 2, y: h / 2)
+            .shadow(color: isLevel ? Palette.mint.opacity(0.6) : .clear, radius: 4)
+        }
+        .allowsHitTesting(false)
+    }
+
+    private var countdownOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.35)
+                .ignoresSafeArea()
+
+            VStack(spacing: 8) {
+                Text("\(countdownRemaining)")
+                    .font(.system(size: 84, weight: .black, design: .rounded))
+                    .foregroundColor(Palette.amber)
+                    .shadow(color: Palette.amber.opacity(0.6), radius: 20)
+                    .scaleEffect(1.1)
+                    .animation(.spring(response: 0.3, dampingFraction: 0.6), value: countdownRemaining)
+
+                Text("Tap shutter to cancel")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(.white.opacity(0.7))
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    private func startCountdown() {
+        countdownRemaining = settings.countdownTimer.rawValue
+        let haptic = UIImpactFeedbackGenerator(style: .heavy)
+        haptic.prepare()
+
+        countdownTimer?.invalidate()
+        countdownTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+            haptic.impactOccurred()
+            if countdownRemaining > 1 {
+                countdownRemaining -= 1
+            } else {
+                countdownTimer?.invalidate()
+                countdownTimer = nil
+                countdownRemaining = 0
+                startHaptic.impactOccurred()
+                recorder.startRecording()
+            }
+        }
+    }
+
+    private func cancelCountdown() {
+        countdownTimer?.invalidate()
+        countdownTimer = nil
+        countdownRemaining = 0
+    }
+
+    private var noticeBar(_ text: String) -> some View {
         Text(text)
             .font(.system(size: 13, weight: .medium))
             .foregroundColor(.white)
@@ -433,18 +668,14 @@ struct CameraScreen: View {
             .background(.ultraThinMaterial)
             .environment(\.colorScheme, .dark)
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(Color.white.opacity(0.15), lineWidth: 0.5)
-            )
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Color.white.opacity(0.15), lineWidth: 0.5))
             .shadow(color: .black.opacity(0.2), radius: 8, x: 0, y: 4)
-            .padding(.bottom, 14)
+            .padding(.bottom, 10)
             .onTapGesture {
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                     recorder.notice = nil
                 }
             }
-            .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 
     private var permissionMessage: some View {
@@ -475,7 +706,7 @@ struct CameraScreen: View {
         .shadow(color: .black.opacity(0.3), radius: 20, x: 0, y: 10)
     }
 
-    // MARK: Zoom & Grid
+    // MARK: Zoom & Focus
 
     private var gridOverlay: some View {
         GeometryReader { geo in
@@ -494,7 +725,6 @@ struct CameraScreen: View {
             .stroke(Color.white.opacity(0.2), lineWidth: 0.5)
         }
         .allowsHitTesting(false)
-        .transition(.opacity)
     }
 
     private var zoomLabel: some View {
@@ -508,7 +738,6 @@ struct CameraScreen: View {
             .clipShape(Capsule())
             .overlay(Capsule().stroke(Color.white.opacity(0.15), lineWidth: 0.5))
             .shadow(color: .black.opacity(0.2), radius: 6, x: 0, y: 3)
-            .transition(.scale.combined(with: .opacity))
     }
 
     private func scheduleHideZoomLabel() {
@@ -522,8 +751,6 @@ struct CameraScreen: View {
             }
         }
     }
-
-    // MARK: Tap to focus
 
     private var focusReticle: some View {
         Facet(sides: 6, rotation: .pi / 6)
@@ -546,7 +773,7 @@ struct CameraScreen: View {
         }
     }
 
-    // MARK: Dim mode
+    // MARK: Dim Mode
 
     private var dimOverlay: some View {
         Color.black
@@ -559,7 +786,7 @@ struct CameraScreen: View {
                         .shadow(color: Palette.record, radius: blink ? 6 : 0)
                         .opacity(blink ? 0.3 : 1)
                         .animation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true), value: blink)
-                    
+
                     Text("recording · tap to wake")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundColor(.white.opacity(0.2))
@@ -577,12 +804,6 @@ struct CameraScreen: View {
     private func leaveDim() {
         UIScreen.main.brightness = savedBrightness
         withAnimation(.easeOut(duration: 0.2)) { dimmed = false }
-    }
-
-    private var hoursLeft: Double {
-        let perHour = plan.megabytesPerHour * 1_000_000
-        guard perHour > 0 else { return 0 }
-        return Double(max(0, recorder.freeBytes - CameraRecorder.reserveBytes)) / perHour
     }
 }
 
