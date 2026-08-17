@@ -1,5 +1,24 @@
 import SwiftUI
 
+// Custom label style that perfectly mimics Apple's native Settings app icons
+struct SettingsLabelStyle: LabelStyle {
+    var color: Color
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 14) {
+            configuration.icon
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundColor(.white)
+                .frame(width: 28, height: 28)
+                .background(color)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .shadow(color: color.opacity(0.3), radius: 3, x: 0, y: 2)
+            
+            configuration.title
+                .font(.system(size: 16, weight: .medium))
+        }
+    }
+}
+
 struct SettingsScreen: View {
 
     @ObservedObject var settings: AppSettings
@@ -29,8 +48,11 @@ struct SettingsScreen: View {
             }
             .listStyle(InsetGroupedListStyle())
             .navigationBarTitle("Settings", displayMode: .inline)
-            .navigationBarItems(trailing: Button("Done") {
+            .navigationBarItems(trailing: Button(action: {
                 presentation.wrappedValue.dismiss()
+            }) {
+                Text("Done")
+                    .font(.system(size: 16, weight: .bold))
             })
         }
         .navigationViewStyle(StackNavigationViewStyle())
@@ -39,34 +61,32 @@ struct SettingsScreen: View {
 
     // MARK: Sections
 
-    /// Explains up front why some rows below are greyed out, rather than
-    /// leaving them looking broken.
     private var frontCameraBanner: some View {
         Section {
-            HStack(spacing: 12) {
-                Facet(sides: 6, rotation: .pi / 6)
-                    .fill(Palette.violet.opacity(0.25))
-                    .frame(width: 34, height: 34)
-                    .overlay(
-                        Image(systemName: "person.fill")
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundColor(Palette.violet)
-                    )
-                VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 14) {
+                Image(systemName: "person.fill")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.white)
+                    .frame(width: 32, height: 32)
+                    .background(Palette.violet)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .shadow(color: Palette.violet.opacity(0.3), radius: 4, x: 0, y: 2)
+                
+                VStack(alignment: .leading, spacing: 3) {
                     Text("Selfie camera")
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.system(size: 16, weight: .bold))
                     Text("It offers fewer options than the back camera. Anything it cannot do is greyed out.")
-                        .font(.caption)
+                        .font(.system(size: 13, weight: .medium))
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            .padding(.vertical, 2)
+            .padding(.vertical, 4)
         }
     }
 
     private var resolutionSection: some View {
-        Section(header: Text("Resolution"),
+        Section(header: Text("Resolution").font(.system(size: 13, weight: .semibold)),
                 footer: Text("Recording at \(plan.sizeLabel).")) {
             ForEach(Resolution.allCases) { r in
                 row(title: r.label,
@@ -82,7 +102,7 @@ struct SettingsScreen: View {
 
     private var frameRateSection: some View {
         let locked = settings.resolution.lockedFrameRate
-        return Section(header: Text("Frame rate"),
+        return Section(header: Text("Frame rate").font(.system(size: 13, weight: .semibold)),
                 footer: Text(locked != nil
                              ? "\(settings.resolution.label) films at \(locked!.label) only."
                              : recorder.availableFrameRates.count < FrameRate.allCases.count
@@ -102,7 +122,7 @@ struct SettingsScreen: View {
     }
 
     private var qualitySection: some View {
-        Section(header: Text("Quality")) {
+        Section(header: Text("Quality").font(.system(size: 13, weight: .semibold))) {
             ForEach(Quality.allCases) { q in
                 row(title: q.label, subtitle: q.detail, selected: settings.quality == q) {
                     settings.quality = q
@@ -112,7 +132,7 @@ struct SettingsScreen: View {
     }
 
     private var saveSection: some View {
-        Section(header: Text("Save recordings to")) {
+        Section(header: Text("Save recordings to").font(.system(size: 13, weight: .semibold))) {
             ForEach(SaveLocation.allCases) { s in
                 row(title: s.label, subtitle: s.detail, selected: settings.saveLocation == s) {
                     settings.saveLocation = s
@@ -122,7 +142,7 @@ struct SettingsScreen: View {
     }
 
     private var splitSection: some View {
-        Section(header: Text("Split recordings"),
+        Section(header: Text("Split recordings").font(.system(size: 13, weight: .semibold)),
                 footer: Text("Splitting into shorter segments makes large files easier to transfer, edit, and share, without losing any frames between clips.")) {
             ForEach(SplitInterval.allCases) { interval in
                 row(title: interval.label, subtitle: interval.detail, selected: settings.splitInterval == interval) {
@@ -133,7 +153,7 @@ struct SettingsScreen: View {
     }
 
     private var estimateSection: some View {
-        Section(header: Text("What that costs")) {
+        Section(header: Text("What that costs").font(.system(size: 13, weight: .semibold))) {
             info("Space per hour", "\(Int(plan.megabytesPerHour.rounded())) MB")
             info("Room left on this phone", Fmt.hours(hoursLeft))
             info("Bitrate", "\(plan.videoBitrate / 1000) kbit/s video"
@@ -143,41 +163,54 @@ struct SettingsScreen: View {
     }
 
     private var cameraSection: some View {
-        Section(header: Text("Camera"),
+        Section(header: Text("Camera Tools").font(.system(size: 13, weight: .semibold)),
                 footer: Text(recorder.stabilizationSupported
-                             ? "Steadies the picture. Turning it off gives a slightly wider view and uses a little less power."
+                             ? "Stabilisation steadies the picture. Turning it off gives a slightly wider view and uses a little less power."
                              : "This camera does not offer stabilisation, so the switch has no effect here.")) {
 
-            Toggle("Optical image stabilisation", isOn: $settings.stabilization)
-                .onChange(of: settings.stabilization) { _ in recorder.updateStabilization() }
-                .disabled(!recorder.stabilizationSupported)
+            Toggle(isOn: $settings.stabilization) {
+                Label("Optical stabilisation", systemImage: "hand.raised.fill")
+                    .labelStyle(SettingsLabelStyle(color: Palette.violet))
+            }
+            .onChange(of: settings.stabilization) { _ in recorder.updateStabilization() }
+            .disabled(!recorder.stabilizationSupported)
 
-            Toggle("Low-power torch", isOn: $settings.lowTorch)
-                .disabled(!recorder.hasTorch)
+            Toggle(isOn: $settings.lowTorch) {
+                Label("Low-power torch", systemImage: "flashlight.on.fill")
+                    .labelStyle(SettingsLabelStyle(color: Palette.amber))
+            }
+            .disabled(!recorder.hasTorch)
 
-            Toggle("Record sound", isOn: $settings.recordAudio)
-                .onChange(of: settings.recordAudio) { _ in recorder.syncMicInput() }
+            Toggle(isOn: $settings.recordAudio) {
+                Label("Record sound", systemImage: "mic.fill")
+                    .labelStyle(SettingsLabelStyle(color: Palette.mintDeep))
+            }
+            .onChange(of: settings.recordAudio) { _ in recorder.syncMicInput() }
 
-            Toggle("Grid overlay", isOn: $settings.showGrid)
+            Toggle(isOn: $settings.showGrid) {
+                Label("Grid overlay", systemImage: "grid")
+                    .labelStyle(SettingsLabelStyle(color: Palette.slateLight))
+            }
         }
     }
 
     private var advancedSection: some View {
-        Section(header: Text("Video format"),
+        Section(header: Text("Video format").font(.system(size: 13, weight: .semibold)),
                 footer: Text(settings.useHEVC
                              ? "HEVC gets the same picture into roughly half the space. Plays on the iPhone and in VLC. Switch to H.264 if some other player refuses the files."
                              : "H.264 plays everywhere but needs about 60% more space for the same picture as HEVC.")) {
-            row(title: "HEVC", subtitle: "Smaller files, the modern default", selected: settings.useHEVC) {
+            
+            row(title: "HEVC", subtitle: "Smaller files, the modern default", icon: "sparkles", iconColor: Palette.mintDeep, selected: settings.useHEVC) {
                 settings.useHEVC = true
             }
-            row(title: "H.264", subtitle: "Bigger files, plays on almost anything", selected: !settings.useHEVC) {
+            row(title: "H.264", subtitle: "Bigger files, plays on almost anything", icon: "film.fill", iconColor: Palette.slateLight, selected: !settings.useHEVC) {
                 settings.useHEVC = false
             }
         }
     }
 
     private var aboutSection: some View {
-        Section(header: Text("Good to know")) {
+        Section(header: Text("Good to know").font(.system(size: 13, weight: .semibold))) {
             Text("A recording is written a few seconds at a time in fragments, so if the battery dies mid-recording, the footage up to that moment survives and is filed away next time the app opens.")
                 .font(.footnote)
                 .foregroundColor(.secondary)
@@ -193,7 +226,7 @@ struct SettingsScreen: View {
     // MARK: Slow-Mo sections
 
     private var slowMoFrameRateSection: some View {
-        Section(header: Text("Slow-Mo Speed"),
+        Section(header: Text("Slow-Mo Speed").font(.system(size: 13, weight: .semibold)),
                 footer: Text(recorder.isSlowMoSupportedOnCurrentLens
                              ? "Higher fps = smoother, slower playback."
                              : "Slow motion is not available on this camera lens.")) {
@@ -211,7 +244,7 @@ struct SettingsScreen: View {
     }
 
     private var slowMoResolutionSection: some View {
-        Section(header: Text("Slow-Mo Resolution"),
+        Section(header: Text("Slow-Mo Resolution").font(.system(size: 13, weight: .semibold)),
                 footer: Text("Some frame rates limit the maximum resolution on this iPhone.")) {
             ForEach(Resolution.allCases) { r in
                 let available = recorder.availableSlowMoResolutions.contains(r)
@@ -230,27 +263,40 @@ struct SettingsScreen: View {
 
     private func row(title: String,
                      subtitle: String,
+                     icon: String? = nil,
+                     iconColor: Color? = nil,
                      selected: Bool,
                      enabled: Bool = true,
                      tap: @escaping () -> Void) -> some View {
         Button(action: { if enabled { tap() } }) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 14) {
+                if let icon = icon, let color = iconColor {
+                    Image(systemName: icon)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.white)
+                        .frame(width: 28, height: 28)
+                        .background(enabled ? color : Color.gray.opacity(0.3))
+                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .shadow(color: enabled ? color.opacity(0.3) : .clear, radius: 3, x: 0, y: 2)
+                }
+                
+                VStack(alignment: .leading, spacing: 3) {
                     Text(title)
+                        .font(.system(size: 16, weight: .medium))
                         .foregroundColor(enabled ? .primary : .secondary)
                     Text(subtitle)
-                        .font(.caption)
+                        .font(.system(size: 13, weight: .regular))
                         .foregroundColor(.secondary)
                 }
                 Spacer()
                 if selected && enabled {
                     Image(systemName: "checkmark")
                         .foregroundColor(Palette.mintDeep)
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.system(size: 16, weight: .bold))
                 } else if !enabled {
                     Image(systemName: "lock.fill")
-                        .foregroundColor(.secondary.opacity(0.5))
-                        .font(.system(size: 12))
+                        .foregroundColor(.secondary.opacity(0.4))
+                        .font(.system(size: 13))
                 }
             }
             .contentShape(Rectangle())
@@ -262,8 +308,11 @@ struct SettingsScreen: View {
     private func info(_ label: String, _ value: String) -> some View {
         HStack {
             Text(label)
+                .font(.system(size: 16, weight: .regular))
             Spacer()
-            Text(value).foregroundColor(.secondary)
+            Text(value)
+                .font(.system(size: 16, weight: .medium))
+                .foregroundColor(.secondary)
         }
     }
 
