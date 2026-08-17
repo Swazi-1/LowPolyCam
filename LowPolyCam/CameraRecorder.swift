@@ -393,18 +393,28 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     private func ensureCorrectCameraDevice(for mode: CameraMode) {
         guard let targetDevice = Self.camera(at: position, mode: mode, preferPhysical: wantsPhysicalWideLens) else { return }
-        if cameraInput?.device.uniqueID != targetDevice.uniqueID {
-            DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
-            
-            session.beginConfiguration()
-            if let old = cameraInput { session.removeInput(old) }
-            if let input = try? AVCaptureDeviceInput(device: targetDevice), session.canAddInput(input) {
-                session.addInput(input)
-                cameraInput = input
-            }
-            session.commitConfiguration()
-            configureVideoConnection()
+        switchCameraInput(to: targetDevice)
+    }
+
+    /// Swaps the active AVCaptureDeviceInput to `targetDevice` if it isn't
+    /// already active. Shared by the normal mode/frame-rate routing in
+    /// ensureCorrectCameraDevice(...) and by setWhiteBalance(...), which
+    /// needs to force a specific device (the physical wide lens) only when
+    /// the currently active one actually can't lock custom white-balance
+    /// gains, rather than always routing manual presets away from the
+    /// virtual lens up front.
+    private func switchCameraInput(to targetDevice: AVCaptureDevice) {
+        guard cameraInput?.device.uniqueID != targetDevice.uniqueID else { return }
+        DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
+
+        session.beginConfiguration()
+        if let old = cameraInput { session.removeInput(old) }
+        if let input = try? AVCaptureDeviceInput(device: targetDevice), session.canAddInput(input) {
+            session.addInput(input)
+            cameraInput = input
         }
+        session.commitConfiguration()
+        configureVideoConnection()
     }
 
     private func applyActiveFormat() {
@@ -822,12 +832,20 @@ final class CameraRecorder: NSObject, ObservableObject {
     /// wide-angle lens (same trick already used for 60fps) makes manual
     /// white balance work on every iPhone again, at the cost of losing the
     /// ultra-wide/telephoto zoom range while a manual preset is active.
-    private var wantsPhysicalWideForManualWhiteBalance: Bool {
-        settings.whiteBalance.kelvin != nil
-    }
-
+    /// Manual white-balance locking (custom device gains) is unsupported on
+    /// the *virtual* multi-lens "back camera" (triple/dual-wide/dual) on
+    /// some iPhones - AVFoundation reports
+    /// `isLockingWhiteBalanceWithCustomDeviceGainsSupported == false` for
+    /// it there. It used to be assumed *every* iPhone's virtual camera
+    /// lacks this, so every manual preset (anything but Auto) force-routed
+    /// to the plain physical wide lens - which works, but silently drops
+    /// the ultra-wide element and 0.5x zoom, even on the (increasingly
+    /// common) iPhones whose virtual camera *does* support locked gains.
+    /// setWhiteBalance(...) now checks the currently active device first
+    /// and only falls back to the physical lens if that check actually
+    /// fails, so 0.5x stays available on hardware that supports it.
     private var wantsPhysicalWideLens: Bool {
-        wantsPhysicalWideForFrameRate || wantsPhysicalWideForManualWhiteBalance
+        wantsPhysicalWideForFrameRate
     }
 
     // MARK: Exposure & White Balance
@@ -849,37 +867,71 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     func setWhiteBalance(_ preset: WhiteBalancePreset) {
         sessionQueue.async {
-            // Manual presets need the physical wide-angle lens (see
-            // wantsPhysicalWideForManualWhiteBalance) - switching to/from a
-            // preset can change which underlying device we should be on, so
-            // make sure that swap happens before we try to lock gains.
-            self.ensureCorrectCameraDevice(for: self.settings.cameraMode)
-            guard let device = self.cameraInput?.device else { return }
-            do {
-                try device.lockForConfiguration()
-                if let values = preset.kelvin {
-                    guard device.isLockingWhiteBalanceWithCustomDeviceGainsSupported else {
-                        device.unlockForConfiguration()
-                        DispatchQueue.main.async {
-                            self.notice = "This camera doesn't support manual white balance presets."
-                        }
-                        return
-                    }
-                    let tempAndTint = AVCaptureDevice.WhiteBalanceTemperatureAndTintValues(temperature: values.temp, tint: values.tint)
-                    var gains = device.deviceWhiteBalanceGains(for: tempAndTint)
-                    let maxGain = device.maxWhiteBalanceGain
-                    gains.redGain = max(1.0, min(gains.redGain.isFinite ? gains.redGain : 1.0, maxGain))
-                    gains.greenGain = max(1.0, min(gains.greenGain.isFinite ? gains.greenGain : 1.0, maxGain))
-                    gains.blueGain = max(1.0, min(gains.blueGain.isFinite ? gains.blueGain : 1.0, maxGain))
-                    device.setWhiteBalanceModeLocked(with: gains, completionHandler: nil)
-                } else {
+            if preset.kelvin == nil {
+                // Back to Auto - make sure we're not still stuck on the
+                // physical wide lens from an earlier manual preset that
+                // needed it (see below), so 0.5x/telephoto zoom returns.
+                self.ensureCorrectCameraDevice(for: self.settings.cameraMode)
+                guard let device = self.cameraInput?.device else { return }
+                do {
+                    try device.lockForConfiguration()
                     if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) {
                         device.whiteBalanceMode = .continuousAutoWhiteBalance
                     }
+                    device.unlockForConfiguration()
+                    self.refreshZoomLimits()
+                    DispatchQueue.main.async { self.settings.whiteBalance = preset }
+                } catch { }
+                return
+            }
+
+            guard let values = preset.kelvin else { return }
+
+            // Try the currently active lens first - on iPhones whose
+            // virtual/multi-lens camera does support locked custom gains,
+            // this keeps 0.5x/telephoto zoom available while a manual
+            // preset is active.
+            var device = self.cameraInput?.device
+            var lostUltraWide = false
+
+            if let d = device, !d.isLockingWhiteBalanceWithCustomDeviceGainsSupported {
+                // This lens genuinely can't lock custom gains - fall back
+                // to the plain physical wide lens, same as the 60fps
+                // workaround. This costs 0.5x/telephoto zoom while the
+                // preset stays active, but only on hardware that actually
+                // needs it.
+                if let fallback = Self.camera(at: self.position, mode: self.settings.cameraMode, preferPhysical: true) {
+                    self.switchCameraInput(to: fallback)
+                    device = self.cameraInput?.device
+                    lostUltraWide = true
                 }
+            }
+
+            guard let device = device else { return }
+            do {
+                try device.lockForConfiguration()
+                guard device.isLockingWhiteBalanceWithCustomDeviceGainsSupported else {
+                    device.unlockForConfiguration()
+                    DispatchQueue.main.async {
+                        self.notice = "This camera doesn't support manual white balance presets."
+                    }
+                    return
+                }
+                let tempAndTint = AVCaptureDevice.WhiteBalanceTemperatureAndTintValues(temperature: values.temp, tint: values.tint)
+                var gains = device.deviceWhiteBalanceGains(for: tempAndTint)
+                let maxGain = device.maxWhiteBalanceGain
+                gains.redGain = max(1.0, min(gains.redGain.isFinite ? gains.redGain : 1.0, maxGain))
+                gains.greenGain = max(1.0, min(gains.greenGain.isFinite ? gains.greenGain : 1.0, maxGain))
+                gains.blueGain = max(1.0, min(gains.blueGain.isFinite ? gains.blueGain : 1.0, maxGain))
+                device.setWhiteBalanceModeLocked(with: gains, completionHandler: nil)
                 device.unlockForConfiguration()
                 self.refreshZoomLimits()
-                DispatchQueue.main.async { self.settings.whiteBalance = preset }
+                DispatchQueue.main.async {
+                    self.settings.whiteBalance = preset
+                    if lostUltraWide {
+                        self.notice = "0.5x isn't available on this camera while a manual white balance preset is active."
+                    }
+                }
             } catch { }
         }
     }
