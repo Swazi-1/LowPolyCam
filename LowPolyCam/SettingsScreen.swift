@@ -42,6 +42,7 @@ struct SettingsScreen: View {
                 splitSection
                 estimateSection
                 cameraSection
+                appearanceSection
                 advancedSection
                 aboutSection
             }
@@ -55,7 +56,7 @@ struct SettingsScreen: View {
             })
         }
         .navigationViewStyle(StackNavigationViewStyle())
-        .accentColor(Palette.mint)
+        .accentColor(settings.accentColor.color)
     }
 
     // MARK: Sections
@@ -186,6 +187,42 @@ struct SettingsScreen: View {
                 Label("Grid overlay", systemImage: "grid")
                     .labelStyle(SettingsLabelStyle(color: Palette.slateLight))
             }
+
+            Toggle(isOn: $settings.mirrorFrontCameraRecording) {
+                Label("Mirror selfie video", systemImage: "arrow.left.and.right.righttriangle.left.righttriangle.right.fill")
+                    .labelStyle(SettingsLabelStyle(color: Palette.amber))
+            }
+            .onChange(of: settings.mirrorFrontCameraRecording) { _ in recorder.updateMirrorSetting() }
+        }
+    }
+
+    private var appearanceSection: some View {
+        Section(header: Text("Appearance").font(.system(size: 13, weight: .semibold)),
+                footer: Text("Colours the shutter ring, selected options, and highlights around the app.")) {
+            HStack(spacing: 14) {
+                ForEach(AccentColor.allCases) { color in
+                    let isSelected = settings.accentColor == color
+                    Button(action: { settings.accentColor = color }) {
+                        ZStack {
+                            Circle()
+                                .fill(color.color)
+                                .frame(width: 34, height: 34)
+                            if isSelected {
+                                Circle()
+                                    .stroke(Color.white, lineWidth: 2.5)
+                                    .frame(width: 40, height: 40)
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 13, weight: .bold))
+                                    .foregroundColor(.black)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(color.label)
+                }
+                Spacer()
+            }
+            .padding(.vertical, 6)
         }
     }
 
@@ -289,7 +326,7 @@ struct SettingsScreen: View {
                 Spacer()
                 if selected && enabled {
                     Image(systemName: "checkmark")
-                        .foregroundColor(Palette.mintDeep)
+                        .foregroundColor(settings.accentColor.deep)
                         .font(.system(size: 16, weight: .bold))
                 } else if !enabled {
                     Image(systemName: "lock.fill")
