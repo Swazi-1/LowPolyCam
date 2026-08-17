@@ -297,18 +297,19 @@ struct EncodePlan {
 
 enum Encoder {
 
-    // Video bitrate in kbit/s at 30 fps, assuming HEVC.
+    // Bitrates updated for native iOS Camera quality on High, significantly improved on Medium/Low.
+    // Ultra Low remains untouched for ultra-long 24/7 recording.
     private static let videoKbps: [Resolution: [Quality: Int]] = [
-        .p2160: [.high: 13500, .medium: 8000, .low: 4000, .ultraLow: 1800],
-        .p1080: [.high: 4500, .medium: 2200, .low: 1000, .ultraLow: 400],
-        .p720: [.high: 2500, .medium: 1200, .low: 600, .ultraLow: 250],
-        .p480: [.high: 1200, .medium: 600,  .low: 300, .ultraLow: 130],
-        .p320: [.high: 700,  .medium: 350,  .low: 180, .ultraLow: 80],
-        .p144: [.high: 250,  .medium: 120,  .low: 70,  .ultraLow: 40]
+        .p2160: [.high: 24000, .medium: 12000, .low: 6000, .ultraLow: 1800],
+        .p1080: [.high: 8000,  .medium: 4000,  .low: 2000, .ultraLow: 400],
+        .p720:  [.high: 4000,  .medium: 2000,  .low: 1000, .ultraLow: 250],
+        .p480:  [.high: 2000,  .medium: 1000,  .low: 500,  .ultraLow: 130],
+        .p320:  [.high: 1000,  .medium: 500,   .low: 250,  .ultraLow: 80],
+        .p144:  [.high: 400,   .medium: 200,   .low: 100,  .ultraLow: 40]
     ]
 
     private static let audioKbps: [Quality: Int] = [
-        .high: 64, .medium: 48, .low: 32, .ultraLow: 24
+        .high: 128, .medium: 64, .low: 32, .ultraLow: 24
     ]
 
     private static let keyFrameSeconds: [Quality: Int] = [
@@ -346,7 +347,7 @@ enum Encoder {
             height: px.h,
             videoBitrate: Int(kbps * 1000.0),
             audioBitrate: aKbps * 1000,
-            keyFrameInterval: gopSeconds * fps, // Now calculates natively for true HFR files
+            keyFrameInterval: gopSeconds * fps,
             frameRate: fps,
             codec: settings.useHEVC ? .hevc : .h264,
             hasAudio: settings.recordAudio,
