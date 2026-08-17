@@ -305,9 +305,9 @@ final class CameraRecorder: NSObject, ObservableObject {
                     device.activeVideoMinFrameDuration = d
                     device.activeVideoMaxFrameDuration = d
                     
-                    // Force smooth continuous focus on (fixes the jittery/hunting focus bug)
+                    // Disable cinematic smooth AF to ensure fast near-to-far focusing
                     if device.isSmoothAutoFocusSupported {
-                        device.isSmoothAutoFocusEnabled = true
+                        device.isSmoothAutoFocusEnabled = false
                     }
                     
                     device.unlockForConfiguration()
@@ -336,9 +336,9 @@ final class CameraRecorder: NSObject, ObservableObject {
             device.activeVideoMinFrameDuration = d
             device.activeVideoMaxFrameDuration = d
             
-            // Force smooth continuous focus on (fixes the jittery/hunting focus bug)
+            // Disable cinematic smooth AF to ensure fast near-to-far focusing
             if device.isSmoothAutoFocusSupported {
-                device.isSmoothAutoFocusEnabled = true
+                device.isSmoothAutoFocusEnabled = false
             }
             
             device.unlockForConfiguration()
