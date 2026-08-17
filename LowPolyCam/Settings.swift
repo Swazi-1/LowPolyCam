@@ -279,11 +279,6 @@ struct EncodePlan {
     var splitInterval: SplitInterval
 
     var isSlowMo: Bool { cameraMode == .slowMo }
-    var slowMoPlaybackFPS: Int { 30 }
-    
-    // FIXED: Multiplier should be frameRate / 30.0 (e.g. 120 / 30 = 4x slow mo)
-    // The previous math (30 / 120) made it a 4x fast-forward timelapse!
-    var slowMoMultiplier: Double { Double(frameRate) / 30.0 }
 
     var totalBitrate: Int { videoBitrate + audioBitrate }
 
@@ -294,7 +289,7 @@ struct EncodePlan {
 
     var sizeLabel: String {
         if isSlowMo {
-            return "\(width) x \(height) · \(frameRate) fps (\(Int(slowMoMultiplier))x Slow-Mo)"
+            return "\(width) x \(height) · \(frameRate) fps (Slow-Mo)"
         }
         return "\(width) x \(height) · \(frameRate) fps"
     }
@@ -351,7 +346,7 @@ enum Encoder {
             height: px.h,
             videoBitrate: Int(kbps * 1000.0),
             audioBitrate: aKbps * 1000,
-            keyFrameInterval: gopSeconds * (isSlow ? 30 : fps),
+            keyFrameInterval: gopSeconds * fps, // Now calculates natively for true HFR files
             frameRate: fps,
             codec: settings.useHEVC ? .hevc : .h264,
             hasAudio: settings.recordAudio,
@@ -370,7 +365,7 @@ enum Encoder {
             var compression: [String: Any] = [
                 AVVideoAverageBitRateKey: plan.videoBitrate,
                 AVVideoMaxKeyFrameIntervalKey: plan.keyFrameInterval,
-                AVVideoExpectedSourceFrameRateKey: plan.isSlowMo ? 30 : plan.frameRate,
+                AVVideoExpectedSourceFrameRateKey: plan.frameRate, // Writes the true HFR frame rate
                 AVVideoAllowFrameReorderingKey: true
             ]
             if codec == .h264 {
