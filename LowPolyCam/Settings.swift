@@ -2,6 +2,24 @@ import Foundation
 import AVFoundation
 import Combine
 
+// MARK: - Physical Device Orientation
+
+enum PhysicalOrientation {
+    case portrait
+    case landscapeLeft
+    case landscapeRight
+    case portraitUpsideDown
+
+    var rotationAngle: Double {
+        switch self {
+        case .portrait: return 0
+        case .landscapeLeft: return 90
+        case .landscapeRight: return -90
+        case .portraitUpsideDown: return 180
+        }
+    }
+}
+
 // MARK: - Resolution
 
 enum Resolution: String, CaseIterable, Identifiable {
