@@ -139,7 +139,7 @@ struct CameraScreen: View {
                 recorder.stopMotionUpdates()
                 recorder.pauseVolumeMonitoring()
             } else {
-                recorder.startMotionUpdates()
+                if settings.showLevelGauge { recorder.startMotionUpdates() }
                 recorder.resumeVolumeMonitoring()
             }
         }
@@ -148,7 +148,7 @@ struct CameraScreen: View {
                 recorder.stopMotionUpdates()
                 recorder.pauseVolumeMonitoring()
             } else {
-                recorder.startMotionUpdates()
+                if settings.showLevelGauge { recorder.startMotionUpdates() }
                 recorder.resumeVolumeMonitoring()
             }
         }
