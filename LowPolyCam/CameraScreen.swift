@@ -77,6 +77,18 @@ struct CameraScreen: View {
 
                 if countdownRemaining > 0 { countdownOverlay }
 
+                // Hides the camera-flip flicker/zoom-jump: AVFoundation has
+                // to tear down the old device, pick the new one, and re-scan
+                // its formats before the preview layer shows a clean frame
+                // again, and for a couple of frames in between it can show
+                // stale zoom or a flash of the wrong lens. A short black dip
+                // covers that gap instead of showing it, the same trick the
+                // stock Camera app uses.
+                Color.black
+                    .opacity(recorder.isSwitchingCamera ? 1 : 0)
+                    .allowsHitTesting(false)
+                    .animation(.easeInOut(duration: 0.18), value: recorder.isSwitchingCamera)
+
                 if dimmed { dimOverlay }
             }
             .ignoresSafeArea()
@@ -103,7 +115,7 @@ struct CameraScreen: View {
             }
         }
         .statusBar(hidden: true)
-        .accentColor(Palette.mint)
+        .accentColor(settings.accentColor.color)
         .onAppear {
             recorder.start()
             startHaptic.prepare()
@@ -358,7 +370,7 @@ struct CameraScreen: View {
                                 .foregroundColor(isSelected ? .black : .white)
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 7)
-                                .background(isSelected ? Palette.mintBright : Color.white.opacity(0.12))
+                                .background(isSelected ? settings.accentColor.bright : Color.white.opacity(0.12))
                                 .clipShape(Capsule())
                             }
                             .buttonStyle(.plain)
@@ -391,7 +403,7 @@ struct CameraScreen: View {
                     .foregroundColor(settings.showLevelGauge ? .black : .white)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
-                    .background(settings.showLevelGauge ? Palette.mintBright : Color.white.opacity(0.12))
+                    .background(settings.showLevelGauge ? settings.accentColor.bright : Color.white.opacity(0.12))
                     .clipShape(Capsule())
                 }
                 .buttonStyle(.plain)
@@ -431,6 +443,12 @@ struct CameraScreen: View {
 
     private var bottomHUD: some View {
         VStack(spacing: 12) {
+            if !recorder.isRecording && !recorder.isSaving {
+                zoomPresetRow
+                    .disabled(recorder.isSwitchingCamera)
+                    .opacity(recorder.isSwitchingCamera ? 0.35 : 1)
+            }
+
             HStack {
                 if !recorder.isRecording && !recorder.isSaving {
                     modeSelector
@@ -444,7 +462,7 @@ struct CameraScreen: View {
                     }) {
                         Image(systemName: "ellipsis")
                             .font(.system(size: 14, weight: .bold))
-                            .foregroundColor(showProMenu ? Palette.mintBright : .white)
+                            .foregroundColor(showProMenu ? settings.accentColor.bright : .white)
                             .frame(width: 36, height: 36)
                             .background(.ultraThinMaterial)
                             .environment(\.colorScheme, .dark)
@@ -518,17 +536,24 @@ struct CameraScreen: View {
             }
         } label: {
             ZStack {
-                Facet(sides: 12)
-                    .stroke(LinearGradient(colors: [Palette.mintBright, Palette.mintDeep], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 4)
-                    .frame(width: 78, height: 78)
-                    .shadow(color: Palette.mint.opacity(0.3), radius: 6)
+                // Faceted bezel: an outer low-poly ring plus a thinner,
+                // slightly rotated inner ring behind it, so the shutter
+                // reads as a cut-gem rather than a single flat polygon.
+                Facet(sides: 12, rotation: .pi / 12)
+                    .stroke(settings.accentColor.deep.opacity(0.25), lineWidth: 1)
+                    .frame(width: 84, height: 84)
 
                 Facet(sides: 12)
-                    .stroke(Palette.mintDeep.opacity(0.3), lineWidth: 1.5)
+                    .stroke(LinearGradient(colors: [settings.accentColor.bright, settings.accentColor.deep], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 4)
+                    .frame(width: 78, height: 78)
+                    .shadow(color: settings.accentColor.color.opacity(0.3), radius: 6)
+
+                Facet(sides: 12)
+                    .stroke(settings.accentColor.deep.opacity(0.3), lineWidth: 1.5)
                     .frame(width: 66, height: 66)
 
                 if recorder.isSaving {
-                    ProgressView().tint(Palette.mintBright).scaleEffect(1.2)
+                    ProgressView().tint(settings.accentColor.bright).scaleEffect(1.2)
                 } else if recorder.isRecording {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .fill(LinearGradient(colors: [Palette.record, Palette.record.opacity(0.8)], startPoint: .top, endPoint: .bottom))
@@ -539,10 +564,13 @@ struct CameraScreen: View {
                         .font(.system(size: 24, weight: .bold))
                         .foregroundColor(.white)
                 } else {
+                    // White idle shutter, like the stock iOS Camera app -
+                    // it only turns red once actually recording (the
+                    // .isRecording branch above).
                     Facet(sides: 12)
-                        .fill(LinearGradient(colors: [Palette.record, Palette.record.opacity(0.85)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .fill(LinearGradient(colors: [Color.white, Color.white.opacity(0.9)], startPoint: .topLeading, endPoint: .bottomTrailing))
                         .frame(width: 58, height: 58)
-                        .shadow(color: Palette.record.opacity(0.4), radius: 6, x: 0, y: 3)
+                        .shadow(color: Color.white.opacity(0.35), radius: 6, x: 0, y: 3)
                 }
             }
             .frame(width: 84, height: 84)
@@ -571,7 +599,7 @@ struct CameraScreen: View {
                     Text(mode.label)
                         .font(.system(size: 13, weight: isActive ? .bold : .medium))
                         .foregroundColor(isActive
-                            ? (mode == .slowMo ? Palette.amber : Palette.mintBright)
+                            ? (mode == .slowMo ? Palette.amber : settings.accentColor.bright)
                             : .white.opacity(0.6))
                         .padding(.horizontal, 16)
                         .padding(.vertical, 8)
@@ -618,25 +646,25 @@ struct CameraScreen: View {
 
             ZStack {
                 Circle()
-                    .stroke(isLevel ? Palette.mintBright : Color.white.opacity(0.3), lineWidth: 1.5)
+                    .stroke(isLevel ? settings.accentColor.bright : Color.white.opacity(0.3), lineWidth: 1.5)
                     .frame(width: 12, height: 12)
 
                 HStack(spacing: 24) {
                     Rectangle()
-                        .fill(isLevel ? Palette.mintBright : Color.white.opacity(0.3))
+                        .fill(isLevel ? settings.accentColor.bright : Color.white.opacity(0.3))
                         .frame(width: 40, height: 1.5)
 
                     Spacer().frame(width: 12)
 
                     Rectangle()
-                        .fill(isLevel ? Palette.mintBright : Color.white.opacity(0.3))
+                        .fill(isLevel ? settings.accentColor.bright : Color.white.opacity(0.3))
                         .frame(width: 40, height: 1.5)
                 }
                 .rotationEffect(.degrees(-recorder.rollAngle))
                 .animation(.spring(response: 0.15, dampingFraction: 0.8), value: recorder.rollAngle)
             }
             .position(x: w / 2, y: h / 2)
-            .shadow(color: isLevel ? Palette.mint.opacity(0.6) : .clear, radius: 4)
+            .shadow(color: isLevel ? settings.accentColor.color.opacity(0.6) : .clear, radius: 4)
         }
         .allowsHitTesting(false)
     }
@@ -758,6 +786,55 @@ struct CameraScreen: View {
         .allowsHitTesting(false)
     }
 
+    /// Tappable zoom presets, like the stock Camera app's 0.5/1/2 row.
+    /// Presets are built from whatever the current lens can actually do -
+    /// on an ultra-wide-equipped iPhone (e.g. iPhone 11) that includes 0.5x,
+    /// on a single-lens phone it doesn't, and this now applies in Slow-Mo
+    /// too since the virtual camera picked for slow-mo already carries the
+    /// ultra-wide element on phones that support it.
+    private var zoomPresets: [CGFloat] {
+        var options: [CGFloat] = []
+        if recorder.minZoomFactor <= 0.6 { options.append(0.5) }
+        options.append(1)
+        if recorder.maxZoomFactor >= 1.9 { options.append(2) }
+        if recorder.maxZoomFactor >= 4.9 { options.append(5) }
+        return options
+    }
+
+    private var zoomPresetRow: some View {
+        let zoomHaptic = UISelectionFeedbackGenerator()
+        return HStack(spacing: 8) {
+            ForEach(zoomPresets, id: \.self) { preset in
+                let isSelected = abs(recorder.zoomFactor - preset) < 0.05
+                Button(action: {
+                    zoomHaptic.selectionChanged()
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                        recorder.setZoom(factor: preset)
+                    }
+                    showZoomLabel = true
+                    scheduleHideZoomLabel()
+                }) {
+                    Text(preset == 1 ? "1x" : (preset.truncatingRemainder(dividingBy: 1) == 0 ? "\(Int(preset))x" : "\(preset)x"))
+                        .font(.system(size: isSelected ? 13 : 11, weight: .bold))
+                        .foregroundColor(isSelected ? .black : .white)
+                        .frame(width: isSelected ? 34 : 28, height: isSelected ? 34 : 28)
+                        .background(isSelected ? settings.accentColor.bright : Color.black.opacity(0.35))
+                        .clipShape(Circle())
+                        .overlay(Circle().stroke(Color.white.opacity(0.25), lineWidth: 0.75))
+                }
+                .buttonStyle(.plain)
+                .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isSelected)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(.ultraThinMaterial)
+        .environment(\.colorScheme, .dark)
+        .clipShape(Capsule())
+        .overlay(Capsule().stroke(Color.white.opacity(0.15), lineWidth: 0.5))
+        .frame(maxWidth: .infinity)
+    }
+
     private var zoomLabel: some View {
         Text(String(format: "%.1fx", recorder.zoomFactor))
             .font(.system(size: 15, weight: .bold, design: .rounded))
@@ -785,9 +862,9 @@ struct CameraScreen: View {
 
     private var focusReticle: some View {
         Facet(sides: 6, rotation: .pi / 6)
-            .stroke(Palette.mintBright, lineWidth: 1.5)
+            .stroke(settings.accentColor.bright, lineWidth: 1.5)
             .frame(width: 56, height: 56)
-            .shadow(color: Palette.mint.opacity(0.5), radius: 4)
+            .shadow(color: settings.accentColor.color.opacity(0.5), radius: 4)
             .scaleEffect(focusPoint == nil ? 1.2 : 1.0)
             .opacity(focusPoint == nil ? 0 : 1)
             .animation(.spring(response: 0.3, dampingFraction: 0.6), value: focusPoint)
