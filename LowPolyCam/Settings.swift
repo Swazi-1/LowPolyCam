@@ -137,19 +137,19 @@ enum Quality: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .high: return "High"
-        case .medium: return "Medium"
-        case .low: return "Low"
-        case .ultraLow: return "Ultra low"
+        case .high: return "High Quality"
+        case .medium: return "Medium Quality"
+        case .low: return "Low Quality"
+        case .ultraLow: return "Data Saver"
         }
     }
 
     var detail: String {
         switch self {
-        case .high: return "Looks good, uses the most space"
-        case .medium: return "Everyday quality"
-        case .low: return "Soft, but easy to watch"
-        case .ultraLow: return "Rough. For filming all day"
+        case .high: return "Best video quality, most storage space"
+        case .medium: return "Great everyday quality, balanced file size"
+        case .low: return "Good quality, less storage space"
+        case .ultraLow: return "Smallest files, for filming all day"
         }
     }
 }
