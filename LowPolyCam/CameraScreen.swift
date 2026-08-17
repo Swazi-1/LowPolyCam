@@ -164,7 +164,7 @@ struct CameraScreen: View {
     // MARK: Top HUD Bar
 
     private var topHUD: some View {
-        HStack(alignment: .center, spacing: 12) {
+        HStack(alignment: .center, spacing: 10) {
             if recorder.hasTorch {
                 facetButton(system: recorder.torchOn ? "bolt.fill" : "bolt.slash.fill",
                             tint: recorder.torchOn ? Palette.amber : .white) {
@@ -186,37 +186,90 @@ struct CameraScreen: View {
         }
     }
 
+    private var dataRateLabel: String {
+        let mb = plan.megabytesPerHour
+        if mb >= 1000 {
+            return String(format: "%.1f GB/h", mb / 1000.0)
+        } else {
+            return "\(Int(mb.rounded())) MB/h"
+        }
+    }
+
+    private var qualityShortLabel: String {
+        switch settings.quality {
+        case .high: return "High"
+        case .medium: return "Med"
+        case .low: return "Low"
+        case .ultraLow: return "Saver"
+        }
+    }
+
     private var compactInfoPill: some View {
-        VStack(spacing: 2) {
+        VStack(spacing: 3) {
             if recorder.isRecording || recorder.isSaving {
                 recordingStatusRow
             } else {
+                // Row 1: Badge + Quality + Data Rate
                 HStack(spacing: 6) {
-                    Text(settings.cameraMode == .slowMo
-                         ? "SLO-MO · \(settings.slowMoFrameRate.label)"
-                         : "\(settings.resolution.label) · \(settings.quality.label)")
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundColor(settings.cameraMode == .slowMo ? Palette.amber : Palette.mintBright)
+                    if settings.cameraMode == .slowMo {
+                        Text("SLO-MO")
+                            .font(.system(size: 10, weight: .black, design: .rounded))
+                            .foregroundColor(Palette.slateDeep)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Palette.amber)
+                            .clipShape(Capsule())
+
+                        Text(settings.slowMoFrameRate.label)
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(.white)
+                    } else {
+                        Text(settings.resolution.label)
+                            .font(.system(size: 10, weight: .black, design: .rounded))
+                            .foregroundColor(Palette.slateDeep)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(
+                                LinearGradient(colors: [Palette.mintBright, Palette.mint], startPoint: .topLeading, endPoint: .bottomTrailing)
+                            )
+                            .clipShape(Capsule())
+
+                        Text(qualityShortLabel)
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(.white.opacity(0.9))
+                    }
 
                     Text("·")
-                        .foregroundColor(.white.opacity(0.4))
+                        .foregroundColor(Palette.slateLight)
+                        .font(.system(size: 11, weight: .bold))
 
-                    Text("\(Int(plan.megabytesPerHour.rounded())) MB/h")
-                        .font(.system(size: 12, weight: .semibold))
+                    Text(dataRateLabel)
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
                         .foregroundColor(Palette.amber)
                 }
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
 
+                // Row 2: Free Storage + Battery Percentage
                 HStack(spacing: 6) {
-                    Text(Fmt.size(recorder.freeBytes) + " free")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(.white.opacity(0.65))
+                    HStack(spacing: 3) {
+                        Image(systemName: "internaldrive")
+                            .font(.system(size: 9))
+                            .foregroundColor(Palette.slateLight)
+                        Text(Fmt.size(recorder.freeBytes) + " free")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(.white.opacity(0.65))
+                    }
 
                     if recorder.batteryPercent >= 0 {
                         Text("·")
-                            .foregroundColor(.white.opacity(0.4))
+                            .foregroundColor(Palette.slateLight)
+                            .font(.system(size: 11, weight: .bold))
                         batteryIndicator
                     }
                 }
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
             }
 
             if recorder.isRecording && settings.recordAudio {
@@ -225,12 +278,27 @@ struct CameraScreen: View {
             }
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background(Palette.panel.opacity(0.85))
+        .padding(.vertical, 6)
+        .background(
+            ZStack {
+                Palette.panel.opacity(0.92)
+                LinearGradient(colors: [Palette.slate.opacity(0.35), Color.clear], startPoint: .top, endPoint: .bottom)
+            }
+        )
         .environment(\.colorScheme, .dark)
-        .clipShape(Capsule())
-        .overlay(Capsule().stroke(Palette.slateLight.opacity(0.35), lineWidth: 0.8))
-        .shadow(color: .black.opacity(0.35), radius: 10, x: 0, y: 5)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(
+                    LinearGradient(
+                        colors: [Palette.mint.opacity(0.4), Palette.slateLight.opacity(0.2), Palette.amber.opacity(0.2)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1
+                )
+        )
+        .shadow(color: .black.opacity(0.45), radius: 12, x: 0, y: 6)
     }
 
     private var recordingStatusRow: some View {
