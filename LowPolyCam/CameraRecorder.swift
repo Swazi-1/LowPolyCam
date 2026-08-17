@@ -113,6 +113,10 @@ final class CameraRecorder: NSObject, ObservableObject {
         NotificationCenter.default.addObserver(
             self, selector: #selector(subjectAreaDidChange),
             name: .AVCaptureDeviceSubjectAreaDidChange, object: nil)
+
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleAudioInterruption),
+            name: AVAudioSession.interruptionNotification, object: nil)
     }
 
     deinit {
@@ -129,6 +133,16 @@ final class CameraRecorder: NSObject, ObservableObject {
         DispatchQueue.main.async {
             self.batteryPercent = level < 0 ? -1 : Int((level * 100).rounded())
             self.batteryCharging = (state == .charging || state == .full)
+        }
+    }
+
+    @objc private func handleAudioInterruption(_ notification: Notification) {
+        guard let info = notification.userInfo,
+              let typeValue = info[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
+
+        if type == .began {
+            DispatchQueue.main.async { self.audioLevel = 0 }
         }
     }
 
@@ -311,6 +325,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         guard let targetDevice = Self.camera(at: position, mode: mode, preferPhysical: wantsPhysicalWideForFrameRate) else { return }
         if cameraInput?.device.uniqueID != targetDevice.uniqueID {
             DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
+            
             session.beginConfiguration()
             if let old = cameraInput { session.removeInput(old) }
             if let input = try? AVCaptureDeviceInput(device: targetDevice), session.canAddInput(input) {
@@ -318,7 +333,6 @@ final class CameraRecorder: NSObject, ObservableObject {
                 cameraInput = input
             }
             session.commitConfiguration()
-            Self.primeZoom(for: targetDevice)
             configureVideoConnection()
         }
     }
@@ -368,26 +382,13 @@ final class CameraRecorder: NSObject, ObservableObject {
 
         guard let finalFormat = format else {
             if isSlow, let fallbackFormat = Self.bestSlowMoFormat(for: device, fps: fps) {
-                do {
-                    try device.lockForConfiguration()
-                    device.activeFormat = fallbackFormat
-                    let d = CMTime(value: 1, timescale: CMTimeScale(fps.rounded()))
-                    device.activeVideoMaxFrameDuration = CMTime.invalid
-                    device.activeVideoMinFrameDuration = d
-                    device.activeVideoMaxFrameDuration = d
-                    
-                    if device.isSmoothAutoFocusSupported {
-                        device.isSmoothAutoFocusEnabled = true
-                    }
-                    
-                    device.unlockForConfiguration()
-                    DispatchQueue.main.async {
-                        let dDims = CMVideoFormatDescriptionGetDimensions(fallbackFormat.formatDescription)
-                        let closestRes: Resolution = dDims.height >= 1080 ? .p1080 : .p720
-                        self.settings.slowMoResolution = closestRes
-                        self.notice = "\(self.settings.slowMoFrameRate.label) runs at \(closestRes.label) on this iPhone."
-                    }
-                } catch { }
+                applyUnifiedHardwareConfiguration(to: device, format: fallbackFormat, targetFPS: fps)
+                DispatchQueue.main.async {
+                    let dDims = CMVideoFormatDescriptionGetDimensions(fallbackFormat.formatDescription)
+                    let closestRes: Resolution = dDims.height >= 1080 ? .p1080 : .p720
+                    self.settings.slowMoResolution = closestRes
+                    self.notice = "\(self.settings.slowMoFrameRate.label) runs at \(closestRes.label) on this iPhone."
+                }
                 refreshZoomLimits()
                 DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
                 return
@@ -399,24 +400,59 @@ final class CameraRecorder: NSObject, ObservableObject {
             return
         }
 
+        applyUnifiedHardwareConfiguration(to: device, format: finalFormat, targetFPS: targetFPS)
+        refreshZoomLimits()
+        DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
+    }
+
+    /// Single consolidated hardware lock to prevent camera flickering
+    private func applyUnifiedHardwareConfiguration(to device: AVCaptureDevice, format: AVCaptureDevice.Format, targetFPS: Double) {
         do {
             try device.lockForConfiguration()
-            device.activeFormat = finalFormat
+            
+            // 1. Format & Frame Rate
+            device.activeFormat = format
             let d = CMTime(value: 1, timescale: CMTimeScale(targetFPS.rounded()))
             device.activeVideoMaxFrameDuration = CMTime.invalid
             device.activeVideoMinFrameDuration = d
             device.activeVideoMaxFrameDuration = d
             
+            // 2. Autofocus
             if device.isSmoothAutoFocusSupported {
                 device.isSmoothAutoFocusEnabled = true
             }
             
+            // 3. Pro Settings (Exposure & White Balance)
+            let minBias = device.minExposureTargetBias
+            let maxBias = device.maxExposureTargetBias
+            let clampedBias = max(minBias, min(settings.exposureBias, maxBias))
+            device.setExposureTargetBias(clampedBias, completionHandler: nil)
+
+            if let values = settings.whiteBalance.kelvin {
+                if device.isLockingWhiteBalanceWithCustomDeviceGainsSupported {
+                    let tempAndTint = AVCaptureDevice.WhiteBalanceTemperatureAndTintValues(temperature: values.temp, tint: values.tint)
+                    var gains = device.deviceWhiteBalanceGains(for: tempAndTint)
+                    let maxGain = device.maxWhiteBalanceGain
+                    gains.redGain = max(1.0, min(gains.redGain.isFinite ? gains.redGain : 1.0, maxGain))
+                    gains.greenGain = max(1.0, min(gains.greenGain.isFinite ? gains.greenGain : 1.0, maxGain))
+                    gains.blueGain = max(1.0, min(gains.blueGain.isFinite ? gains.blueGain : 1.0, maxGain))
+                    device.setWhiteBalanceModeLocked(with: gains, completionHandler: nil)
+                }
+            } else {
+                if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) {
+                    device.whiteBalanceMode = .continuousAutoWhiteBalance
+                }
+            }
+
+            // 4. Baseline Zoom Prime
+            let baseline = Self.wideAngleBaseline(for: device)
+            let ceiling = device.activeFormat.videoMaxZoomFactor
+            device.videoZoomFactor = min(max(baseline, device.minAvailableVideoZoomFactor), ceiling)
+
             device.unlockForConfiguration()
         } catch {
-            DispatchQueue.main.async { self.notice = "Could not lock this camera's frame rate." }
+            DispatchQueue.main.async { self.notice = "Could not apply camera settings." }
         }
-        refreshZoomLimits()
-        DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
     }
 
     private static func bestSlowMoFormat(for device: AVCaptureDevice, fps: Double) -> AVCaptureDevice.Format? {
@@ -595,12 +631,10 @@ final class CameraRecorder: NSObject, ObservableObject {
                 self.session.addInput(input)
                 self.cameraInput = input
                 self.position = next
-                self.session.commitConfiguration()
-                Self.primeZoom(for: device)
             } else {
                 if let old = self.cameraInput { self.session.addInput(old) }
-                self.session.commitConfiguration()
             }
+            self.session.commitConfiguration()
 
             self.configureVideoConnection()
             self.refreshCapabilitiesThenApplyFormat()
@@ -756,16 +790,6 @@ final class CameraRecorder: NSObject, ObservableObject {
         return value > 0 ? value : 1
     }
 
-    private static func primeZoom(for device: AVCaptureDevice) {
-        let baseline = wideAngleBaseline(for: device)
-        do {
-            try device.lockForConfiguration()
-            let ceiling = device.activeFormat.videoMaxZoomFactor
-            device.videoZoomFactor = min(max(baseline, device.minAvailableVideoZoomFactor), ceiling)
-            device.unlockForConfiguration()
-        } catch { }
-    }
-
     private func refreshZoomLimits() {
         guard let device = cameraInput?.device else { return }
 
@@ -776,12 +800,6 @@ final class CameraRecorder: NSObject, ObservableObject {
         zoomBaselineSnapshot = baseline
         rawMaxZoomSnapshot = rawCeiling
         rawMinZoomSnapshot = rawFloor
-
-        do {
-            try device.lockForConfiguration()
-            device.videoZoomFactor = baseline
-            device.unlockForConfiguration()
-        } catch { }
 
         DispatchQueue.main.async {
             self.maxZoomFactor = rawCeiling / baseline
@@ -863,9 +881,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         if settings.saveLocation == .photos { ensurePhotosAccess() }
 
         let newPlan = Encoder.plan(for: settings)
-        let transform = Self.transform(forOrientation: physicalOrientation,
-                                       width: newPlan.width,
-                                       height: newPlan.height)
+        let transform = Self.transform(width: newPlan.width, height: newPlan.height)
 
         stopRequested = false
 
@@ -1238,19 +1254,10 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     // MARK: Physical Video Orientation Tagging
 
-    private static func transform(forOrientation o: PhysicalOrientation, width: Int, height: Int) -> CGAffineTransform {
-        let w = CGFloat(width)
+    // Hard-locked to output native portrait rotation metadata
+    private static func transform(width: Int, height: Int) -> CGAffineTransform {
         let h = CGFloat(height)
-        switch o {
-        case .portrait:
-            return CGAffineTransform(translationX: h, y: 0).rotated(by: .pi / 2)
-        case .landscapeLeft:
-            return .identity
-        case .landscapeRight:
-            return CGAffineTransform(translationX: w, y: h).rotated(by: .pi)
-        case .portraitUpsideDown:
-            return CGAffineTransform(translationX: 0, y: w).rotated(by: -.pi / 2)
-        }
+        return CGAffineTransform(translationX: h, y: 0).rotated(by: .pi / 2)
     }
 
     enum RecorderError: LocalizedError {
