@@ -26,6 +26,7 @@ final class CameraRecorder: NSObject, ObservableObject {
     @Published private(set) var hasTorch = false
     @Published private(set) var torchOn = false
     @Published private(set) var isFrontCamera = false
+    @Published private(set) var isSwitchingCamera = false
     @Published private(set) var stabilizationSupported = true
     @Published private(set) var availableFrameRates: [FrameRate] = FrameRate.allCases
     @Published private(set) var availableResolutions: [Resolution] = Resolution.allCases
@@ -249,6 +250,9 @@ final class CameraRecorder: NSObject, ObservableObject {
         spaceTimer = nil
         pauseVolumeMonitoring()
         stopMotionUpdates()
+        // In case the app is backgrounded mid-flip, don't leave the record/
+        // flip buttons permanently disabled next time the screen appears.
+        isSwitchingCamera = false
 
         if isRecording { stopRecording(notice: nil) }
         setTorch(on: false)
@@ -552,8 +556,15 @@ final class CameraRecorder: NSObject, ObservableObject {
         let supportedSlowRates = SlowMoFrameRate.allCases.filter { slowRates.contains($0) }
         let supportedSlowRes = Resolution.allCases.filter { slowResolutions.contains($0) }
 
-        DispatchQueue.main.async {
-            let previousResolution = self.settings.resolution
+        // NOTE: This runs synchronously on the main thread (not .async) so that
+        // applyActiveFormat() below runs immediately afterward, on the same
+        // sessionQueue hop. Previously this dispatched .async to main and then
+        // .async'd *back* to sessionQueue, which left the capture session briefly
+        // running with a stale/mismatched format on the new device - the visible
+        // flicker after flipping cameras, and a window during which the UI
+        // (record button, flip button) was still fully interactive even though
+        // the camera was mid-reconfiguration.
+        DispatchQueue.main.sync {
             self.availableFrameRates = supportedRates.isEmpty ? [.fps30] : supportedRates
             self.availableResolutions = supportedResolutions.isEmpty ? [.p720] : supportedResolutions
             self.availableSlowMoRates = supportedSlowRates
@@ -578,9 +589,9 @@ final class CameraRecorder: NSObject, ObservableObject {
                     self.settings.slowMoFrameRate = self.availableSlowMoRates.first ?? .fps120
                 }
             }
-
-            self.sessionQueue.async { self.applyActiveFormat() }
         }
+
+        applyActiveFormat()
     }
 
     func syncMicInput() {
@@ -617,13 +628,31 @@ final class CameraRecorder: NSObject, ObservableObject {
     }
 
     func flipCamera() {
-        guard !isRecording else { return }
-        DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
+        // Also guards against the double-tap-to-flip gesture on the preview,
+        // and against a second flip firing while the first is still
+        // reconfiguring the session (which used to cause the visible
+        // flicker/glitch and left the record button tappable mid-switch).
+        guard !isRecording, !isSwitchingCamera else { return }
+
+        DispatchQueue.main.async {
+            self.isSwitchingCamera = true
+            // Extend the ignore window generously - the reconfiguration below
+            // involves an AVCaptureSession commit plus a full device.formats
+            // scan, which can take noticeably longer than a moment on older
+            // hardware. If this window lapsed mid-flip, a spurious/late
+            // outputVolume KVO callback (e.g. from the audio route settling
+            // after the session reconfiguration) could be misread as a
+            // physical volume-button press and auto-start a recording.
+            self.volumeObserver?.ignoreTemporarily(duration: 3.0)
+        }
         setTorch(on: false)
         sessionQueue.async {
             let next: AVCaptureDevice.Position = (self.position == .back) ? .front : .back
             guard let device = Self.camera(at: next, mode: self.settings.cameraMode, preferPhysical: self.wantsPhysicalWideForFrameRate),
-                  let input = try? AVCaptureDeviceInput(device: device) else { return }
+                  let input = try? AVCaptureDeviceInput(device: device) else {
+                DispatchQueue.main.async { self.isSwitchingCamera = false }
+                return
+            }
 
             self.session.beginConfiguration()
             if let old = self.cameraInput { self.session.removeInput(old) }
@@ -637,10 +666,19 @@ final class CameraRecorder: NSObject, ObservableObject {
             self.session.commitConfiguration()
 
             self.configureVideoConnection()
+            // refreshCapabilitiesThenApplyFormat() now applies the new format
+            // synchronously before returning (see its implementation), so the
+            // session is never left running with a mismatched format for the
+            // new camera - that gap was the source of the flip flicker.
             self.refreshCapabilitiesThenApplyFormat()
             self.refreshTorchState()
             self.resetFocusAndExposureToAuto()
-            DispatchQueue.main.async { self.isFrontCamera = (next == .front) }
+
+            DispatchQueue.main.async {
+                self.isFrontCamera = (next == .front)
+                self.isSwitchingCamera = false
+                self.volumeObserver?.ignoreTemporarily(duration: 1.0)
+            }
         }
     }
 
@@ -1403,8 +1441,15 @@ final class VolumeButtonObserver: NSObject {
         }
     }
 
-    func ignoreTemporarily() {
-        ignoreUntil = Date().addingTimeInterval(1.5)
+    func ignoreTemporarily(duration: TimeInterval = 1.5) {
+        let candidate = Date().addingTimeInterval(duration)
+        // Never shorten an already-active ignore window - a short call
+        // (e.g. from a settings tweak) racing after a long one (e.g. a
+        // camera flip still reconfiguring) should not re-expose the volume
+        // observer early.
+        if candidate > ignoreUntil {
+            ignoreUntil = candidate
+        }
     }
 
     override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey : Any]?, context: UnsafeMutableRawPointer?) {
