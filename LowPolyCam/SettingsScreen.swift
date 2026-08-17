@@ -75,7 +75,7 @@ struct SettingsScreen: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Selfie camera")
                         .font(.system(size: 16, weight: .bold))
-                    Text("It offers fewer options than the back camera. Anything it cannot do is greyed out.")
+                    Text("Offers standard video capture. Unsupported slow-mo options are greyed out.")
                         .font(.system(size: 13, weight: .medium))
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -188,11 +188,10 @@ struct SettingsScreen: View {
                     .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
             }
 
-            Toggle(isOn: $settings.mirrorFrontCameraRecording) {
-                Label("Mirror selfie video", systemImage: "arrow.left.and.right.righttriangle.left.righttriangle.right.fill")
-                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.bright))
+            Toggle(isOn: $settings.autoDimOnRecord) {
+                Label("Auto-dim when filming", systemImage: "moon.stars.fill")
+                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.deep))
             }
-            .onChange(of: settings.mirrorFrontCameraRecording) { _ in recorder.updateMirrorSetting() }
         }
     }
 
@@ -235,7 +234,7 @@ struct SettingsScreen: View {
             row(title: "HEVC", subtitle: "Smaller files, modern default", icon: "sparkles", iconColor: settings.accentColor.color, selected: settings.useHEVC) {
                 settings.useHEVC = true
             }
-            row(title: "H.264", subtitle: "Bigger files, plays on everything", icon: "film.fill", iconColor: Palette.slateLight, selected: !settings.useHEVC) {
+            row(title: "H.264", subtitle: "Bigger files, plays on everything", icon: "film.fill", iconColor: settings.accentColor.deep, selected: !settings.useHEVC) {
                 settings.useHEVC = false
             }
         }
