@@ -142,25 +142,47 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
     }
 
-    // MARK: Motion / Level Meter
+    // MARK: Motion / Level Meter (Fixed Gravity Trigonometry)
 
-    private func startMotionUpdates() {
-        guard motionManager.isDeviceMotionAvailable else { return }
-        motionManager.deviceMotionUpdateInterval = 1.0 / 30.0
+    func startMotionUpdates() {
+        guard motionManager.isDeviceMotionAvailable, settings.showLevelGauge else { return }
+        motionManager.deviceMotionUpdateInterval = 1.0 / 20.0
         motionManager.startDeviceMotionUpdates(using: .xArbitraryZVertical, to: .main) { [weak self] motion, _ in
             guard let self = self, let motion = motion else { return }
-            let roll = motion.attitude.roll * (180.0 / .pi)
-            self.rollAngle = roll
-            let normalizedRoll = abs(roll.truncatingRemainder(dividingBy: 90))
-            let level = normalizedRoll < 1.0 || normalizedRoll > 89.0
-            if self.isLevel != level {
-                self.isLevel = level
+            let gx = motion.gravity.x
+            let gy = motion.gravity.y
+            let angle = atan2(gx, -gy) * (180.0 / .pi)
+            self.rollAngle = angle
+
+            let remainder = abs(angle.truncatingRemainder(dividingBy: 90))
+            let isLevelNow = remainder < 1.2 || remainder > 88.8
+            if self.isLevel != isLevelNow {
+                self.isLevel = isLevelNow
             }
         }
     }
 
-    private func stopMotionUpdates() {
+    func stopMotionUpdates() {
         motionManager.stopDeviceMotionUpdates()
+    }
+
+    // MARK: Volume Monitoring Control (Prevents False Auto-Start)
+
+    func pauseVolumeMonitoring() {
+        volumeObserver?.stop()
+    }
+
+    func resumeVolumeMonitoring() {
+        if volumeObserver == nil {
+            let obs = VolumeButtonObserver()
+            obs.onVolumeTrigger = { [weak self] in
+                DispatchQueue.main.async { self?.toggleRecording() }
+            }
+            obs.start()
+            volumeObserver = obs
+        } else {
+            volumeObserver?.start()
+        }
     }
 
     // MARK: Lifecycle
@@ -190,14 +212,7 @@ final class CameraRecorder: NSObject, ObservableObject {
                 if !self.session.isRunning { self.session.startRunning() }
                 DispatchQueue.main.async {
                     self.isSessionRunning = self.session.isRunning
-                    if self.volumeObserver == nil {
-                        let obs = VolumeButtonObserver()
-                        obs.onVolumeTrigger = { [weak self] in
-                            DispatchQueue.main.async { self?.toggleRecording() }
-                        }
-                        obs.start()
-                        self.volumeObserver = obs
-                    }
+                    self.resumeVolumeMonitoring()
                 }
             }
         }
@@ -1297,7 +1312,7 @@ final class VolumeButtonObserver: NSObject {
         }
 
         lastVolume = audioSession.outputVolume
-        ignoreUntil = Date().addingTimeInterval(2.5)
+        ignoreUntil = Date().addingTimeInterval(1.5)
         audioSession.addObserver(self, forKeyPath: "outputVolume", options: [.new, .old], context: nil)
         isObserving = true
     }
