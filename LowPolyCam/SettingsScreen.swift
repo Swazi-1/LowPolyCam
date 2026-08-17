@@ -185,7 +185,7 @@ struct SettingsScreen: View {
 
             Toggle(isOn: $settings.showGrid) {
                 Label("Grid overlay", systemImage: "grid")
-                    .labelStyle(SettingsLabelStyle(color: Palette.slateLight))
+                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
             }
 
             Toggle(isOn: $settings.mirrorFrontCameraRecording) {
@@ -241,7 +241,6 @@ struct SettingsScreen: View {
         }
     }
 
-    // Short & easy to understand "Good to know"
     private var aboutSection: some View {
         Section(header: Text("Good to know").font(.system(size: 13, weight: .semibold))) {
             Label {
