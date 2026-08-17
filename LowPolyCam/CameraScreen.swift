@@ -224,6 +224,8 @@ struct CameraScreen: View {
         .clipShape(Capsule())
         .overlay(Capsule().stroke(Color.white.opacity(0.15), lineWidth: 0.5))
         .shadow(color: .black.opacity(0.25), radius: 8, x: 0, y: 4)
+        .rotationEffect(.degrees(recorder.uiRotationAngle))
+        .animation(.spring(response: 0.35, dampingFraction: 0.75), value: recorder.uiRotationAngle)
     }
 
     private var recordingStatusRow: some View {
@@ -313,7 +315,7 @@ struct CameraScreen: View {
                 .buttonStyle(.plain)
             }
 
-            // EV Exposure Slider
+            // EV Exposure Slider - Fixed Binding so it updates smoothly
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Text("Exposure (EV)")
@@ -325,21 +327,21 @@ struct CameraScreen: View {
                         .foregroundColor(Palette.amber)
 
                     Button("Reset") {
-                        recorder.setExposureBias(0.0)
+                        settings.exposureBias = 0.0
                     }
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(Palette.mint)
                     .padding(.leading, 6)
                 }
 
-                Slider(value: Binding(
-                    get: { settings.exposureBias },
-                    set: { val in recorder.setExposureBias(val) }
-                ), in: -2.0...2.0, step: 0.1)
-                .tint(Palette.amber)
+                Slider(value: $settings.exposureBias, in: -2.0...2.0, step: 0.1)
+                    .tint(Palette.amber)
+                    .onChange(of: settings.exposureBias) { val in
+                        recorder.setExposureBias(val)
+                    }
             }
 
-            // White Balance Presets (Horizontal Scrollable, Never Wraps)
+            // White Balance Presets
             VStack(alignment: .leading, spacing: 6) {
                 Text("White Balance")
                     .font(.system(size: 12, weight: .medium))
@@ -349,7 +351,7 @@ struct CameraScreen: View {
                     HStack(spacing: 8) {
                         ForEach(WhiteBalancePreset.allCases) { preset in
                             let isSelected = settings.whiteBalance == preset
-                            Button(action: { recorder.setWhiteBalance(preset) }) {
+                            Button(action: { settings.whiteBalance = preset }) {
                                 HStack(spacing: 5) {
                                     Image(systemName: preset.icon)
                                     Text(preset.label)
@@ -367,9 +369,12 @@ struct CameraScreen: View {
                     }
                     .padding(.horizontal, 2)
                 }
+                .onChange(of: settings.whiteBalance) { preset in
+                    recorder.setWhiteBalance(preset)
+                }
             }
 
-            // Quick Toggles Row
+            // Quick Toggles Row: Level Meter & Countdown Timer
             HStack(spacing: 10) {
                 // Level Toggle
                 Button(action: {
@@ -450,6 +455,8 @@ struct CameraScreen: View {
                             .clipShape(Circle())
                             .overlay(Circle().stroke(Color.white.opacity(0.15), lineWidth: 0.5))
                             .shadow(color: .black.opacity(0.2), radius: 4)
+                            .rotationEffect(.degrees(recorder.uiRotationAngle))
+                            .animation(.spring(response: 0.35, dampingFraction: 0.75), value: recorder.uiRotationAngle)
                     }
                     .buttonStyle(.plain)
                 }
@@ -467,6 +474,8 @@ struct CameraScreen: View {
                             .clipShape(Facet(sides: 6, rotation: .pi / 6))
                             .overlay(Facet(sides: 6, rotation: .pi / 6).stroke(Color.white.opacity(0.35), lineWidth: 1.5))
                             .shadow(color: .black.opacity(0.3), radius: 5)
+                            .rotationEffect(.degrees(recorder.uiRotationAngle))
+                            .animation(.spring(response: 0.35, dampingFraction: 0.75), value: recorder.uiRotationAngle)
                     }
                     .buttonStyle(.plain)
                 } else {
@@ -530,10 +539,13 @@ struct CameraScreen: View {
                         .fill(LinearGradient(colors: [Palette.record, Palette.record.opacity(0.8)], startPoint: .top, endPoint: .bottom))
                         .frame(width: 32, height: 32)
                         .shadow(color: Palette.record.opacity(0.6), radius: 10)
+                        .rotationEffect(.degrees(recorder.uiRotationAngle))
+                        .animation(.spring(response: 0.35, dampingFraction: 0.75), value: recorder.uiRotationAngle)
                 } else if countdownRemaining > 0 {
                     Image(systemName: "xmark")
                         .font(.system(size: 24, weight: .bold))
                         .foregroundColor(.white)
+                        .rotationEffect(.degrees(recorder.uiRotationAngle))
                 } else {
                     Facet(sides: 12)
                         .fill(LinearGradient(colors: [Palette.record, Palette.record.opacity(0.85)], startPoint: .topLeading, endPoint: .bottomTrailing))
@@ -571,6 +583,8 @@ struct CameraScreen: View {
                             : .white.opacity(0.6))
                         .padding(.horizontal, 16)
                         .padding(.vertical, 8)
+                        .rotationEffect(.degrees(recorder.uiRotationAngle))
+                        .animation(.spring(response: 0.35, dampingFraction: 0.75), value: recorder.uiRotationAngle)
                 }
                 .buttonStyle(.plain)
             }
@@ -599,6 +613,8 @@ struct CameraScreen: View {
                         .stroke(Color.white.opacity(0.15), lineWidth: 0.5)
                 )
                 .shadow(color: .black.opacity(0.2), radius: 6, x: 0, y: 3)
+                .rotationEffect(.degrees(recorder.uiRotationAngle))
+                .animation(.spring(response: 0.35, dampingFraction: 0.75), value: recorder.uiRotationAngle)
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
@@ -618,7 +634,7 @@ struct CameraScreen: View {
                     .stroke(isLevel ? Palette.mintBright : Color.white.opacity(0.3), lineWidth: 1.5)
                     .frame(width: 12, height: 12)
 
-                // Left and Right Horizon Lines (Direct Gravity Angle)
+                // Left and Right Horizon Lines
                 HStack(spacing: 24) {
                     Rectangle()
                         .fill(isLevel ? Palette.mintBright : Color.white.opacity(0.3))
@@ -635,6 +651,8 @@ struct CameraScreen: View {
             }
             .position(x: w / 2, y: h / 2)
             .shadow(color: isLevel ? Palette.mint.opacity(0.6) : .clear, radius: 4)
+            .rotationEffect(.degrees(recorder.uiRotationAngle))
+            .animation(.spring(response: 0.35, dampingFraction: 0.75), value: recorder.uiRotationAngle)
         }
         .allowsHitTesting(false)
     }
@@ -650,11 +668,13 @@ struct CameraScreen: View {
                     .foregroundColor(Palette.amber)
                     .shadow(color: Palette.amber.opacity(0.6), radius: 20)
                     .scaleEffect(1.1)
+                    .rotationEffect(.degrees(recorder.uiRotationAngle))
                     .animation(.spring(response: 0.3, dampingFraction: 0.6), value: countdownRemaining)
 
                 Text("Tap shutter to cancel")
                     .font(.system(size: 14, weight: .medium))
                     .foregroundColor(.white.opacity(0.7))
+                    .rotationEffect(.degrees(recorder.uiRotationAngle))
             }
         }
         .allowsHitTesting(false)
@@ -699,6 +719,8 @@ struct CameraScreen: View {
             .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Color.white.opacity(0.15), lineWidth: 0.5))
             .shadow(color: .black.opacity(0.2), radius: 8, x: 0, y: 4)
             .padding(.bottom, 10)
+            .rotationEffect(.degrees(recorder.uiRotationAngle))
+            .animation(.spring(response: 0.35, dampingFraction: 0.75), value: recorder.uiRotationAngle)
             .onTapGesture {
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                     recorder.notice = nil
@@ -766,6 +788,8 @@ struct CameraScreen: View {
             .clipShape(Capsule())
             .overlay(Capsule().stroke(Color.white.opacity(0.15), lineWidth: 0.5))
             .shadow(color: .black.opacity(0.2), radius: 6, x: 0, y: 3)
+            .rotationEffect(.degrees(recorder.uiRotationAngle))
+            .animation(.spring(response: 0.35, dampingFraction: 0.75), value: recorder.uiRotationAngle)
     }
 
     private func scheduleHideZoomLabel() {
@@ -787,6 +811,7 @@ struct CameraScreen: View {
             .shadow(color: Palette.mint.opacity(0.5), radius: 4)
             .scaleEffect(focusPoint == nil ? 1.2 : 1.0)
             .opacity(focusPoint == nil ? 0 : 1)
+            .rotationEffect(.degrees(recorder.uiRotationAngle))
             .animation(.spring(response: 0.3, dampingFraction: 0.6), value: focusPoint)
     }
 
@@ -818,6 +843,7 @@ struct CameraScreen: View {
                     Text("recording · tap to wake")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundColor(.white.opacity(0.2))
+                        .rotationEffect(.degrees(recorder.uiRotationAngle))
                 }
             )
             .onTapGesture { leaveDim() }
