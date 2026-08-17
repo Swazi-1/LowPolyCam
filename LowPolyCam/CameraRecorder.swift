@@ -299,7 +299,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         session.beginConfiguration()
         session.sessionPreset = .inputPriority
 
-        if let device = Self.camera(at: position, mode: settings.cameraMode, preferPhysical: wantsPhysicalWideForFrameRate),
+        if let device = Self.camera(at: position, mode: settings.cameraMode, preferPhysical: wantsPhysicalWideLens),
            let input = try? AVCaptureDeviceInput(device: device),
            session.canAddInput(input) {
             session.addInput(input)
@@ -330,7 +330,12 @@ final class CameraRecorder: NSObject, ObservableObject {
         if c.isVideoOrientationSupported { c.videoOrientation = .landscapeRight }
         if c.isVideoMirroringSupported {
             c.automaticallyAdjustsVideoMirroring = false
-            c.isVideoMirrored = (position == .front)
+            // The live preview layer has its own connection and always
+            // mirrors the front camera on its own (so filming feels like
+            // looking in a mirror). This connection feeds the actual saved
+            // file, so it's controlled separately by the "Mirror Selfie
+            // Video" setting - off by default, matching stock iOS Camera.
+            c.isVideoMirrored = (position == .front) && settings.mirrorFrontCameraRecording
         }
         applyStabilization(to: c)
     }
@@ -348,8 +353,12 @@ final class CameraRecorder: NSObject, ObservableObject {
         sessionQueue.async { self.applyStabilization() }
     }
 
+    func updateMirrorSetting() {
+        sessionQueue.async { self.configureVideoConnection() }
+    }
+
     private func ensureCorrectCameraDevice(for mode: CameraMode) {
-        guard let targetDevice = Self.camera(at: position, mode: mode, preferPhysical: wantsPhysicalWideForFrameRate) else { return }
+        guard let targetDevice = Self.camera(at: position, mode: mode, preferPhysical: wantsPhysicalWideLens) else { return }
         if cameraInput?.device.uniqueID != targetDevice.uniqueID {
             DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
             
@@ -533,6 +542,19 @@ final class CameraRecorder: NSObject, ObservableObject {
         ensureCorrectCameraDevice(for: settings.cameraMode)
         guard let device = cameraInput?.device else { return }
 
+        // Frame rates are checked per-resolution (using the same width/height
+        // gate as bestFormat) rather than "does any format on this device do
+        // this fps at all". Previously a phone whose 4K formats only reached
+        // 30fps but whose 1080p formats reached 60fps would report 60fps as
+        // globally "available", even though picking 60fps while at 4K
+        // silently got overridden. Now the list shown in Settings actually
+        // matches what's selectable at the resolution currently in use, and
+        // updates again automatically if the resolution changes (resolution
+        // rows call updateCaptureFormat()).
+        let targetDims = settings.cameraMode == .slowMo
+            ? settings.slowMoResolution.captureDimensions
+            : settings.resolution.captureDimensions
+
         var rates = Set<FrameRate>()
         var widestPixels = 0
         var slowRates = Set<SlowMoFrameRate>()
@@ -542,12 +564,15 @@ final class CameraRecorder: NSObject, ObservableObject {
             let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
             let h = Int(dims.height)
             widestPixels = max(widestPixels, Int(dims.width) * Int(dims.height))
-            for rate in FrameRate.allCases {
-                let fps = Double(rate.value)
-                if format.videoSupportedFrameRateRanges.contains(where: {
-                    $0.minFrameRate <= (fps + 0.5) && (fps - 0.5) <= $0.maxFrameRate
-                }) {
-                    rates.insert(rate)
+            let meetsCurrentResolution = Int(dims.width) >= targetDims.w && Int(dims.height) >= targetDims.h
+            if meetsCurrentResolution {
+                for rate in FrameRate.allCases {
+                    let fps = Double(rate.value)
+                    if format.videoSupportedFrameRateRanges.contains(where: {
+                        $0.minFrameRate <= (fps + 0.5) && (fps - 0.5) <= $0.maxFrameRate
+                    }) {
+                        rates.insert(rate)
+                    }
                 }
             }
             for range in format.videoSupportedFrameRateRanges {
@@ -671,7 +696,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         setTorch(on: false)
         sessionQueue.async {
             let next: AVCaptureDevice.Position = (self.position == .back) ? .front : .back
-            guard let device = Self.camera(at: next, mode: self.settings.cameraMode, preferPhysical: self.wantsPhysicalWideForFrameRate),
+            guard let device = Self.camera(at: next, mode: self.settings.cameraMode, preferPhysical: self.wantsPhysicalWideLens),
                   let input = try? AVCaptureDeviceInput(device: device) else {
                 DispatchQueue.main.async { self.isSwitchingCamera = false }
                 return
@@ -743,6 +768,23 @@ final class CameraRecorder: NSObject, ObservableObject {
             && settings.resolution.pixels.h >= 1080
     }
 
+    /// Manual white-balance locking (custom device gains) is unreliable on
+    /// the *virtual* multi-lens "back camera" (triple/dual-wide/dual) that
+    /// devices from the iPhone 11 onward default to - AVFoundation reports
+    /// `isLockingWhiteBalanceWithCustomDeviceGainsSupported == false` for it,
+    /// which is why manual white balance presets only ever worked on older,
+    /// single-lens phones like the iPhone 7. Routing to the plain physical
+    /// wide-angle lens (same trick already used for 60fps) makes manual
+    /// white balance work on every iPhone again, at the cost of losing the
+    /// ultra-wide/telephoto zoom range while a manual preset is active.
+    private var wantsPhysicalWideForManualWhiteBalance: Bool {
+        settings.whiteBalance.kelvin != nil
+    }
+
+    private var wantsPhysicalWideLens: Bool {
+        wantsPhysicalWideForFrameRate || wantsPhysicalWideForManualWhiteBalance
+    }
+
     // MARK: Exposure & White Balance
 
     func setExposureBias(_ bias: Float) {
@@ -762,6 +804,11 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     func setWhiteBalance(_ preset: WhiteBalancePreset) {
         sessionQueue.async {
+            // Manual presets need the physical wide-angle lens (see
+            // wantsPhysicalWideForManualWhiteBalance) - switching to/from a
+            // preset can change which underlying device we should be on, so
+            // make sure that swap happens before we try to lock gains.
+            self.ensureCorrectCameraDevice(for: self.settings.cameraMode)
             guard let device = self.cameraInput?.device else { return }
             do {
                 try device.lockForConfiguration()
@@ -786,6 +833,7 @@ final class CameraRecorder: NSObject, ObservableObject {
                     }
                 }
                 device.unlockForConfiguration()
+                self.refreshZoomLimits()
                 DispatchQueue.main.async { self.settings.whiteBalance = preset }
             } catch { }
         }
