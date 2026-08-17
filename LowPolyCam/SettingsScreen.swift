@@ -100,17 +100,14 @@ struct SettingsScreen: View {
     }
 
     private var frameRateSection: some View {
-        let locked = settings.resolution.lockedFrameRate
         return Section(header: Text("Frame rate").font(.system(size: 13, weight: .semibold)),
-                footer: Text(locked != nil
-                             ? "\(settings.resolution.label) films at \(locked!.label) only."
-                             : recorder.availableFrameRates.count < FrameRate.allCases.count
+                footer: Text(recorder.availableFrameRates.count < FrameRate.allCases.count
                              ? "This camera films at \(recorder.availableFrameRates.map { $0.label }.joined(separator: " or ")) only."
                              : "Higher frame rates look smoother and take more space.")) {
             ForEach(FrameRate.allCases) { f in
-                let enabled = recorder.availableFrameRates.contains(f) && (locked == nil || locked == f)
+                let enabled = recorder.availableFrameRates.contains(f)
                 row(title: f.label,
-                    subtitle: enabled ? f.detail : (locked != nil ? "\(settings.resolution.label) only films at \(locked!.label)" : "Not on this camera"),
+                    subtitle: enabled ? f.detail : "Not on this camera",
                     selected: settings.frameRate == f,
                     enabled: enabled) {
                     settings.frameRate = f
