@@ -220,6 +220,20 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
     }
 
+    /// Briefly ignore the physical volume buttons/outputVolume KVO. Also
+    /// used while the user is actively pinch-zooming: on some iPhones,
+    /// changing videoZoomFactor rapidly can cause a tiny audio-route/volume
+    /// blip that the volume-button shutter watcher can misread as a real
+    /// button press and start a recording by itself. This was reported as a
+    /// one-off ("zoomed on the selfie camera and it started recording") -
+    /// suppressing the watcher while a pinch is in progress removes that
+    /// window without disabling the volume-button shutter feature itself.
+    func suppressVolumeTriggerBriefly(duration: TimeInterval = 1.0) {
+        DispatchQueue.main.async {
+            self.volumeObserver?.ignoreTemporarily(duration: duration)
+        }
+    }
+
     func resumeVolumeMonitoring() {
         DispatchQueue.main.async {
             if self.volumeObserver == nil {
@@ -762,10 +776,15 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
     }
 
+    /// Only 1080p60 forces the plain physical wide lens - that workaround
+    /// predates this fix and wasn't meant to apply at 4K. Previously it
+    /// checked "height >= 1080", which also matched 4K (2160 >= 1080) and
+    /// silently threw away the ultra-wide element - and with it 0.5x zoom -
+    /// on every iPhone that can actually do 4K60 on its virtual camera.
     private var wantsPhysicalWideForFrameRate: Bool {
         settings.cameraMode == .video
             && settings.frameRate == .fps60
-            && settings.resolution.pixels.h >= 1080
+            && settings.resolution == .p1080
     }
 
     /// Manual white-balance locking (custom device gains) is unreliable on
