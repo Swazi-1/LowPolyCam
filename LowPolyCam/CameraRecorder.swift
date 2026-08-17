@@ -41,7 +41,9 @@ final class CameraRecorder: NSObject, ObservableObject {
     @Published private(set) var lastClipThumbnail: UIImage?
     @Published private(set) var lastClipURL: URL?
 
-    // Level Telemetry
+    // Level Telemetry & Physical Orientation
+    @Published private(set) var physicalOrientation: PhysicalOrientation = .portrait
+    @Published private(set) var uiRotationAngle: Double = 0
     @Published private(set) var isLevel: Bool = false
     @Published private(set) var rollAngle: Double = 0
     @Published var notice: String?
@@ -111,10 +113,6 @@ final class CameraRecorder: NSObject, ObservableObject {
         NotificationCenter.default.addObserver(
             self, selector: #selector(subjectAreaDidChange),
             name: .AVCaptureDeviceSubjectAreaDidChange, object: nil)
-
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(handleAudioInterruption),
-            name: AVAudioSession.interruptionNotification, object: nil)
     }
 
     deinit {
@@ -134,16 +132,6 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
     }
 
-    @objc private func handleAudioInterruption(_ notification: Notification) {
-        guard let info = notification.userInfo,
-              let typeValue = info[AVAudioSessionInterruptionTypeKey] as? UInt,
-              let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
-
-        if type == .began {
-            DispatchQueue.main.async { self.audioLevel = 0 }
-        }
-    }
-
     // MARK: Motion & Gravity Horizon
 
     func startMotionUpdates() {
@@ -151,12 +139,28 @@ final class CameraRecorder: NSObject, ObservableObject {
         motionManager.deviceMotionUpdateInterval = 1.0 / 20.0
         motionManager.startDeviceMotionUpdates(using: .xArbitraryZVertical, to: .main) { [weak self] motion, _ in
             guard let self = self, let motion = motion else { return }
-            
-            // Robust gravity calculation that prevents gimbal lock at exact 180°
             let gx = motion.gravity.x
             let gy = motion.gravity.y
-            let angle = (atan2(gx, gy) * (180.0 / .pi)) - 180.0
-            
+            let angle = atan2(gx, -gy) * (180.0 / .pi)
+
+            let absAngle = abs(angle)
+            let newOrientation: PhysicalOrientation
+            if absAngle < 45 {
+                newOrientation = .portrait
+            } else if angle >= 45 && angle < 135 {
+                newOrientation = .landscapeLeft
+            } else if angle <= -45 && angle > -135 {
+                newOrientation = .landscapeRight
+            } else {
+                newOrientation = .portraitUpsideDown
+            }
+
+            let targetUIAngle = newOrientation.rotationAngle
+            if self.physicalOrientation != newOrientation {
+                self.physicalOrientation = newOrientation
+                self.uiRotationAngle = targetUIAngle
+            }
+
             self.rollAngle = angle
             let remainder = abs(angle.truncatingRemainder(dividingBy: 90))
             let isLevelNow = remainder < 1.2 || remainder > 88.8
@@ -276,7 +280,6 @@ final class CameraRecorder: NSObject, ObservableObject {
         configureVideoConnection()
         refreshCapabilitiesThenApplyFormat()
         refreshTorchState()
-        restoreProSettings(for: cameraInput?.device)
         resetFocusAndExposureToAuto()
         syncMicInput()
     }
@@ -377,7 +380,6 @@ final class CameraRecorder: NSObject, ObservableObject {
                         device.isSmoothAutoFocusEnabled = true
                     }
                     
-                    restoreProSettings(for: device) 
                     device.unlockForConfiguration()
                     DispatchQueue.main.async {
                         let dDims = CMVideoFormatDescriptionGetDimensions(fallbackFormat.formatDescription)
@@ -409,38 +411,12 @@ final class CameraRecorder: NSObject, ObservableObject {
                 device.isSmoothAutoFocusEnabled = true
             }
             
-            restoreProSettings(for: device) 
             device.unlockForConfiguration()
         } catch {
             DispatchQueue.main.async { self.notice = "Could not lock this camera's frame rate." }
         }
         refreshZoomLimits()
         DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
-    }
-
-    private func restoreProSettings(for device: AVCaptureDevice?) {
-        guard let device = device else { return }
-        
-        let minBias = device.minExposureTargetBias
-        let maxBias = device.maxExposureTargetBias
-        let clampedBias = max(minBias, min(settings.exposureBias, maxBias))
-        device.setExposureTargetBias(clampedBias, completionHandler: nil)
-
-        if let values = settings.whiteBalance.kelvin {
-            if device.isLockingWhiteBalanceWithCustomDeviceGainsSupported {
-                let tempAndTint = AVCaptureDevice.WhiteBalanceTemperatureAndTintValues(temperature: values.temp, tint: values.tint)
-                var gains = device.deviceWhiteBalanceGains(for: tempAndTint)
-                let maxGain = device.maxWhiteBalanceGain
-                gains.redGain = max(1.0, min(gains.redGain.isFinite ? gains.redGain : 1.0, maxGain))
-                gains.greenGain = max(1.0, min(gains.greenGain.isFinite ? gains.greenGain : 1.0, maxGain))
-                gains.blueGain = max(1.0, min(gains.blueGain.isFinite ? gains.blueGain : 1.0, maxGain))
-                device.setWhiteBalanceModeLocked(with: gains, completionHandler: nil)
-            }
-        } else {
-            if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) {
-                device.whiteBalanceMode = .continuousAutoWhiteBalance
-            }
-        }
     }
 
     private static func bestSlowMoFormat(for device: AVCaptureDevice, fps: Double) -> AVCaptureDevice.Format? {
@@ -887,9 +863,9 @@ final class CameraRecorder: NSObject, ObservableObject {
         if settings.saveLocation == .photos { ensurePhotosAccess() }
 
         let newPlan = Encoder.plan(for: settings)
-        
-        // Orientation is now hard-locked to portrait orientation. 
-        let transform = Self.transform(width: newPlan.width, height: newPlan.height)
+        let transform = Self.transform(forOrientation: physicalOrientation,
+                                       width: newPlan.width,
+                                       height: newPlan.height)
 
         stopRequested = false
 
@@ -1262,10 +1238,19 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     // MARK: Physical Video Orientation Tagging
 
-    // Hard-locked to output native portrait rotation metadata
-    private static func transform(width: Int, height: Int) -> CGAffineTransform {
+    private static func transform(forOrientation o: PhysicalOrientation, width: Int, height: Int) -> CGAffineTransform {
+        let w = CGFloat(width)
         let h = CGFloat(height)
-        return CGAffineTransform(translationX: h, y: 0).rotated(by: .pi / 2)
+        switch o {
+        case .portrait:
+            return CGAffineTransform(translationX: h, y: 0).rotated(by: .pi / 2)
+        case .landscapeLeft:
+            return .identity
+        case .landscapeRight:
+            return CGAffineTransform(translationX: w, y: h).rotated(by: .pi)
+        case .portraitUpsideDown:
+            return CGAffineTransform(translationX: 0, y: w).rotated(by: -.pi / 2)
+        }
     }
 
     enum RecorderError: LocalizedError {
