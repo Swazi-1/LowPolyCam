@@ -120,6 +120,24 @@ struct CameraScreen: View {
                 levelHaptic.selectionChanged()
             }
         }
+        .onChange(of: showSettings) { isPresented in
+            if isPresented {
+                recorder.stopMotionUpdates()
+                recorder.pauseVolumeMonitoring()
+            } else {
+                recorder.startMotionUpdates()
+                recorder.resumeVolumeMonitoring()
+            }
+        }
+        .onChange(of: showPlayer) { isPresented in
+            if isPresented {
+                recorder.stopMotionUpdates()
+                recorder.pauseVolumeMonitoring()
+            } else {
+                recorder.startMotionUpdates()
+                recorder.resumeVolumeMonitoring()
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
             if dimmed { leaveDim() }
         }
@@ -277,7 +295,7 @@ struct CameraScreen: View {
     // MARK: Floating Pro Mini-Window
 
     private var proToolsDrawer: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 14) {
             HStack {
                 Label("PRO TOOLS", systemImage: "slider.horizontal.3")
                     .font(.system(size: 12, weight: .black))
@@ -321,29 +339,33 @@ struct CameraScreen: View {
                 .tint(Palette.amber)
             }
 
-            // White Balance Presets
+            // White Balance Presets (Horizontal Scrollable, Never Wraps)
             VStack(alignment: .leading, spacing: 6) {
                 Text("White Balance")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(.white.opacity(0.7))
 
-                HStack(spacing: 6) {
-                    ForEach(WhiteBalancePreset.allCases) { preset in
-                        let isSelected = settings.whiteBalance == preset
-                        Button(action: { recorder.setWhiteBalance(preset) }) {
-                            HStack(spacing: 4) {
-                                Image(systemName: preset.icon)
-                                Text(preset.label)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(WhiteBalancePreset.allCases) { preset in
+                            let isSelected = settings.whiteBalance == preset
+                            Button(action: { recorder.setWhiteBalance(preset) }) {
+                                HStack(spacing: 5) {
+                                    Image(systemName: preset.icon)
+                                    Text(preset.label)
+                                        .fixedSize(horizontal: true, vertical: false)
+                                }
+                                .font(.system(size: 12, weight: isSelected ? .bold : .medium))
+                                .foregroundColor(isSelected ? .black : .white)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 7)
+                                .background(isSelected ? Palette.mintBright : Color.white.opacity(0.12))
+                                .clipShape(Capsule())
                             }
-                            .font(.system(size: 11, weight: isSelected ? .bold : .medium))
-                            .foregroundColor(isSelected ? .black : .white)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(isSelected ? Palette.mintBright : Color.white.opacity(0.12))
-                            .clipShape(Capsule())
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
                     }
+                    .padding(.horizontal, 2)
                 }
             }
 
@@ -351,7 +373,14 @@ struct CameraScreen: View {
             HStack(spacing: 10) {
                 // Level Toggle
                 Button(action: {
-                    withAnimation { settings.showLevelGauge.toggle() }
+                    withAnimation {
+                        settings.showLevelGauge.toggle()
+                        if settings.showLevelGauge {
+                            recorder.startMotionUpdates()
+                        } else {
+                            recorder.stopMotionUpdates()
+                        }
+                    }
                 }) {
                     HStack(spacing: 6) {
                         Image(systemName: "gyroscope")
@@ -589,7 +618,7 @@ struct CameraScreen: View {
                     .stroke(isLevel ? Palette.mintBright : Color.white.opacity(0.3), lineWidth: 1.5)
                     .frame(width: 12, height: 12)
 
-                // Left and Right Horizon Lines
+                // Left and Right Horizon Lines (Pure Gravity Angle)
                 HStack(spacing: 24) {
                     Rectangle()
                         .fill(isLevel ? Palette.mintBright : Color.white.opacity(0.3))
@@ -602,7 +631,7 @@ struct CameraScreen: View {
                         .frame(width: 40, height: 1.5)
                 }
                 .rotationEffect(.degrees(-recorder.rollAngle))
-                .animation(.spring(response: 0.2, dampingFraction: 0.8), value: recorder.rollAngle)
+                .animation(.spring(response: 0.15, dampingFraction: 0.8), value: recorder.rollAngle)
             }
             .position(x: w / 2, y: h / 2)
             .shadow(color: isLevel ? Palette.mint.opacity(0.6) : .clear, radius: 4)
@@ -657,7 +686,6 @@ struct CameraScreen: View {
         countdownRemaining = 0
     }
 
-    // FIXED: Changed 'var' to 'func' to resolve syntax error
     private func noticeBar(_ text: String) -> some View {
         Text(text)
             .font(.system(size: 13, weight: .medium))
