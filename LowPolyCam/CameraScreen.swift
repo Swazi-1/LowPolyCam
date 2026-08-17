@@ -79,13 +79,6 @@ struct CameraScreen: View {
 
                 if countdownRemaining > 0 { countdownOverlay }
 
-                // Hides the camera-flip flicker/zoom-jump: AVFoundation has
-                // to tear down the old device, pick the new one, and re-scan
-                // its formats before the preview layer shows a clean frame
-                // again, and for a couple of frames in between it can show
-                // stale zoom or a flash of the wrong lens. A short black dip
-                // covers that gap instead of showing it, the same trick the
-                // stock Camera app uses.
                 Color.black
                     .opacity(recorder.isSwitchingCamera ? 1 : 0)
                     .allowsHitTesting(false)
@@ -95,7 +88,7 @@ struct CameraScreen: View {
             }
             .ignoresSafeArea()
 
-            // Safe area HUD (Locked strictly to portrait)
+            // Safe area HUD
             if recorder.permissionDenied {
                 permissionMessage
             } else {
@@ -106,8 +99,11 @@ struct CameraScreen: View {
                     
                     if showProMenu && !recorder.isRecording && !recorder.isSaving {
                         proToolsDrawer
-                            .transition(.move(edge: .bottom).combined(with: .opacity))
-                            .padding(.bottom, 8)
+                            .transition(.asymmetric(
+                                insertion: .move(edge: .bottom).combined(with: .opacity).combined(with: .scale(scale: 0.95)),
+                                removal: .move(edge: .bottom).combined(with: .opacity)
+                            ))
+                            .padding(.bottom, 10)
                     }
 
                     bottomHUD
@@ -169,7 +165,6 @@ struct CameraScreen: View {
 
     private var topHUD: some View {
         HStack(alignment: .center, spacing: 12) {
-            // Top Left: Flashlight Button
             if recorder.hasTorch {
                 facetButton(system: recorder.torchOn ? "bolt.fill" : "bolt.slash.fill",
                             tint: recorder.torchOn ? Palette.amber : .white) {
@@ -185,7 +180,6 @@ struct CameraScreen: View {
 
             Spacer()
 
-            // Top Right: Settings Button
             facetButton(system: "gearshape.fill") { showSettings = true }
                 .disabled(recorder.isRecording || recorder.isSaving || recorder.isSwitchingCamera)
                 .opacity((recorder.isRecording || recorder.isSaving || recorder.isSwitchingCamera) ? 0.35 : 1)
@@ -232,11 +226,11 @@ struct CameraScreen: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .background(.ultraThinMaterial)
+        .background(Palette.panel.opacity(0.85))
         .environment(\.colorScheme, .dark)
         .clipShape(Capsule())
-        .overlay(Capsule().stroke(Color.white.opacity(0.15), lineWidth: 0.5))
-        .shadow(color: .black.opacity(0.25), radius: 8, x: 0, y: 4)
+        .overlay(Capsule().stroke(Palette.slateLight.opacity(0.35), lineWidth: 0.8))
+        .shadow(color: .black.opacity(0.35), radius: 10, x: 0, y: 5)
     }
 
     private var recordingStatusRow: some View {
@@ -305,44 +299,76 @@ struct CameraScreen: View {
             : Palette.mintBright
     }
 
-    // MARK: Floating Pro Mini-Window
+    // MARK: Enhanced Pro Tools Menu (Matched to App Icon Aesthetic)
 
     private var proToolsDrawer: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: 16) {
+            // Header Bar
             HStack {
-                Label("PRO TOOLS", systemImage: "slider.horizontal.3")
-                    .font(.system(size: 12, weight: .black))
-                    .foregroundColor(Palette.mintBright)
+                HStack(spacing: 8) {
+                    Facet(sides: 6, rotation: .pi / 6)
+                        .fill(LinearGradient(colors: [Palette.mintBright, Palette.mintDeep], startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .frame(width: 20, height: 20)
+                        .overlay(
+                            Image(systemName: "slider.horizontal.3")
+                                .font(.system(size: 9, weight: .black))
+                                .foregroundColor(Palette.slateDeep)
+                        )
+
+                    Text("PRO TOOLS")
+                        .font(.system(size: 13, weight: .black, design: .rounded))
+                        .foregroundColor(.white)
+                        .tracking(1.2)
+                }
 
                 Spacer()
 
                 Button(action: {
                     withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { showProMenu = false }
                 }) {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 18))
-                        .foregroundColor(.white.opacity(0.5))
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(Palette.slateLight)
+                        .frame(width: 26, height: 26)
+                        .background(Palette.slate.opacity(0.7))
+                        .clipShape(Circle())
                 }
                 .buttonStyle(.plain)
             }
 
-            // EV Exposure Slider
-            VStack(alignment: .leading, spacing: 4) {
+            // EV Exposure Section
+            VStack(spacing: 8) {
                 HStack {
-                    Text("Exposure (EV)")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.white.opacity(0.7))
+                    HStack(spacing: 5) {
+                        Image(systemName: "sun.max.fill")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(Palette.amber)
+                        Text("Exposure (EV)")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.white.opacity(0.85))
+                    }
+
                     Spacer()
+
                     Text(String(format: "%@%.1f EV", settings.exposureBias > 0 ? "+" : "", settings.exposureBias))
                         .font(.system(size: 12, weight: .bold, design: .monospaced))
-                        .foregroundColor(Palette.amber)
+                        .foregroundColor(settings.exposureBias == 0 ? .white.opacity(0.7) : Palette.amber)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Palette.slate.opacity(0.8))
+                        .clipShape(Capsule())
 
-                    Button("Reset") {
-                        settings.exposureBias = 0.0
+                    if abs(settings.exposureBias) > 0.01 {
+                        Button("Reset") {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                settings.exposureBias = 0.0
+                                recorder.setExposureBias(0.0)
+                            }
+                        }
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(Palette.mintBright)
+                        .padding(.leading, 4)
                     }
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(Palette.mint)
-                    .padding(.leading, 6)
                 }
 
                 Slider(value: $settings.exposureBias, in: -2.0...2.0, step: 0.1)
@@ -351,29 +377,50 @@ struct CameraScreen: View {
                         recorder.setExposureBias(val)
                     }
             }
+            .padding(12)
+            .background(Palette.slate.opacity(0.45))
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
 
-            // White Balance Presets 
-            VStack(alignment: .leading, spacing: 6) {
-                Text("White Balance")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.white.opacity(0.7))
+            // White Balance Presets
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 5) {
+                    Image(systemName: "paintpalette.fill")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(Palette.mint)
+                    Text("White Balance")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.85))
+                }
 
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(WhiteBalancePreset.allCases) { preset in
                             let isSelected = settings.whiteBalance == preset
                             Button(action: { settings.whiteBalance = preset }) {
-                                HStack(spacing: 5) {
+                                HStack(spacing: 6) {
                                     Image(systemName: preset.icon)
+                                        .font(.system(size: 11, weight: .bold))
                                     Text(preset.label)
-                                        .fixedSize(horizontal: true, vertical: false)
+                                        .font(.system(size: 12, weight: isSelected ? .bold : .medium))
                                 }
-                                .font(.system(size: 12, weight: isSelected ? .bold : .medium))
-                                .foregroundColor(isSelected ? .black : .white)
+                                .foregroundColor(isSelected ? Palette.slateDeep : .white.opacity(0.9))
                                 .padding(.horizontal, 12)
-                                .padding(.vertical, 7)
-                                .background(isSelected ? settings.accentColor.bright : Color.white.opacity(0.12))
+                                .padding(.vertical, 8)
+                                .background(
+                                    ZStack {
+                                        if isSelected {
+                                            LinearGradient(colors: [Palette.mintBright, Palette.mint], startPoint: .topLeading, endPoint: .bottomTrailing)
+                                        } else {
+                                            Palette.slate.opacity(0.65)
+                                        }
+                                    }
+                                )
                                 .clipShape(Capsule())
+                                .overlay(
+                                    Capsule()
+                                        .stroke(isSelected ? Palette.mintBright.opacity(0.6) : Palette.slateLight.opacity(0.25), lineWidth: 0.8)
+                                )
+                                .shadow(color: isSelected ? Palette.mint.opacity(0.4) : .clear, radius: 6, x: 0, y: 2)
                             }
                             .buttonStyle(.plain)
                         }
@@ -385,10 +432,11 @@ struct CameraScreen: View {
                 }
             }
 
-            // Quick Toggles Row
-            HStack(spacing: 10) {
+            // Bottom Tools Row: Level Meter & Countdown Timer
+            HStack(spacing: 12) {
+                // Horizon Level Toggle
                 Button(action: {
-                    withAnimation {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
                         settings.showLevelGauge.toggle()
                         if settings.showLevelGauge {
                             recorder.startMotionUpdates()
@@ -397,48 +445,92 @@ struct CameraScreen: View {
                         }
                     }
                 }) {
-                    HStack(spacing: 6) {
+                    HStack(spacing: 8) {
                         Image(systemName: "gyroscope")
+                            .font(.system(size: 13, weight: .bold))
                         Text("Level Meter")
+                            .font(.system(size: 12, weight: .bold))
                     }
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundColor(settings.showLevelGauge ? .black : .white)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(settings.showLevelGauge ? settings.accentColor.bright : Color.white.opacity(0.12))
-                    .clipShape(Capsule())
+                    .foregroundColor(settings.showLevelGauge ? Palette.slateDeep : .white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(
+                        ZStack {
+                            if settings.showLevelGauge {
+                                LinearGradient(colors: [Palette.mintBright, Palette.mint], startPoint: .topLeading, endPoint: .bottomTrailing)
+                            } else {
+                                Palette.slate.opacity(0.6)
+                            }
+                        }
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(settings.showLevelGauge ? Palette.mintBright.opacity(0.6) : Palette.slateLight.opacity(0.3), lineWidth: 0.8)
+                    )
+                    .shadow(color: settings.showLevelGauge ? Palette.mint.opacity(0.35) : .clear, radius: 6)
                 }
                 .buttonStyle(.plain)
 
-                Spacer()
-
+                // Shutter Timer Selector
                 HStack(spacing: 4) {
                     Image(systemName: "timer")
-                        .font(.system(size: 12))
-                        .foregroundColor(.white.opacity(0.7))
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(Palette.amber)
+                        .padding(.leading, 6)
 
                     ForEach(CountdownTimer.allCases) { timer in
                         let isSelected = settings.countdownTimer == timer
                         Button(action: { settings.countdownTimer = timer }) {
                             Text(timer.label)
                                 .font(.system(size: 11, weight: isSelected ? .bold : .medium))
-                                .foregroundColor(isSelected ? .black : .white)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 6)
-                                .background(isSelected ? Palette.amber : Color.white.opacity(0.12))
+                                .foregroundColor(isSelected ? Palette.slateDeep : .white.opacity(0.85))
+                                .padding(.horizontal, 9)
+                                .padding(.vertical, 7)
+                                .background(
+                                    ZStack {
+                                        if isSelected {
+                                            LinearGradient(colors: [Palette.amberBright, Palette.amber], startPoint: .topLeading, endPoint: .bottomTrailing)
+                                        } else {
+                                            Color.clear
+                                        }
+                                    }
+                                )
                                 .clipShape(Capsule())
                         }
                         .buttonStyle(.plain)
                     }
                 }
+                .padding(4)
+                .background(Palette.slate.opacity(0.6))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(Palette.slateLight.opacity(0.3), lineWidth: 0.8)
+                )
             }
         }
-        .padding(16)
-        .background(.ultraThinMaterial)
+        .padding(18)
+        .background(
+            ZStack {
+                Palette.panel.opacity(0.92)
+                LinearGradient(colors: [Palette.slate.opacity(0.3), Color.clear], startPoint: .top, endPoint: .bottom)
+            }
+        )
         .environment(\.colorScheme, .dark)
-        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(Color.white.opacity(0.18), lineWidth: 0.5))
-        .shadow(color: .black.opacity(0.35), radius: 15, x: 0, y: 8)
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(
+                    LinearGradient(
+                        colors: [Palette.mint.opacity(0.5), Palette.slateLight.opacity(0.2), Palette.amber.opacity(0.3)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1.2
+                )
+        )
+        .shadow(color: .black.opacity(0.55), radius: 25, x: 0, y: 12)
     }
 
     // MARK: Bottom HUD Bar
@@ -466,10 +558,10 @@ struct CameraScreen: View {
                             .font(.system(size: 14, weight: .bold))
                             .foregroundColor(showProMenu ? settings.accentColor.bright : .white)
                             .frame(width: 36, height: 36)
-                            .background(.ultraThinMaterial)
+                            .background(Palette.panel.opacity(0.85))
                             .environment(\.colorScheme, .dark)
                             .clipShape(Circle())
-                            .overlay(Circle().stroke(Color.white.opacity(0.15), lineWidth: 0.5))
+                            .overlay(Circle().stroke(Palette.slateLight.opacity(0.35), lineWidth: 0.8))
                             .shadow(color: .black.opacity(0.2), radius: 4)
                     }
                     .buttonStyle(.plain)
@@ -486,7 +578,7 @@ struct CameraScreen: View {
                             .aspectRatio(contentMode: .fill)
                             .frame(width: 50, height: 50)
                             .clipShape(Facet(sides: 6, rotation: .pi / 6))
-                            .overlay(Facet(sides: 6, rotation: .pi / 6).stroke(Color.white.opacity(0.35), lineWidth: 1.5))
+                            .overlay(Facet(sides: 6, rotation: .pi / 6).stroke(Palette.mint.opacity(0.6), lineWidth: 1.5))
                             .shadow(color: .black.opacity(0.3), radius: 5)
                     }
                     .buttonStyle(.plain)
@@ -516,12 +608,6 @@ struct CameraScreen: View {
 
     private var recordButton: some View {
         Button {
-            // Belt-and-suspenders: even though the button is visually
-            // disabled while switching cameras, ignore any tap that sneaks
-            // through (e.g. one already in flight when the state flips)
-            // rather than letting it start a recording. Also ignore while a
-            // pinch-to-zoom is in progress - guards against the rare case
-            // where a zoom gesture's touch-up lands on the shutter.
             guard !recorder.isSwitchingCamera, !isPinching else { return }
             if recorder.isRecording {
                 stopHaptic.impactOccurred()
@@ -540,17 +626,14 @@ struct CameraScreen: View {
             }
         } label: {
             ZStack {
-                // Faceted bezel: an outer low-poly ring plus a thinner,
-                // slightly rotated inner ring behind it, so the shutter
-                // reads as a cut-gem rather than a single flat polygon.
                 Facet(sides: 12, rotation: .pi / 12)
-                    .stroke(settings.accentColor.deep.opacity(0.25), lineWidth: 1)
+                    .stroke(settings.accentColor.deep.opacity(0.35), lineWidth: 1)
                     .frame(width: 84, height: 84)
 
                 Facet(sides: 12)
                     .stroke(LinearGradient(colors: [settings.accentColor.bright, settings.accentColor.deep], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 4)
                     .frame(width: 78, height: 78)
-                    .shadow(color: settings.accentColor.color.opacity(0.3), radius: 6)
+                    .shadow(color: settings.accentColor.color.opacity(0.4), radius: 8)
 
                 Facet(sides: 12)
                     .stroke(settings.accentColor.deep.opacity(0.3), lineWidth: 1.5)
@@ -560,7 +643,7 @@ struct CameraScreen: View {
                     ProgressView().tint(settings.accentColor.bright).scaleEffect(1.2)
                 } else if recorder.isRecording {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(LinearGradient(colors: [Palette.record, Palette.record.opacity(0.8)], startPoint: .top, endPoint: .bottom))
+                        .fill(LinearGradient(colors: [Palette.record, Palette.record.opacity(0.85)], startPoint: .top, endPoint: .bottom))
                         .frame(width: 32, height: 32)
                         .shadow(color: Palette.record.opacity(0.6), radius: 10)
                 } else if countdownRemaining > 0 {
@@ -568,11 +651,8 @@ struct CameraScreen: View {
                         .font(.system(size: 24, weight: .bold))
                         .foregroundColor(.white)
                 } else {
-                    // White idle shutter, like the stock iOS Camera app -
-                    // it only turns red once actually recording (the
-                    // .isRecording branch above).
                     Facet(sides: 12)
-                        .fill(LinearGradient(colors: [Color.white, Color.white.opacity(0.9)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .fill(LinearGradient(colors: [Color.white, Color.white.opacity(0.92)], startPoint: .topLeading, endPoint: .bottomTrailing))
                         .frame(width: 58, height: 58)
                         .shadow(color: Color.white.opacity(0.35), radius: 6, x: 0, y: 3)
                 }
@@ -611,10 +691,10 @@ struct CameraScreen: View {
                 .buttonStyle(.plain)
             }
         }
-        .background(.ultraThinMaterial)
+        .background(Palette.panel.opacity(0.85))
         .environment(\.colorScheme, .dark)
         .clipShape(Capsule())
-        .overlay(Capsule().stroke(Color.white.opacity(0.15), lineWidth: 0.5))
+        .overlay(Capsule().stroke(Palette.slateLight.opacity(0.35), lineWidth: 0.8))
         .shadow(color: .black.opacity(0.2), radius: 6, x: 0, y: 3)
     }
 
@@ -627,12 +707,12 @@ struct CameraScreen: View {
                 .font(.system(size: size * 0.38, weight: .medium))
                 .foregroundColor(tint)
                 .frame(width: size, height: size)
-                .background(.ultraThinMaterial)
+                .background(Palette.panel.opacity(0.85))
                 .environment(\.colorScheme, .dark)
                 .clipShape(Facet(sides: 6, rotation: .pi / 6))
                 .overlay(
                     Facet(sides: 6, rotation: .pi / 6)
-                        .stroke(Color.white.opacity(0.15), lineWidth: 0.5)
+                        .stroke(Palette.slateLight.opacity(0.35), lineWidth: 0.8)
                 )
                 .shadow(color: .black.opacity(0.2), radius: 6, x: 0, y: 3)
                 .contentShape(Circle())
@@ -728,10 +808,10 @@ struct CameraScreen: View {
             .multilineTextAlignment(.center)
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
-            .background(.ultraThinMaterial)
+            .background(Palette.panel.opacity(0.9))
             .environment(\.colorScheme, .dark)
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Color.white.opacity(0.15), lineWidth: 0.5))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Palette.slateLight.opacity(0.4), lineWidth: 0.8))
             .shadow(color: .black.opacity(0.2), radius: 8, x: 0, y: 4)
             .padding(.bottom, 10)
             .onTapGesture {
@@ -763,7 +843,7 @@ struct CameraScreen: View {
         }
         .foregroundColor(.white)
         .padding(32)
-        .background(.ultraThinMaterial)
+        .background(Palette.panel.opacity(0.95))
         .environment(\.colorScheme, .dark)
         .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         .shadow(color: .black.opacity(0.3), radius: 20, x: 0, y: 10)
@@ -790,12 +870,6 @@ struct CameraScreen: View {
         .allowsHitTesting(false)
     }
 
-    /// Tappable zoom presets, like the stock Camera app's 0.5/1/2 row.
-    /// Presets are built from whatever the current lens can actually do -
-    /// on an ultra-wide-equipped iPhone (e.g. iPhone 11) that includes 0.5x,
-    /// on a single-lens phone it doesn't, and this now applies in Slow-Mo
-    /// too since the virtual camera picked for slow-mo already carries the
-    /// ultra-wide element on phones that support it.
     private var zoomPresets: [CGFloat] {
         var options: [CGFloat] = []
         if recorder.minZoomFactor <= 0.6 { options.append(0.5) }
@@ -805,11 +879,6 @@ struct CameraScreen: View {
         return options
     }
 
-    /// Clean, fixed-precision zoom labels ("0.5x", "1x", "2x") - the old
-    /// version built these with raw string interpolation of a CGFloat
-    /// (`"\(preset)x"`), which for 0.5x could print with long floating-point
-    /// noise (e.g. "0.4999998x") that then wrapped inside the small circle.
-    /// A one-decimal String(format:) always gives a short, exact label.
     private func zoomLabel(for preset: CGFloat) -> String {
         if preset == preset.rounded() {
             return "\(Int(preset))x"
@@ -835,11 +904,11 @@ struct CameraScreen: View {
                         .font(.system(size: isSelected ? 12 : 10, weight: .bold))
                         .lineLimit(1)
                         .minimumScaleFactor(0.7)
-                        .foregroundColor(isSelected ? .black : .white)
+                        .foregroundColor(isSelected ? Palette.slateDeep : .white)
                         .frame(width: isSelected ? 36 : 30, height: isSelected ? 36 : 30)
-                        .background(isSelected ? settings.accentColor.bright : Color.black.opacity(0.35))
+                        .background(isSelected ? Palette.mintBright : Palette.panel.opacity(0.85))
                         .clipShape(Circle())
-                        .overlay(Circle().stroke(Color.white.opacity(0.25), lineWidth: 0.75))
+                        .overlay(Circle().stroke(isSelected ? Palette.mintBright : Palette.slateLight.opacity(0.35), lineWidth: 0.8))
                 }
                 .buttonStyle(.plain)
                 .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isSelected)
@@ -847,10 +916,10 @@ struct CameraScreen: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .background(.ultraThinMaterial)
+        .background(Palette.panel.opacity(0.85))
         .environment(\.colorScheme, .dark)
         .clipShape(Capsule())
-        .overlay(Capsule().stroke(Color.white.opacity(0.15), lineWidth: 0.5))
+        .overlay(Capsule().stroke(Palette.slateLight.opacity(0.35), lineWidth: 0.8))
         .frame(maxWidth: .infinity)
     }
 
@@ -860,10 +929,10 @@ struct CameraScreen: View {
             .foregroundColor(.white)
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
-            .background(.ultraThinMaterial)
+            .background(Palette.panel.opacity(0.9))
             .environment(\.colorScheme, .dark)
             .clipShape(Capsule())
-            .overlay(Capsule().stroke(Color.white.opacity(0.15), lineWidth: 0.5))
+            .overlay(Capsule().stroke(Palette.slateLight.opacity(0.35), lineWidth: 0.8))
             .shadow(color: .black.opacity(0.2), radius: 6, x: 0, y: 3)
     }
 
