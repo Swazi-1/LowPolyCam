@@ -447,7 +447,9 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
 
         var targetFPS = fps
-        var format = Self.bestFormat(for: device, width: dims.w, height: dims.h, fps: targetFPS)
+        var format = isSlow
+            ? Self.bestSlowMoAwareFormat(for: device, width: dims.w, height: dims.h, fps: targetFPS)
+            : Self.bestFormat(for: device, width: dims.w, height: dims.h, fps: targetFPS)
 
         if format == nil && targetFPS == 60 {
             targetFPS = 30
@@ -553,10 +555,9 @@ final class CameraRecorder: NSObject, ObservableObject {
         return best
     }
 
-    private static func bestFormat(for device: AVCaptureDevice, width: Int, height: Int, fps: Double) -> AVCaptureDevice.Format? {
-        var best: AVCaptureDevice.Format?
-        var bestScore = Int.max
-        for format in device.formats {
+    private static func scoredCandidates(in formats: [AVCaptureDevice.Format], width: Int, height: Int, fps: Double) -> [AVCaptureDevice.Format] {
+        var scored: [(format: AVCaptureDevice.Format, score: Int)] = []
+        for format in formats {
             let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
             guard Int(dims.width) >= width, Int(dims.height) >= height else { continue }
             let supportsFPS = format.videoSupportedFrameRateRanges.contains {
@@ -564,16 +565,52 @@ final class CameraRecorder: NSObject, ObservableObject {
             }
             guard supportsFPS else { continue }
             let areaDelta = Int(dims.width) * Int(dims.height) - width * height
-            
+
             let isHDR = format.supportedColorSpaces.contains(.HLG_BT2020)
             let colorScore = isHDR ? 10_000_000 : 0
             let score = areaDelta + (format.isVideoBinned ? 1_000_000 : 0) + colorScore
-            if score < bestScore {
-                bestScore = score
-                best = format
+            scored.append((format, score))
+        }
+        return scored.sorted { $0.score < $1.score }.map { $0.format }
+    }
+
+    private static func bestFormat(for device: AVCaptureDevice, width: Int, height: Int, fps: Double) -> AVCaptureDevice.Format? {
+        scoredCandidates(in: device.formats, width: width, height: height, fps: fps).first
+    }
+
+    /// Slow-mo's 120/240fps formats aren't always available across the
+    /// whole zoom range - on many iPhones, high frame rate capture is
+    /// sourced only from the wide lens, and setting one of those formats
+    /// active narrows `minAvailableVideoZoomFactor` up to 1x for as long as
+    /// it's active, silently making 0.5x unreachable even though the
+    /// virtual/multi-lens device was correctly selected and genuinely does
+    /// support 120/240fps *somewhere* in its format list. There's no static
+    /// per-format flag for this - the only way to know is to make a
+    /// candidate format active and read the zoom range it actually leaves
+    /// available. This tries each width/height/fps-matching candidate, in
+    /// the same best-fit order bestFormat(...) would use, and picks the
+    /// first one that still reaches down to the ultra-wide switchover
+    /// point, so 0.5x shows up automatically on whichever iPhones have a
+    /// slow-mo format that keeps it - and otherwise falls back to the
+    /// previous best-fit pick unchanged.
+    private static func bestSlowMoAwareFormat(for device: AVCaptureDevice, width: Int, height: Int, fps: Double) -> AVCaptureDevice.Format? {
+        let ranked = scoredCandidates(in: device.formats, width: width, height: height, fps: fps)
+        guard let fallback = ranked.first else { return nil }
+        guard ranked.count > 1 else { return fallback }
+
+        let baseline = wideAngleBaseline(for: device)
+        guard baseline > 1 else { return fallback }
+
+        guard (try? device.lockForConfiguration()) != nil else { return fallback }
+        defer { device.unlockForConfiguration() }
+
+        for candidate in ranked {
+            device.activeFormat = candidate
+            if device.minAvailableVideoZoomFactor <= baseline * 1.05 {
+                return candidate
             }
         }
-        return best
+        return fallback
     }
 
     func updateCaptureFormat() {
