@@ -122,6 +122,38 @@ enum SaveLocation: String, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - File Splitting
+
+enum SplitInterval: String, CaseIterable, Identifiable {
+    case off, oneHour, fourHours
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .off: return "Off (one long file)"
+        case .oneHour: return "Every 1 hour"
+        case .fourHours: return "Every 4 hours"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .off: return "Single continuous recording"
+        case .oneHour: return "Splits into ~1-hour files"
+        case .fourHours: return "Splits into ~4-hour files"
+        }
+    }
+
+    var seconds: TimeInterval? {
+        switch self {
+        case .off: return nil
+        case .oneHour: return 3600
+        case .fourHours: return 14400
+        }
+    }
+}
+
 // MARK: - Stored settings
 
 final class AppSettings: ObservableObject {
@@ -141,6 +173,12 @@ final class AppSettings: ObservableObject {
     }
     @Published var saveLocation: SaveLocation {
         didSet { store.set(saveLocation.rawValue, forKey: "saveLocation") }
+    }
+    @Published var splitInterval: SplitInterval {
+        didSet { store.set(splitInterval.rawValue, forKey: "splitInterval") }
+    }
+    @Published var lowTorch: Bool {
+        didSet { store.set(lowTorch, forKey: "lowTorch") }
     }
     @Published var recordAudio: Bool {
         didSet { store.set(recordAudio, forKey: "recordAudio") }
@@ -167,6 +205,8 @@ final class AppSettings: ObservableObject {
         quality       = Quality(rawValue: store.string(forKey: "quality") ?? "") ?? .medium
         frameRate     = FrameRate(rawValue: store.integer(forKey: "frameRate")) ?? .fps30
         saveLocation  = SaveLocation(rawValue: store.string(forKey: "saveLocation") ?? "") ?? .photos
+        splitInterval = SplitInterval(rawValue: store.string(forKey: "splitInterval") ?? "") ?? .off
+        lowTorch      = store.object(forKey: "lowTorch") as? Bool ?? true
         recordAudio   = store.object(forKey: "recordAudio") as? Bool ?? true
         stabilization = store.object(forKey: "stabilization") as? Bool ?? true
         useHEVC       = store.object(forKey: "useHEVC") as? Bool ?? true
@@ -186,6 +226,7 @@ struct EncodePlan {
     var codec: AVVideoCodecType
     var hasAudio: Bool
     var saveLocation: SaveLocation
+    var splitInterval: SplitInterval
 
     var totalBitrate: Int { videoBitrate + audioBitrate }
 
@@ -251,7 +292,8 @@ enum Encoder {
             frameRate: fps,
             codec: settings.useHEVC ? .hevc : .h264,
             hasAudio: settings.recordAudio,
-            saveLocation: settings.saveLocation
+            saveLocation: settings.saveLocation,
+            splitInterval: settings.splitInterval
         )
     }
 
