@@ -75,6 +75,7 @@ final class CameraRecorder: NSObject, ObservableObject {
     private var freeBytesSnapshot: Int64 = .max
     private var lastElapsedPush = CMTime.invalid
     private var droppedFrameCount = 0
+    private var recordingDestination: SaveLocation = .files
 
     private let stopLock = NSLock()
     private var _stopRequested = false
@@ -780,6 +781,7 @@ final class CameraRecorder: NSObject, ObservableObject {
 
         ioQueue.async {
             self.plan = newPlan
+            self.recordingDestination = self.settings.saveLocation
             self.clipTransform = transform
             self.recordStartPTS = .invalid
             self.lastElapsedPush = .invalid
@@ -902,7 +904,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         let a = audioIn
         let end = lastVideoPTS
         let start = segmentStart
-        let destination = plan?.saveLocation ?? .files
+        let destination = recordingDestination
         let url = w.outputURL
 
         writer = nil; videoIn = nil; audioIn = nil
@@ -946,7 +948,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         let oldEnd = lastVideoPTS
         let oldStart = segmentStart
         let oldUrl = oldWriter.outputURL
-        let destination = plan?.saveLocation ?? .files
+        let destination = recordingDestination
 
         writer = nil; videoIn = nil; audioIn = nil
         segmentStart = .invalid
