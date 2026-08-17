@@ -58,6 +58,10 @@ enum Resolution: String, CaseIterable, Identifiable {
         }
     }
 
+    var lockedFrameRate: FrameRate? {
+        self == .p2160 ? .fps30 : nil
+    }
+
     var detail: String {
         let p = pixels
         return "\(p.w) x \(p.h)"
