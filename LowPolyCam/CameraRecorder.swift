@@ -394,7 +394,7 @@ final class CameraRecorder: NSObject, ObservableObject {
             if let locked = settings.resolution.lockedFrameRate, settings.frameRate != locked {
                 DispatchQueue.main.async {
                     self.settings.frameRate = locked
-                    self.notice = "\(self.settings.resolution.label) films at \(locked.label) only - switched to \(locked.label)."
+                    self.notice = "\(self.settings.resolution.label) locked to \(locked.label)"
                 }
             }
             fps = Double((settings.resolution.lockedFrameRate ?? settings.frameRate).value)
@@ -411,7 +411,7 @@ final class CameraRecorder: NSObject, ObservableObject {
             if format != nil {
                 DispatchQueue.main.async {
                     self.settings.frameRate = .fps30
-                    self.notice = "60 fps is not supported at this resolution here. Switched to 30 fps."
+                    self.notice = "60 fps unavailable · Switched to 30 fps"
                 }
             }
         }
@@ -423,7 +423,7 @@ final class CameraRecorder: NSObject, ObservableObject {
                     let dDims = CMVideoFormatDescriptionGetDimensions(fallbackFormat.formatDescription)
                     let closestRes: Resolution = dDims.height >= 1080 ? .p1080 : .p720
                     self.settings.slowMoResolution = closestRes
-                    self.notice = "\(self.settings.slowMoFrameRate.label) runs at \(closestRes.label) on this iPhone."
+                    self.notice = "\(self.settings.slowMoFrameRate.label) set to \(closestRes.label)"
                 }
                 refreshZoomLimits()
                 DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
@@ -431,7 +431,7 @@ final class CameraRecorder: NSObject, ObservableObject {
             }
 
             DispatchQueue.main.async {
-                self.notice = "This camera can't do \(dims.w)x\(dims.h) at \(Int(fps)) fps here - using its closest mode instead."
+                self.notice = "Format adjusted for this lens"
             }
             return
         }
@@ -486,7 +486,7 @@ final class CameraRecorder: NSObject, ObservableObject {
 
             device.unlockForConfiguration()
         } catch {
-            DispatchQueue.main.async { self.notice = "Could not apply camera settings." }
+            DispatchQueue.main.async { self.notice = "Camera settings busy" }
         }
     }
 
@@ -633,7 +633,7 @@ final class CameraRecorder: NSObject, ObservableObject {
 
             if self.settings.cameraMode == .slowMo {
                 if !self.isSlowMoSupportedOnCurrentLens {
-                    self.notice = "Slow motion is not supported on this lens. Switched to Video."
+                    self.notice = "Slow-Mo unavailable on front camera"
                     self.settings.cameraMode = .video
                 } else if !self.availableSlowMoRates.contains(self.settings.slowMoFrameRate) {
                     self.settings.slowMoFrameRate = self.availableSlowMoRates.first ?? .fps120
@@ -801,7 +801,7 @@ final class CameraRecorder: NSObject, ObservableObject {
                 guard device.isLockingWhiteBalanceWithCustomDeviceGainsSupported else {
                     device.unlockForConfiguration()
                     DispatchQueue.main.async {
-                        self.notice = "This camera doesn't support manual white balance presets."
+                        self.notice = "Manual WB unsupported here"
                     }
                     return
                 }
@@ -817,7 +817,7 @@ final class CameraRecorder: NSObject, ObservableObject {
                 DispatchQueue.main.async {
                     self.settings.whiteBalance = preset
                     if lostUltraWide {
-                        self.notice = "0.5x isn't available on this camera while a manual white balance preset is active."
+                        self.notice = "0.5x unavailable with custom WB"
                     }
                 }
             } catch { }
@@ -855,7 +855,7 @@ final class CameraRecorder: NSObject, ObservableObject {
                 device.unlockForConfiguration()
                 DispatchQueue.main.async { self.torchOn = on }
             } catch {
-                DispatchQueue.main.async { self.notice = "The torch is busy right now." }
+                DispatchQueue.main.async { self.notice = "Torch is busy" }
             }
         }
     }
@@ -886,12 +886,9 @@ final class CameraRecorder: NSObject, ObservableObject {
     }
 
     @objc private func willResignActive() {
-        // iOS automatically shuts off the torch when the device locks or backgrounds.
-        // Update local state so button doesn't stay highlighted.
         setTorch(on: false)
-
         guard isRecording else { return }
-        stopRecording(notice: "Recording stopped - the app left the screen.")
+        stopRecording(notice: "Recording stopped (app backgrounded)")
     }
 
     @objc private func didBecomeActive() {
@@ -1000,7 +997,7 @@ final class CameraRecorder: NSObject, ObservableObject {
     func startRecording() {
         guard !isRecording else { return }
         guard freeBytes > Self.reserveBytes else {
-            notice = "Not enough free space to start."
+            notice = "Low storage · Free space needed"
             return
         }
 
@@ -1008,7 +1005,8 @@ final class CameraRecorder: NSObject, ObservableObject {
 
         let newPlan = Encoder.plan(for: settings)
         let transform = Self.transform(width: newPlan.width, height: newPlan.height,
-                                        mirrored: isFrontCamera && settings.mirrorFrontCameraRecording)
+                                       isFront: isFrontCamera,
+                                       mirrored: settings.mirrorFrontCameraRecording)
 
         stopRequested = false
 
@@ -1071,7 +1069,7 @@ final class CameraRecorder: NSObject, ObservableObject {
             wantsRecording = false
             DispatchQueue.main.async {
                 self.isRecording = false
-                self.notice = "Stopped - storage is almost full."
+                self.notice = "Storage full · Recording stopped"
                 UIApplication.shared.isIdleTimerDisabled = false
             }
             return
@@ -1114,10 +1112,9 @@ final class CameraRecorder: NSObject, ObservableObject {
 
         } catch {
             wantsRecording = false
-            let text = error.localizedDescription
             DispatchQueue.main.async {
                 self.isRecording = false
-                self.notice = "Could not start recording: \(text)"
+                self.notice = "Encoder error"
                 UIApplication.shared.isIdleTimerDisabled = false
             }
         }
@@ -1153,9 +1150,8 @@ final class CameraRecorder: NSObject, ObservableObject {
             UserDefaults.standard.removeObject(forKey: Self.inProgressKey)
 
             guard w.status == .completed else {
-                let reason = w.error?.localizedDescription ?? "unknown error"
                 DispatchQueue.main.async {
-                    self.notice = "Clip failed to save: \(reason)"
+                    self.notice = "Clip failed to save"
                     self.refreshFreeSpace()
                 }
                 completion?()
@@ -1241,7 +1237,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         generateThumbnail(for: url)
         deliver(url, to: destination) { [weak self] in
             DispatchQueue.main.async {
-                self?.notice = "Recovered the recording that was cut short."
+                self?.notice = "Recovered interrupted clip"
                 self?.refreshFreeSpace()
             }
         }
@@ -1279,7 +1275,7 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     private func deliver(_ url: URL, to destination: SaveLocation, done: @escaping () -> Void) {
         guard destination == .photos else {
-            DispatchQueue.main.async { self.notice = "Clip saved to Files." }
+            DispatchQueue.main.async { self.notice = "Saved to Files" }
             done()
             return
         }
@@ -1287,7 +1283,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
         guard status == .authorized || status == .limited else {
             DispatchQueue.main.async {
-                self.notice = "No photo access - clip kept in Files instead."
+                self.notice = "Saved to Files (Photo access denied)"
             }
             done()
             return
@@ -1302,11 +1298,10 @@ final class CameraRecorder: NSObject, ObservableObject {
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 if success {
-                    self.notice = "Clip saved to Photos."
+                    self.notice = "Saved to Photos"
                     self.cleanupOlderClipsExcept(url)
                 } else {
-                    let reason = error?.localizedDescription ?? "unknown error"
-                    self.notice = "Photos refused the clip (\(reason)) - it is still in Files."
+                    self.notice = "Saved to Files (Photos refused)"
                 }
             }
             done()
@@ -1374,19 +1369,29 @@ final class CameraRecorder: NSObject, ObservableObject {
         return clipsDirectory.appendingPathComponent("LowPolyCam_\(f.string(from: Date())).mov")
     }
 
-    // MARK: Physical Video Orientation Tagging
+    // MARK: Video Matrix Orientation & Selfie Mirroring Fix
 
-    private static func transform(width: Int, height: Int, mirrored: Bool) -> CGAffineTransform {
+    private static func transform(width: Int, height: Int, isFront: Bool, mirrored: Bool) -> CGAffineTransform {
+        let w = CGFloat(width)
         let h = CGFloat(height)
-        let rotated = CGAffineTransform(translationX: h, y: 0).rotated(by: .pi / 2)
-        guard mirrored else { return rotated }
-        let flip = CGAffineTransform(a: -1, b: 0, c: 0, d: 1, tx: h, ty: 0)
-        return rotated.concatenating(flip)
+
+        if !isFront {
+            // Back Camera: Standard clockwise 90-degree portrait transform
+            return CGAffineTransform(translationX: h, y: 0).rotated(by: .pi / 2)
+        } else {
+            if mirrored {
+                // Front Camera Mirrored: Exactly matches what you see on your preview screen
+                return CGAffineTransform(a: 0, b: 1, c: 1, d: 0, tx: 0, ty: 0)
+            } else {
+                // Front Camera Unmirrored: True-to-life orientation
+                return CGAffineTransform(a: 0, b: -1, c: -1, d: 0, tx: h, ty: w)
+            }
+        }
     }
 
     enum RecorderError: LocalizedError {
         case cannotAddInput
-        var errorDescription: String? { "the encoder rejected these settings" }
+        var errorDescription: String? { "Encoder rejected format settings" }
     }
 }
 
@@ -1458,7 +1463,7 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
 
         if freeBytesSnapshot <= Self.reserveBytes {
             DispatchQueue.main.async {
-                self.stopRecording(notice: "Stopped - storage is almost full.")
+                self.stopRecording(notice: "Storage full · Recording stopped")
             }
             return
         }
