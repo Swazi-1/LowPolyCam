@@ -16,6 +16,7 @@ struct SettingsScreen: View {
                 qualitySection
                 frameRateSection
                 saveSection
+                splitSection
                 estimateSection
                 cameraSection
                 advancedSection
@@ -115,6 +116,17 @@ struct SettingsScreen: View {
         }
     }
 
+    private var splitSection: some View {
+        Section(header: Text("Split recordings"),
+                footer: Text("Splitting into shorter segments makes large files easier to transfer, edit, and share, without losing any frames between clips.")) {
+            ForEach(SplitInterval.allCases) { interval in
+                row(title: interval.label, subtitle: interval.detail, selected: settings.splitInterval == interval) {
+                    settings.splitInterval = interval
+                }
+            }
+        }
+    }
+
     private var estimateSection: some View {
         Section(header: Text("What that costs")) {
             info("Space per hour", "\(Int(plan.megabytesPerHour.rounded())) MB")
@@ -134,6 +146,9 @@ struct SettingsScreen: View {
             Toggle("Optical image stabilisation", isOn: $settings.stabilization)
                 .onChange(of: settings.stabilization) { _ in recorder.updateStabilization() }
                 .disabled(!recorder.stabilizationSupported)
+
+            Toggle("Low-power torch", isOn: $settings.lowTorch)
+                .disabled(!recorder.hasTorch)
 
             Toggle("Record sound", isOn: $settings.recordAudio)
                 .onChange(of: settings.recordAudio) { _ in recorder.syncMicInput() }
@@ -158,10 +173,13 @@ struct SettingsScreen: View {
 
     private var aboutSection: some View {
         Section(header: Text("Good to know")) {
-            Text("A recording is one continuous file, however long it runs. It is written a few seconds at a time, so if the battery dies mid-recording, the footage up to that moment survives and is filed away next time the app opens.")
+            Text("A recording is written a few seconds at a time in fragments, so if the battery dies mid-recording, the footage up to that moment survives and is filed away next time the app opens.")
                 .font(.footnote)
                 .foregroundColor(.secondary)
             Text("Filming stops when the app leaves the screen. iOS gives no app permission to keep the camera running in the background, so the screen has to stay on. The moon button dims it to black while recording.")
+                .font(.footnote)
+                .foregroundColor(.secondary)
+            Text("Physical Volume Up and Volume Down buttons also act as a shutter to start and stop recording.")
                 .font(.footnote)
                 .foregroundColor(.secondary)
         }
