@@ -320,8 +320,8 @@ final class AppSettings: ObservableObject {
     @Published var showGrid: Bool {
         didSet { store.set(showGrid, forKey: "showGrid") }
     }
-    @Published var mirrorFrontCameraRecording: Bool {
-        didSet { store.set(mirrorFrontCameraRecording, forKey: "mirrorFrontCameraRecording") }
+    @Published var autoDimOnRecord: Bool {
+        didSet { store.set(autoDimOnRecord, forKey: "autoDimOnRecord") }
     }
     @Published var accentColor: AccentColor {
         didSet { store.set(accentColor.rawValue, forKey: "accentColor") }
@@ -340,14 +340,13 @@ final class AppSettings: ObservableObject {
         showLevelGauge   = store.object(forKey: "showLevelGauge") as? Bool ?? false
         exposureBias     = store.object(forKey: "exposureBias") as? Float ?? 0.0
         whiteBalance     = WhiteBalancePreset(rawValue: store.string(forKey: "whiteBalance") ?? "") ?? .auto
-        // Default to full 1.0 (100% brightness) so flashlight isn't dim
         torchBrightness  = store.object(forKey: "torchBrightness") as? Float ?? 1.0
         lowTorch         = store.object(forKey: "lowTorch") as? Bool ?? false
         recordAudio      = store.object(forKey: "recordAudio") as? Bool ?? true
         stabilization    = store.object(forKey: "stabilization") as? Bool ?? true
         useHEVC          = store.object(forKey: "useHEVC") as? Bool ?? true
         showGrid         = store.object(forKey: "showGrid") as? Bool ?? false
-        mirrorFrontCameraRecording = store.object(forKey: "mirrorFrontCameraRecording") as? Bool ?? false
+        autoDimOnRecord  = store.object(forKey: "autoDimOnRecord") as? Bool ?? false
         accentColor      = AccentColor(rawValue: store.string(forKey: "accentColor") ?? "") ?? .mint
     }
 }
