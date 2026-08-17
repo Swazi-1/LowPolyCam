@@ -2,29 +2,15 @@ import AVFoundation
 import UIKit
 import Photos
 import MediaPlayer
+import CoreMotion
 import Combine
 
-/// Capture pipeline.
-///
-/// The sensor runs at 720p for every export at 720p or below - the encoder
-/// scales down for us - and only switches up to a real 1080p capture format
-/// when 1080p is actually selected. Frame rate (24/30/60) is applied by
-/// searching the device's own formats for one that actually supports it and
-/// locking to it directly, rather than trusting a session preset to guess
-/// right; that is also what keeps 60 fps steady instead of stuttering.
-///
-/// A recording is written as a *fragmented* movie: the playable index is flushed
-/// to disk every few seconds, so if the battery dies or iOS kills the app mid-recording,
-/// what was filmed up to that moment is still a valid video rather than a dead file.
 final class CameraRecorder: NSObject, ObservableObject {
 
     // MARK: Tunables
 
-    /// How often the movie index is flushed to disk.
     static let fragmentSeconds: Double = 4
-    /// Recording stops when free space drops below this.
     static let reserveBytes: Int64 = 300 * 1024 * 1024
-    /// Remembers the file being written for power-loss recovery.
     private static let inProgressKey = "inProgressClipName"
 
     // MARK: Published state
@@ -54,6 +40,8 @@ final class CameraRecorder: NSObject, ObservableObject {
     @Published private(set) var audioLevel: Float = 0
     @Published private(set) var lastClipThumbnail: UIImage?
     @Published private(set) var lastClipURL: URL?
+    @Published private(set) var isLevel: Bool = false
+    @Published private(set) var rollAngle: Double = 0
     @Published var notice: String?
 
     let session = AVCaptureSession()
@@ -63,6 +51,7 @@ final class CameraRecorder: NSObject, ObservableObject {
     private let settings: AppSettings
     private let sessionQueue = DispatchQueue(label: "lowpolycam.session")
     private let ioQueue = DispatchQueue(label: "lowpolycam.io", qos: .userInitiated)
+    private let motionManager = CMMotionManager()
 
     private let videoOutput = AVCaptureVideoDataOutput()
     private let audioOutput = AVCaptureAudioDataOutput()
@@ -73,7 +62,7 @@ final class CameraRecorder: NSObject, ObservableObject {
     private var spaceTimer: Timer?
     private var volumeObserver: VolumeButtonObserver?
 
-    // Writer state. Only ever touched on ioQueue.
+    // Writer state
     private var writer: AVAssetWriter?
     private var videoIn: AVAssetWriterInput?
     private var audioIn: AVAssetWriterInput?
@@ -94,7 +83,6 @@ final class CameraRecorder: NSObject, ObservableObject {
         set { stopLock.lock(); _stopRequested = newValue; stopLock.unlock() }
     }
 
-    // Zoom snapshots
     private var rawMaxZoomSnapshot: CGFloat = 1
     private var rawMinZoomSnapshot: CGFloat = 1
     private var zoomBaselineSnapshot: CGFloat = 1
@@ -129,6 +117,7 @@ final class CameraRecorder: NSObject, ObservableObject {
     deinit {
         spaceTimer?.invalidate()
         volumeObserver?.stop()
+        motionManager.stopDeviceMotionUpdates()
         NotificationCenter.default.removeObserver(self)
         UIDevice.current.isBatteryMonitoringEnabled = false
     }
@@ -152,12 +141,35 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
     }
 
+    // MARK: Motion / Level Meter
+
+    private func startMotionUpdates() {
+        guard motionManager.isDeviceMotionAvailable else { return }
+        motionManager.deviceMotionUpdateInterval = 1.0 / 30.0
+        motionManager.startDeviceMotionUpdates(using: .xArbitraryZVertical, to: .main) { [weak self] motion, _ in
+            guard let self = self, let motion = motion else { return }
+            let roll = motion.attitude.roll * (180.0 / .pi)
+            self.rollAngle = roll
+            let normalizedRoll = abs(roll.truncatingRemainder(dividingBy: 90))
+            let level = normalizedRoll < 1.0 || normalizedRoll > 89.0
+            if self.isLevel != level {
+                self.isLevel = level
+            }
+        }
+    }
+
+    private func stopMotionUpdates() {
+        motionManager.stopDeviceMotionUpdates()
+    }
+
     // MARK: Lifecycle
 
     func start() {
         refreshFreeSpace()
         recoverInterruptedRecording()
         loadLastSavedClip()
+        startMotionUpdates()
+
         spaceTimer?.invalidate()
         spaceTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             self?.refreshFreeSpace()
@@ -177,7 +189,6 @@ final class CameraRecorder: NSObject, ObservableObject {
                 if !self.session.isRunning { self.session.startRunning() }
                 DispatchQueue.main.async {
                     self.isSessionRunning = self.session.isRunning
-                    // Only start volume shutter observer after session is actively running
                     if self.volumeObserver == nil {
                         let obs = VolumeButtonObserver()
                         obs.onVolumeTrigger = { [weak self] in
@@ -196,6 +207,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         spaceTimer = nil
         volumeObserver?.stop()
         volumeObserver = nil
+        stopMotionUpdates()
 
         if isRecording { stopRecording(notice: nil) }
         setTorch(on: false)
@@ -270,7 +282,6 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     private func applyActiveFormat() {
         guard let device = cameraInput?.device else { return }
-        // Safely check if slow motion is both requested and supported on this lens (prevents black screen on selfie flip)
         let isSlow = settings.cameraMode == .slowMo && isSlowMoSupportedOnCurrentLens
         let dims: (w: Int, h: Int)
         let fps: Double
@@ -305,7 +316,6 @@ final class CameraRecorder: NSObject, ObservableObject {
                     device.activeVideoMinFrameDuration = d
                     device.activeVideoMaxFrameDuration = d
                     
-                    // Native iOS Camera app behavior: Smooth continuous autofocus
                     if device.isSmoothAutoFocusSupported {
                         device.isSmoothAutoFocusEnabled = true
                     }
@@ -336,7 +346,6 @@ final class CameraRecorder: NSObject, ObservableObject {
             device.activeVideoMinFrameDuration = d
             device.activeVideoMaxFrameDuration = d
             
-            // Native iOS Camera app behavior: Smooth continuous autofocus
             if device.isSmoothAutoFocusSupported {
                 device.isSmoothAutoFocusEnabled = true
             }
@@ -546,6 +555,49 @@ final class CameraRecorder: NSObject, ObservableObject {
             ?? AVCaptureDevice.default(for: .video)
     }
 
+    // MARK: Exposure & White Balance
+
+    func setExposureBias(_ bias: Float) {
+        sessionQueue.async {
+            guard let device = self.cameraInput?.device else { return }
+            do {
+                try device.lockForConfiguration()
+                let minBias = device.minExposureTargetBias
+                let maxBias = device.maxExposureTargetBias
+                let clamped = max(minBias, min(bias, maxBias))
+                device.setExposureTargetBias(clamped, completionHandler: nil)
+                device.unlockForConfiguration()
+                DispatchQueue.main.async { self.settings.exposureBias = clamped }
+            } catch { }
+        }
+    }
+
+    func setWhiteBalance(_ preset: WhiteBalancePreset) {
+        sessionQueue.async {
+            guard let device = self.cameraInput?.device else { return }
+            do {
+                try device.lockForConfiguration()
+                if let values = preset.kelvin {
+                    let tempAndTint = AVCaptureDevice.WhiteBalanceTemperatureAndTintValues(temperature: values.temp, tint: values.tint)
+                    var gains = device.deviceWhiteBalanceGains(for: tempAndTint)
+                    let maxGain = device.maxWhiteBalanceGain
+                    gains.redGain = max(1.0, min(gains.redGain, maxGain))
+                    gains.greenGain = max(1.0, min(gains.greenGain, maxGain))
+                    gains.blueGain = max(1.0, min(gains.blueGain, maxGain))
+                    if device.isWhiteBalanceModeSupported(.locked) {
+                        device.setWhiteBalanceModeLocked(with: gains, completionHandler: nil)
+                    }
+                } else {
+                    if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) {
+                        device.whiteBalanceMode = .continuousAutoWhiteBalance
+                    }
+                }
+                device.unlockForConfiguration()
+                DispatchQueue.main.async { self.settings.whiteBalance = preset }
+            } catch { }
+        }
+    }
+
     // MARK: Torch
 
     private func refreshTorchState() {
@@ -562,13 +614,13 @@ final class CameraRecorder: NSObject, ObservableObject {
         setTorch(on: !torchOn)
     }
 
-    private func setTorch(on: Bool) {
+    func setTorch(on: Bool) {
         sessionQueue.async {
             guard let device = self.cameraInput?.device, device.hasTorch else { return }
             do {
                 try device.lockForConfiguration()
                 if on {
-                    let level: Float = self.settings.lowTorch ? 0.15 : 1.0
+                    let level: Float = self.settings.torchBrightness > 0 ? self.settings.torchBrightness : 0.15
                     let targetLevel = min(level, AVCaptureDevice.maxAvailableTorchLevel)
                     try device.setTorchModeOn(level: targetLevel)
                 } else {
@@ -579,6 +631,31 @@ final class CameraRecorder: NSObject, ObservableObject {
             } catch {
                 DispatchQueue.main.async { self.notice = "The torch is busy right now." }
             }
+        }
+    }
+
+    func setLiveTorch(level: Float) {
+        sessionQueue.async {
+            guard let device = self.cameraInput?.device, device.hasTorch else { return }
+            do {
+                try device.lockForConfiguration()
+                if level > 0.01 {
+                    let maxLevel = AVCaptureDevice.maxAvailableTorchLevel
+                    let targetLevel = min(level, maxLevel)
+                    try device.setTorchModeOn(level: targetLevel)
+                    DispatchQueue.main.async {
+                        self.torchOn = true
+                        self.settings.torchBrightness = level
+                    }
+                } else {
+                    device.torchMode = .off
+                    DispatchQueue.main.async {
+                        self.torchOn = false
+                        self.settings.torchBrightness = 0
+                    }
+                }
+                device.unlockForConfiguration()
+            } catch { }
         }
     }
 
@@ -640,7 +717,6 @@ final class CameraRecorder: NSObject, ObservableObject {
     // MARK: Focus and exposure
 
     func focusAndExpose(at point: CGPoint) {
-        // Native Apple Camera behavior: Continuous Auto Focus tracking at the tapped point
         applyFocusAndExposure(at: point,
                               focus: .continuousAutoFocus,
                               exposure: .continuousAutoExposure,
@@ -786,7 +862,6 @@ final class CameraRecorder: NSObject, ObservableObject {
             w.add(v)
 
             var a: AVAssetWriterInput?
-            // HFR/Slow-Mo also writes audio now. The Apple Photos app handles pitching it down automatically.
             if plan.hasAudio, let aSettings = audioSettings(for: plan, writer: w) {
                 let ai = AVAssetWriterInput(mediaType: .audio, outputSettings: aSettings)
                 ai.expectsMediaDataInRealTime = true
@@ -890,7 +965,6 @@ final class CameraRecorder: NSObject, ObservableObject {
             }
         }
 
-        // Start next file segment seamlessly on the current sample frame
         startSegment(at: pts)
     }
 
@@ -1137,9 +1211,6 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
 
         if isVideo {
             if videoIn?.isReadyForMoreMediaData == true {
-                // We append the HFR buffer completely untouched.
-                // This means the file is actually encoded as a true 120/240fps video file,
-                // which iOS Photos instantly recognizes and adds the Slow-Mo slider to!
                 videoIn?.append(sampleBuffer)
                 lastVideoPTS = pts
             } else {
@@ -1211,7 +1282,6 @@ final class VolumeButtonObserver: NSObject {
             try audioSession.setActive(true, options: [])
         } catch { }
 
-        // Invisible off-screen MPVolumeView to suppress the stock volume HUD
         if volumeView == nil {
             let v = MPVolumeView(frame: CGRect(x: -1000, y: -1000, width: 1, height: 1))
             v.clipsToBounds = true
@@ -1224,7 +1294,6 @@ final class VolumeButtonObserver: NSObject {
             }
         }
 
-        // Store baseline volume and ignore startup KVO events for 2.5 seconds
         lastVolume = audioSession.outputVolume
         ignoreUntil = Date().addingTimeInterval(2.5)
         audioSession.addObserver(self, forKeyPath: "outputVolume", options: [.new, .old], context: nil)
@@ -1247,7 +1316,6 @@ final class VolumeButtonObserver: NSObject {
                 return
             }
             if let prev = lastVolume {
-                // Ensure a physical button press delta (standard iOS volume step is ~0.0625)
                 if abs(currentVol - prev) > 0.01 {
                     lastVolume = currentVol
                     onVolumeTrigger?()
