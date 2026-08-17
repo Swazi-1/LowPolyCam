@@ -304,6 +304,12 @@ final class CameraRecorder: NSObject, ObservableObject {
                     device.activeVideoMaxFrameDuration = CMTime.invalid
                     device.activeVideoMinFrameDuration = d
                     device.activeVideoMaxFrameDuration = d
+                    
+                    // Force smooth continuous focus on (fixes the jittery/hunting focus bug)
+                    if device.isSmoothAutoFocusSupported {
+                        device.isSmoothAutoFocusEnabled = true
+                    }
+                    
                     device.unlockForConfiguration()
                     DispatchQueue.main.async {
                         let dDims = CMVideoFormatDescriptionGetDimensions(fallbackFormat.formatDescription)
@@ -329,6 +335,12 @@ final class CameraRecorder: NSObject, ObservableObject {
             device.activeVideoMaxFrameDuration = CMTime.invalid
             device.activeVideoMinFrameDuration = d
             device.activeVideoMaxFrameDuration = d
+            
+            // Force smooth continuous focus on (fixes the jittery/hunting focus bug)
+            if device.isSmoothAutoFocusSupported {
+                device.isSmoothAutoFocusEnabled = true
+            }
+            
             device.unlockForConfiguration()
         } catch {
             DispatchQueue.main.async { self.notice = "Could not lock this camera's frame rate." }
@@ -1125,7 +1137,7 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
         if isVideo {
             if videoIn?.isReadyForMoreMediaData == true {
                 // We append the HFR buffer completely untouched.
-                // This means the file is actually encoded as a 120/240fps video file,
+                // This means the file is actually encoded as a true 120/240fps video file,
                 // which iOS Photos instantly recognizes and adds the Slow-Mo slider to!
                 videoIn?.append(sampleBuffer)
                 lastVideoPTS = pts
