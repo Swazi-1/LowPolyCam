@@ -294,7 +294,6 @@ final class CameraRecorder: NSObject, ObservableObject {
         configureVideoConnection()
         refreshCapabilitiesThenApplyFormat()
         refreshTorchState()
-        restoreProSettings(for: cameraInput?.device)
         resetFocusAndExposureToAuto()
         syncMicInput()
     }
@@ -389,7 +388,7 @@ final class CameraRecorder: NSObject, ObservableObject {
                         device.isSmoothAutoFocusEnabled = true
                     }
                     
-                    restoreProSettings(for: device)
+                    restoreProSettings(for: device) // ONLY safe here because the device is locked
                     device.unlockForConfiguration()
                     DispatchQueue.main.async {
                         let dDims = CMVideoFormatDescriptionGetDimensions(fallbackFormat.formatDescription)
@@ -421,7 +420,7 @@ final class CameraRecorder: NSObject, ObservableObject {
                 device.isSmoothAutoFocusEnabled = true
             }
             
-            restoreProSettings(for: device)
+            restoreProSettings(for: device) // ONLY safe here because the device is locked
             device.unlockForConfiguration()
         } catch {
             DispatchQueue.main.async { self.notice = "Could not lock this camera's frame rate." }
@@ -430,6 +429,8 @@ final class CameraRecorder: NSObject, ObservableObject {
         DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
     }
 
+    /// WARNING: This function expects `device` to already be locked via `try device.lockForConfiguration()`
+    /// Calling this without locking will cause an instant Objective-C crash.
     private func restoreProSettings(for device: AVCaptureDevice?) {
         guard let device = device else { return }
         
@@ -641,7 +642,6 @@ final class CameraRecorder: NSObject, ObservableObject {
             self.configureVideoConnection()
             self.refreshCapabilitiesThenApplyFormat()
             self.refreshTorchState()
-            self.restoreProSettings(for: device)
             self.resetFocusAndExposureToAuto()
             DispatchQueue.main.async { self.isFrontCamera = (next == .front) }
         }
