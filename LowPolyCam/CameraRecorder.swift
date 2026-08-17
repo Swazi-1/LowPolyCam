@@ -270,17 +270,12 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     private func applyActiveFormat() {
         guard let device = cameraInput?.device else { return }
-        let isSlow = settings.cameraMode == .slowMo
+        // Safely check if slow motion is both requested and supported on this lens (prevents black screen on selfie flip)
+        let isSlow = settings.cameraMode == .slowMo && isSlowMoSupportedOnCurrentLens
         let dims: (w: Int, h: Int)
         let fps: Double
 
         if isSlow {
-            guard isSlowMoSupportedOnCurrentLens, !availableSlowMoRates.isEmpty else {
-                DispatchQueue.main.async {
-                    self.notice = "Slow motion is not supported on this camera lens."
-                }
-                return
-            }
             if !availableSlowMoRates.contains(settings.slowMoFrameRate) {
                 let fallback = availableSlowMoRates.first ?? .fps120
                 DispatchQueue.main.async {
@@ -454,7 +449,8 @@ final class CameraRecorder: NSObject, ObservableObject {
 
             if self.settings.cameraMode == .slowMo {
                 if !self.isSlowMoSupportedOnCurrentLens {
-                    self.notice = "Slow motion is not supported on the selfie camera."
+                    self.notice = "Slow motion is not supported on the selfie camera. Switched to Video."
+                    self.settings.cameraMode = .video
                 } else if !self.availableSlowMoRates.contains(self.settings.slowMoFrameRate) {
                     self.settings.slowMoFrameRate = self.availableSlowMoRates.first ?? .fps120
                 }
@@ -1133,20 +1129,14 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
                     let scaledDelta = CMTimeMultiplyByFloat64(delta, multiplier: p.slowMoMultiplier)
                     let scaledPTS = CMTimeAdd(segmentStart, scaledDelta)
 
-                    var timingInfo = CMSampleTimingInfo(
+                    // FIXED: Safe, modern Swift API for CMSampleBuffer copying!
+                    let timingInfo = CMSampleTimingInfo(
                         duration: CMTime(value: 1, timescale: 30),
                         presentationTimeStamp: scaledPTS,
                         decodeTimeStamp: .invalid
                     )
 
-                    var retimedBuffer: CMSampleBuffer?
-                    if CMSampleBufferCreateCopyWithNewTiming(
-                        allocator: kCFAllocatorDefault,
-                        sampleBuffer: sampleBuffer,
-                        numSampleTimingEntries: 1,
-                        sampleTimingArray: &timingInfo,
-                        sampleBufferOut: &retimedBuffer
-                    ) == noErr, let retimed = retimedBuffer {
+                    if let retimed = try? CMSampleBuffer(copying: sampleBuffer, withNewTiming: [timingInfo]) {
                         bufferToWrite = retimed
                         lastVideoPTS = scaledPTS
                     } else {
