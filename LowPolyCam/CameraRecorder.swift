@@ -105,6 +105,10 @@ final class CameraRecorder: NSObject, ObservableObject {
             self, selector: #selector(willResignActive),
             name: UIApplication.willResignActiveNotification, object: nil)
 
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(didBecomeActive),
+            name: UIApplication.didBecomeActiveNotification, object: nil)
+
         UIDevice.current.isBatteryMonitoringEnabled = true
         NotificationCenter.default.addObserver(
             self, selector: #selector(refreshBattery),
@@ -820,7 +824,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
     }
 
-    // MARK: Torch (Fixed to full 100% brightness by default)
+    // MARK: Torch
 
     private func refreshTorchState() {
         let device = cameraInput?.device
@@ -878,6 +882,21 @@ final class CameraRecorder: NSObject, ObservableObject {
                 }
                 device.unlockForConfiguration()
             } catch { }
+        }
+    }
+
+    @objc private func willResignActive() {
+        // iOS automatically shuts off the torch when the device locks or backgrounds.
+        // Update local state so button doesn't stay highlighted.
+        setTorch(on: false)
+
+        guard isRecording else { return }
+        stopRecording(notice: "Recording stopped - the app left the screen.")
+    }
+
+    @objc private func didBecomeActive() {
+        sessionQueue.async {
+            self.refreshTorchState()
         }
     }
 
@@ -1041,11 +1060,6 @@ final class CameraRecorder: NSObject, ObservableObject {
                 }
             }
         }
-    }
-
-    @objc private func willResignActive() {
-        guard isRecording else { return }
-        stopRecording(notice: "Recording stopped - the app left the screen.")
     }
 
     // MARK: Segments & Rolling Split
