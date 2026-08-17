@@ -173,8 +173,8 @@ struct CameraScreen: View {
 
             // Top Right: Settings Button
             facetButton(system: "gearshape.fill") { showSettings = true }
-                .disabled(recorder.isRecording || recorder.isSaving)
-                .opacity((recorder.isRecording || recorder.isSaving) ? 0.35 : 1)
+                .disabled(recorder.isRecording || recorder.isSaving || recorder.isSwitchingCamera)
+                .opacity((recorder.isRecording || recorder.isSaving || recorder.isSwitchingCamera) ? 0.35 : 1)
         }
     }
 
@@ -434,6 +434,8 @@ struct CameraScreen: View {
             HStack {
                 if !recorder.isRecording && !recorder.isSaving {
                     modeSelector
+                        .disabled(recorder.isSwitchingCamera)
+                        .opacity(recorder.isSwitchingCamera ? 0.35 : 1)
 
                     Button(action: {
                         withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
@@ -451,6 +453,8 @@ struct CameraScreen: View {
                             .shadow(color: .black.opacity(0.2), radius: 4)
                     }
                     .buttonStyle(.plain)
+                    .disabled(recorder.isSwitchingCamera)
+                    .opacity(recorder.isSwitchingCamera ? 0.35 : 1)
                 }
             }
 
@@ -482,8 +486,8 @@ struct CameraScreen: View {
                     facetButton(system: "arrow.triangle.2.circlepath.camera.fill", size: 56) {
                         recorder.flipCamera()
                     }
-                    .disabled(recorder.isSaving)
-                    .opacity(recorder.isSaving ? 0.35 : 1)
+                    .disabled(recorder.isSaving || recorder.isSwitchingCamera || countdownRemaining > 0)
+                    .opacity((recorder.isSaving || recorder.isSwitchingCamera || countdownRemaining > 0) ? 0.35 : 1)
                 }
             }
             .padding(.horizontal, 8)
@@ -492,6 +496,11 @@ struct CameraScreen: View {
 
     private var recordButton: some View {
         Button {
+            // Belt-and-suspenders: even though the button is visually
+            // disabled while switching cameras, ignore any tap that sneaks
+            // through (e.g. one already in flight when the state flips)
+            // rather than letting it start a recording.
+            guard !recorder.isSwitchingCamera else { return }
             if recorder.isRecording {
                 stopHaptic.impactOccurred()
                 stopHaptic.prepare()
@@ -540,7 +549,7 @@ struct CameraScreen: View {
             .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .disabled(recorder.isSaving)
+        .disabled(recorder.isSaving || recorder.isSwitchingCamera)
         .animation(.spring(response: 0.35, dampingFraction: 0.7), value: recorder.isRecording)
     }
 
@@ -667,6 +676,7 @@ struct CameraScreen: View {
                 countdownTimer?.invalidate()
                 countdownTimer = nil
                 countdownRemaining = 0
+                guard !recorder.isSwitchingCamera else { return }
                 startHaptic.impactOccurred()
                 recorder.startRecording()
             }
