@@ -41,11 +41,10 @@ final class CameraRecorder: NSObject, ObservableObject {
     @Published private(set) var lastClipThumbnail: UIImage?
     @Published private(set) var lastClipURL: URL?
 
-    // Orientation & Level Telemetry
+    // Level Telemetry & Physical Orientation
     @Published private(set) var physicalOrientation: PhysicalOrientation = .portrait
-    @Published private(set) var uiRotationAngle: Double = 0
     @Published private(set) var isLevel: Bool = false
-    @Published private(set) var relativeRollAngle: Double = 0
+    @Published private(set) var rollAngle: Double = 0
     @Published var notice: String?
 
     let session = AVCaptureSession()
@@ -146,7 +145,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
     }
 
-    // MARK: Motion, Orientation Tracking & Gravity Horizon
+    // MARK: Motion & Gravity Horizon
 
     func startMotionUpdates() {
         guard motionManager.isDeviceMotionAvailable else { return }
@@ -157,29 +156,21 @@ final class CameraRecorder: NSObject, ObservableObject {
             let gy = motion.gravity.y
             let angle = atan2(gx, -gy) * (180.0 / .pi)
 
-            // Determine physical orientation from gravity
+            // Determine physical orientation for video recording metadata
             let absAngle = abs(angle)
-            let newOrientation: PhysicalOrientation
             if absAngle < 45 {
-                newOrientation = .portrait
+                self.physicalOrientation = .portrait
             } else if angle >= 45 && angle < 135 {
-                newOrientation = .landscapeLeft
+                self.physicalOrientation = .landscapeLeft
             } else if angle <= -45 && angle > -135 {
-                newOrientation = .landscapeRight
+                self.physicalOrientation = .landscapeRight
             } else {
-                newOrientation = .portraitUpsideDown
+                self.physicalOrientation = .portraitUpsideDown
             }
 
-            let targetUIAngle = newOrientation.rotationAngle
-            let relativeRoll = angle - targetUIAngle
-            let isLevelNow = abs(relativeRoll) < 1.2
-
-            if self.physicalOrientation != newOrientation {
-                self.physicalOrientation = newOrientation
-                self.uiRotationAngle = targetUIAngle
-            }
-
-            self.relativeRollAngle = relativeRoll
+            self.rollAngle = angle
+            let remainder = abs(angle.truncatingRemainder(dividingBy: 90))
+            let isLevelNow = remainder < 1.2 || remainder > 88.8
             if self.isLevel != isLevelNow {
                 self.isLevel = isLevelNow
             }
@@ -271,7 +262,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         session.beginConfiguration()
         session.sessionPreset = .inputPriority
 
-        if let device = Self.camera(at: position),
+        if let device = Self.camera(at: position, mode: settings.cameraMode),
            let input = try? AVCaptureDeviceInput(device: device),
            session.canAddInput(input) {
             session.addInput(input)
@@ -320,8 +311,25 @@ final class CameraRecorder: NSObject, ObservableObject {
         sessionQueue.async { self.applyStabilization() }
     }
 
+    /// Automatically switches to the physical wide camera if entering slow-mo on newer iPhones
+    private func ensureCorrectCameraDevice(for mode: CameraMode) {
+        guard let targetDevice = Self.camera(at: position, mode: mode) else { return }
+        if cameraInput?.device.uniqueID != targetDevice.uniqueID {
+            session.beginConfiguration()
+            if let old = cameraInput { session.removeInput(old) }
+            if let input = try? AVCaptureDeviceInput(device: targetDevice), session.canAddInput(input) {
+                session.addInput(input)
+                cameraInput = input
+            }
+            session.commitConfiguration()
+            configureVideoConnection()
+        }
+    }
+
     private func applyActiveFormat() {
+        ensureCorrectCameraDevice(for: settings.cameraMode)
         guard let device = cameraInput?.device else { return }
+
         let isSlow = settings.cameraMode == .slowMo && isSlowMoSupportedOnCurrentLens
         let dims: (w: Int, h: Int)
         let fps: Double
@@ -402,7 +410,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         var maxArea = 0
         for format in device.formats {
             let supportsFPS = format.videoSupportedFrameRateRanges.contains {
-                $0.minFrameRate <= fps && fps <= $0.maxFrameRate
+                $0.maxFrameRate >= (fps - 1.0)
             }
             guard supportsFPS else { continue }
             let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
@@ -422,7 +430,7 @@ final class CameraRecorder: NSObject, ObservableObject {
             let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
             guard Int(dims.width) >= width, Int(dims.height) >= height else { continue }
             let supportsFPS = format.videoSupportedFrameRateRanges.contains {
-                $0.minFrameRate <= fps && fps <= $0.maxFrameRate
+                $0.minFrameRate <= (fps + 0.5) && (fps - 0.5) <= $0.maxFrameRate
             }
             guard supportsFPS else { continue }
             let areaDelta = Int(dims.width) * Int(dims.height) - width * height
@@ -436,10 +444,13 @@ final class CameraRecorder: NSObject, ObservableObject {
     }
 
     func updateCaptureFormat() {
-        sessionQueue.async { self.applyActiveFormat() }
+        sessionQueue.async {
+            self.refreshCapabilitiesThenApplyFormat()
+        }
     }
 
     private func refreshCapabilitiesThenApplyFormat() {
+        ensureCorrectCameraDevice(for: settings.cameraMode)
         guard let device = cameraInput?.device else { return }
 
         var rates = Set<FrameRate>()
@@ -454,13 +465,13 @@ final class CameraRecorder: NSObject, ObservableObject {
             for rate in FrameRate.allCases {
                 let fps = Double(rate.value)
                 if format.videoSupportedFrameRateRanges.contains(where: {
-                    $0.minFrameRate <= fps && fps <= $0.maxFrameRate
+                    $0.minFrameRate <= (fps + 0.5) && (fps - 0.5) <= $0.maxFrameRate
                 }) {
                     rates.insert(rate)
                 }
             }
             for range in format.videoSupportedFrameRateRanges {
-                if range.maxFrameRate >= 120 {
+                if range.maxFrameRate >= 119.0 {
                     slowRates.insert(.fps120)
                     if h >= 1080 { slowResolutions.insert(.p1080) }
                     if h >= 720 { slowResolutions.insert(.p720) }
@@ -468,7 +479,7 @@ final class CameraRecorder: NSObject, ObservableObject {
                     slowResolutions.insert(.p320)
                     slowResolutions.insert(.p144)
                 }
-                if range.maxFrameRate >= 240 {
+                if range.maxFrameRate >= 239.0 {
                     slowRates.insert(.fps240)
                     if h >= 1080 { slowResolutions.insert(.p1080) }
                     if h >= 720 { slowResolutions.insert(.p720) }
@@ -500,17 +511,15 @@ final class CameraRecorder: NSObject, ObservableObject {
                 let fallback: FrameRate = self.availableFrameRates.contains(.fps30)
                     ? .fps30 : (self.availableFrameRates.first ?? .fps30)
                 self.settings.frameRate = fallback
-                self.notice = "This camera only films at \(self.availableFrameRates.map { $0.label }.joined(separator: " or ")) - switched to \(fallback.label)."
             }
             if !self.availableResolutions.contains(self.settings.resolution) {
                 let fallback: Resolution = self.availableResolutions.first ?? .p720
                 self.settings.resolution = fallback
-                self.notice = "This camera does not go up to \(previousResolution.label) - switched to \(fallback.label)."
             }
 
             if self.settings.cameraMode == .slowMo {
                 if !self.isSlowMoSupportedOnCurrentLens {
-                    self.notice = "Slow motion is not supported on the selfie camera. Switched to Video."
+                    self.notice = "Slow motion is not supported on this lens. Switched to Video."
                     self.settings.cameraMode = .video
                 } else if !self.availableSlowMoRates.contains(self.settings.slowMoFrameRate) {
                     self.settings.slowMoFrameRate = self.availableSlowMoRates.first ?? .fps120
@@ -558,7 +567,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         setTorch(on: false)
         sessionQueue.async {
             let next: AVCaptureDevice.Position = (self.position == .back) ? .front : .back
-            guard let device = Self.camera(at: next),
+            guard let device = Self.camera(at: next, mode: self.settings.cameraMode),
                   let input = try? AVCaptureDeviceInput(device: device) else { return }
 
             self.session.beginConfiguration()
@@ -580,8 +589,9 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
     }
 
-    private static func camera(at position: AVCaptureDevice.Position) -> AVCaptureDevice? {
-        if position == .back {
+    /// On newer iPhones, Slow-Mo requires the physical Wide Angle Camera, whereas standard Video uses the multi-camera
+    private static func camera(at position: AVCaptureDevice.Position, mode: CameraMode) -> AVCaptureDevice? {
+        if position == .back && mode != .slowMo {
             let virtualTypes: [AVCaptureDevice.DeviceType] = [
                 .builtInTripleCamera, .builtInDualWideCamera, .builtInDualCamera
             ]
@@ -1185,7 +1195,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         return clipsDirectory.appendingPathComponent("LowPolyCam_\(f.string(from: Date())).mov")
     }
 
-    // MARK: Orientation Transformation
+    // MARK: Physical Video Orientation Tagging
 
     private static func transform(forOrientation o: PhysicalOrientation, width: Int, height: Int) -> CGAffineTransform {
         let w = CGFloat(width)
