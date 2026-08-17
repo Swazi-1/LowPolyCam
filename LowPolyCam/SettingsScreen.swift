@@ -68,9 +68,9 @@ struct SettingsScreen: View {
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundColor(.white)
                     .frame(width: 32, height: 32)
-                    .background(Palette.violet)
+                    .background(settings.accentColor.deep)
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .shadow(color: Palette.violet.opacity(0.3), radius: 4, x: 0, y: 2)
+                    .shadow(color: settings.accentColor.color.opacity(0.3), radius: 4, x: 0, y: 2)
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Selfie camera")
@@ -167,19 +167,19 @@ struct SettingsScreen: View {
 
             Toggle(isOn: $settings.stabilization) {
                 Label("Optical stabilisation", systemImage: "hand.raised.fill")
-                    .labelStyle(SettingsLabelStyle(color: Palette.violet))
+                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.deep))
             }
             .onChange(of: settings.stabilization) { _ in recorder.updateStabilization() }
             .disabled(!recorder.stabilizationSupported)
 
             Toggle(isOn: $settings.showLevelGauge) {
                 Label("Horizon level meter", systemImage: "gyroscope")
-                    .labelStyle(SettingsLabelStyle(color: Palette.mint))
+                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
             }
 
             Toggle(isOn: $settings.recordAudio) {
                 Label("Record sound", systemImage: "mic.fill")
-                    .labelStyle(SettingsLabelStyle(color: Palette.mintDeep))
+                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.bright))
             }
             .onChange(of: settings.recordAudio) { _ in recorder.syncMicInput() }
 
@@ -190,7 +190,7 @@ struct SettingsScreen: View {
 
             Toggle(isOn: $settings.mirrorFrontCameraRecording) {
                 Label("Mirror selfie video", systemImage: "arrow.left.and.right.righttriangle.left.righttriangle.right.fill")
-                    .labelStyle(SettingsLabelStyle(color: Palette.amber))
+                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.bright))
             }
             .onChange(of: settings.mirrorFrontCameraRecording) { _ in recorder.updateMirrorSetting() }
         }
@@ -198,7 +198,7 @@ struct SettingsScreen: View {
 
     private var appearanceSection: some View {
         Section(header: Text("Appearance").font(.system(size: 13, weight: .semibold)),
-                footer: Text("Colours the shutter ring, selected options, and highlights around the app.")) {
+                footer: Text("Colours the shutter ring, highlights, and controls across the app.")) {
             HStack(spacing: 14) {
                 ForEach(AccentColor.allCases) { color in
                     let isSelected = settings.accentColor == color
@@ -229,32 +229,59 @@ struct SettingsScreen: View {
     private var advancedSection: some View {
         Section(header: Text("Video format").font(.system(size: 13, weight: .semibold)),
                 footer: Text(settings.useHEVC
-                             ? "HEVC gets the same picture into roughly half the space. Plays on the iPhone and in VLC. Switch to H.264 if some other player refuses the files."
-                             : "H.264 plays everywhere but needs about 60% more space for the same picture as HEVC.")) {
+                             ? "HEVC gets the same picture into roughly half the space. Switch to H.264 if some older player refuses the files."
+                             : "H.264 plays everywhere but needs about 60% more space for the same quality.")) {
 
-            row(title: "HEVC", subtitle: "Smaller files, the modern default", icon: "sparkles", iconColor: Palette.mintDeep, selected: settings.useHEVC) {
+            row(title: "HEVC", subtitle: "Smaller files, modern default", icon: "sparkles", iconColor: settings.accentColor.color, selected: settings.useHEVC) {
                 settings.useHEVC = true
             }
-            row(title: "H.264", subtitle: "Bigger files, plays on almost anything", icon: "film.fill", iconColor: Palette.slateLight, selected: !settings.useHEVC) {
+            row(title: "H.264", subtitle: "Bigger files, plays on everything", icon: "film.fill", iconColor: Palette.slateLight, selected: !settings.useHEVC) {
                 settings.useHEVC = false
             }
         }
     }
 
+    // Short & easy to understand "Good to know"
     private var aboutSection: some View {
         Section(header: Text("Good to know").font(.system(size: 13, weight: .semibold))) {
-            Text("A recording is written a few seconds at a time in fragments, so if the battery dies mid-recording, the footage up to that moment survives and is filed away next time the app opens.")
-                .font(.footnote)
-                .foregroundColor(.secondary)
-            Text("Filming stops when the app leaves the screen. iOS gives no app permission to keep the camera running in the background, so the screen has to stay on. The moon button dims it to black while recording.")
-                .font(.footnote)
-                .foregroundColor(.secondary)
-            Text("Double-tap anywhere on the preview to quickly flip between cameras.")
-                .font(.footnote)
-                .foregroundColor(.secondary)
-            Text("Physical Volume Up and Volume Down buttons also act as a shutter to start and stop recording.")
-                .font(.footnote)
-                .foregroundColor(.secondary)
+            Label {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Crash & Power Loss Safe")
+                        .font(.system(size: 14, weight: .bold))
+                    Text("Video is saved in 4-second fragments. If your battery dies, footage up to that moment is automatically recovered.")
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+                }
+            } icon: {
+                Image(systemName: "shield.lefthalf.filled")
+                    .foregroundColor(settings.accentColor.bright)
+            }
+
+            Label {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Screen Must Stay On")
+                        .font(.system(size: 14, weight: .bold))
+                    Text("iOS does not allow background filming. Tap the moon button to dim the screen to black while recording.")
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+                }
+            } icon: {
+                Image(systemName: "moon.fill")
+                    .foregroundColor(settings.accentColor.bright)
+            }
+
+            Label {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Quick Shortcuts")
+                        .font(.system(size: 14, weight: .bold))
+                    Text("Double-tap the preview to flip cameras. Use the physical Volume Up/Down buttons as a shutter.")
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+                }
+            } icon: {
+                Image(systemName: "hand.tap.fill")
+                    .foregroundColor(settings.accentColor.bright)
+            }
         }
     }
 
@@ -326,7 +353,7 @@ struct SettingsScreen: View {
                 Spacer()
                 if selected && enabled {
                     Image(systemName: "checkmark")
-                        .foregroundColor(settings.accentColor.deep)
+                        .foregroundColor(settings.accentColor.color)
                         .font(.system(size: 16, weight: .bold))
                 } else if !enabled {
                     Image(systemName: "lock.fill")
