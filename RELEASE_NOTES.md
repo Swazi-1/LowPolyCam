@@ -1,3 +1,25 @@
+# LowPolyCam 1.2.0
+
+v1.2.0 is here!
+
+## 🌟 What's New
+
+- **Volume Button Shutter**: You can now press the physical Volume Up or Volume Down buttons on your iPhone to start and stop recording.
+- **In-App Video Preview**: Tap the recent clip thumbnail next to the record button to watch your videos right inside the app.
+- **Startup Clip Preview**: Your latest recorded clip and thumbnail now load automatically as soon as you open the app.
+- **New Gridlines**: Added a 3x3 framing grid to help line up your shots — easily turn it on or off in Settings.
+- **Streamlined Controls**: Refined the bottom bar layout and button placements for faster, cleaner one-handed shooting.
+
+## 🛠️ Bug Fixes
+
+- **Fixed Instant Auto-Recording**: Fixed a bug where the camera would immediately start recording by itself when launching the app.
+- **Fixed Black Video Preview**: Fixed an issue where previewing videos saved to Photos would show a black screen.
+- **Fixed 4K Dropped Frames**: Optimized 4K video encoding performance on older iPhones for smoother playback.
+- **Fixed UI Overlaps**: Fixed recording time and metrics colliding or wrapping awkwardly on smaller screens.
+- **Fixed Overlapping Buttons**: Cleaned up the bottom toolbar so no icons overlap the record button.
+
+---
+
 # LowPolyCam 1.0.0
 
 Tested on an iPhone 7, iOS 15.8.x — including a full record → freeze the phone
