@@ -626,15 +626,14 @@ struct CameraScreen: View {
         .shadow(color: .black.opacity(0.55), radius: 25, x: 0, y: 12)
     }
 
-    // MARK: Bottom HUD Bar
+    // MARK: Bottom HUD Bar (Live Zoom Always Visible)
 
     private var bottomHUD: some View {
         VStack(spacing: 12) {
-            if !recorder.isRecording && !recorder.isSaving {
-                zoomPresetRow
-                    .disabled(recorder.isSwitchingCamera)
-                    .opacity(recorder.isSwitchingCamera ? 0.35 : 1)
-            }
+            // Zoom preset row stays visible & interactive during recording
+            zoomPresetRow
+                .disabled(recorder.isSwitchingCamera || recorder.isSaving)
+                .opacity((recorder.isSwitchingCamera || recorder.isSaving) ? 0.35 : 1)
 
             HStack {
                 if !recorder.isRecording && !recorder.isSaving {
