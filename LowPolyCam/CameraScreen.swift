@@ -139,7 +139,13 @@ struct CameraScreen: View {
                 levelHaptic.selectionChanged()
             }
         }
-        // Auto-Dim Battery Saver Timer (dims after 10s of filming)
+        // Auto-Wake when recording stops (manual stop, auto-split, or storage full)
+        .onChange(of: recorder.isRecording) { isRecording in
+            if !isRecording && dimmed {
+                leaveDim()
+            }
+        }
+        // Auto-Dim Battery Saver (dims to black after 10s of recording)
         .onChange(of: recorder.elapsed) { sec in
             if settings.autoDimOnRecord && recorder.isRecording && !dimmed && sec >= 10 {
                 enterDim()
@@ -699,6 +705,7 @@ struct CameraScreen: View {
             if recorder.isRecording {
                 stopHaptic.impactOccurred()
                 stopHaptic.prepare()
+                if dimmed { leaveDim() }
                 recorder.toggleRecording()
             } else {
                 if countdownRemaining > 0 {
@@ -1086,13 +1093,18 @@ struct CameraScreen: View {
     }
 
     private func enterDim() {
-        savedBrightness = UIScreen.main.brightness
+        guard !dimmed else { return }
+        if UIScreen.main.brightness > 0.05 {
+            savedBrightness = UIScreen.main.brightness
+        }
         UIScreen.main.brightness = 0
         withAnimation(.easeIn(duration: 0.3)) { dimmed = true }
     }
 
     private func leaveDim() {
-        UIScreen.main.brightness = savedBrightness
+        guard dimmed else { return }
+        let target = savedBrightness > 0.05 ? savedBrightness : 0.5
+        UIScreen.main.brightness = target
         withAnimation(.easeOut(duration: 0.2)) { dimmed = false }
     }
 }
