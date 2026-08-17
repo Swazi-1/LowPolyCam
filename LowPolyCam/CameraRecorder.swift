@@ -1048,6 +1048,7 @@ final class VolumeButtonObserver: NSObject {
     private var audioSession: AVAudioSession { AVAudioSession.sharedInstance() }
     private var volumeView: MPVolumeView?
     private var isObserving = false
+    private var ignoreUntil: Date?
     var onVolumeTrigger: (() -> Void)?
 
     func start() {
@@ -1069,6 +1070,8 @@ final class VolumeButtonObserver: NSObject {
             }
         }
 
+        // Ignore initial KVO notifications caused by adding the observer and activating the session
+        ignoreUntil = Date().addingTimeInterval(1.0)
         audioSession.addObserver(self, forKeyPath: "outputVolume", options: [.new], context: nil)
         isObserving = true
     }
@@ -1083,6 +1086,7 @@ final class VolumeButtonObserver: NSObject {
 
     override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey : Any]?, context: UnsafeMutableRawPointer?) {
         if keyPath == "outputVolume" {
+            if let ignore = ignoreUntil, Date() < ignore { return }
             onVolumeTrigger?()
         }
     }
