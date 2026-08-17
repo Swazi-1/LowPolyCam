@@ -40,8 +40,12 @@ final class CameraRecorder: NSObject, ObservableObject {
     @Published private(set) var audioLevel: Float = 0
     @Published private(set) var lastClipThumbnail: UIImage?
     @Published private(set) var lastClipURL: URL?
+
+    // Orientation & Level Telemetry
+    @Published private(set) var physicalOrientation: PhysicalOrientation = .portrait
+    @Published private(set) var uiRotationAngle: Double = 0
     @Published private(set) var isLevel: Bool = false
-    @Published private(set) var rollAngle: Double = 0
+    @Published private(set) var relativeRollAngle: Double = 0
     @Published var notice: String?
 
     let session = AVCaptureSession()
@@ -142,20 +146,40 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
     }
 
-    // MARK: Motion / Level Meter (Fixed Gravity Trigonometry)
+    // MARK: Motion, Orientation Tracking & Gravity Horizon
 
     func startMotionUpdates() {
-        guard motionManager.isDeviceMotionAvailable, settings.showLevelGauge else { return }
+        guard motionManager.isDeviceMotionAvailable else { return }
         motionManager.deviceMotionUpdateInterval = 1.0 / 20.0
         motionManager.startDeviceMotionUpdates(using: .xArbitraryZVertical, to: .main) { [weak self] motion, _ in
             guard let self = self, let motion = motion else { return }
             let gx = motion.gravity.x
             let gy = motion.gravity.y
             let angle = atan2(gx, -gy) * (180.0 / .pi)
-            self.rollAngle = angle
 
-            let remainder = abs(angle.truncatingRemainder(dividingBy: 90))
-            let isLevelNow = remainder < 1.2 || remainder > 88.8
+            // Determine physical orientation from gravity
+            let absAngle = abs(angle)
+            let newOrientation: PhysicalOrientation
+            if absAngle < 45 {
+                newOrientation = .portrait
+            } else if angle >= 45 && angle < 135 {
+                newOrientation = .landscapeLeft
+            } else if angle <= -45 && angle > -135 {
+                newOrientation = .landscapeRight
+            } else {
+                newOrientation = .portraitUpsideDown
+            }
+
+            let targetUIAngle = newOrientation.rotationAngle
+            let relativeRoll = angle - targetUIAngle
+            let isLevelNow = abs(relativeRoll) < 1.2
+
+            if self.physicalOrientation != newOrientation {
+                self.physicalOrientation = newOrientation
+                self.uiRotationAngle = targetUIAngle
+            }
+
+            self.relativeRollAngle = relativeRoll
             if self.isLevel != isLevelNow {
                 self.isLevel = isLevelNow
             }
@@ -166,7 +190,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         motionManager.stopDeviceMotionUpdates()
     }
 
-    // MARK: Volume Monitoring Control (Prevents False Auto-Start)
+    // MARK: Volume Monitoring Control
 
     func pauseVolumeMonitoring() {
         volumeObserver?.stop()
@@ -788,7 +812,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         if settings.saveLocation == .photos { ensurePhotosAccess() }
 
         let newPlan = Encoder.plan(for: settings)
-        let transform = Self.transform(forInterface: currentInterfaceOrientation(),
+        let transform = Self.transform(forOrientation: physicalOrientation,
                                        width: newPlan.width,
                                        height: newPlan.height)
 
@@ -1161,28 +1185,20 @@ final class CameraRecorder: NSObject, ObservableObject {
         return clipsDirectory.appendingPathComponent("LowPolyCam_\(f.string(from: Date())).mov")
     }
 
-    // MARK: Orientation
+    // MARK: Orientation Transformation
 
-    private func currentInterfaceOrientation() -> UIInterfaceOrientation {
-        UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .first?.interfaceOrientation ?? .portrait
-    }
-
-    private static func transform(forInterface o: UIInterfaceOrientation, width: Int, height: Int) -> CGAffineTransform {
+    private static func transform(forOrientation o: PhysicalOrientation, width: Int, height: Int) -> CGAffineTransform {
         let w = CGFloat(width)
         let h = CGFloat(height)
         switch o {
         case .portrait:
             return CGAffineTransform(translationX: h, y: 0).rotated(by: .pi / 2)
         case .landscapeLeft:
+            return .identity
+        case .landscapeRight:
             return CGAffineTransform(translationX: w, y: h).rotated(by: .pi)
         case .portraitUpsideDown:
             return CGAffineTransform(translationX: 0, y: w).rotated(by: -.pi / 2)
-        case .landscapeRight:
-            return .identity
-        default:
-            return CGAffineTransform(translationX: h, y: 0).rotated(by: .pi / 2)
         }
     }
 
