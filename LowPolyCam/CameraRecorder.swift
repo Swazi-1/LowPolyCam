@@ -1122,7 +1122,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         hapticGen.impactOccurred()
         if settings.shutterSoundEnabled { SoundPlayer.play(.shutter) }
 
-        let targetMP = settings.photoMegapixels.megapixels
+        let targetMP = 12.0  // Always capture at full 12MP sensor resolution
         let destination = settings.saveLocation
         let mirrored = isFrontCamera
         let orientation = physicalOrientation.videoOrientation
@@ -1136,14 +1136,8 @@ final class CameraRecorder: NSObject, ObservableObject {
             }
 
             if #available(iOS 16.0, *) {
-                // Get the device's true maximum photo dimensions (not video format dimensions)
-                guard let device = self.cameraInput?.device else { return }
-                let maxPhotoDims = device.formats
-                    .flatMap { $0.supportedMaxPhotoDimensions }
-                    .max { Int($0.width) * Int($0.height) < Int($1.width) * Int($1.height) }
-                if let maxDims = maxPhotoDims {
-                    photoSettings.maxPhotoDimensions = maxDims
-                }
+                // Don't constrain maxPhotoDimensions - capture full sensor resolution
+                // Let AVCapturePhotoSettings default to maximum available
             } else {
                 photoSettings.isHighResolutionPhotoEnabled = self.photoOutput.isHighResolutionCaptureEnabled
             }
@@ -1156,15 +1150,6 @@ final class CameraRecorder: NSObject, ObservableObject {
                 if connection.isVideoMirroringSupported {
                     connection.automaticallyAdjustsVideoMirroring = false
                     connection.isVideoMirrored = mirrored
-                }
-            }
-            
-            // iOS may cache/ignore orientation changes on the connection if not
-            // applied immediately before capture. This ensures the photo output
-            // connection has the latest orientation set by the current session state.
-            if let previewConnection = self.videoOutput.connection(with: .video) {
-                if previewConnection.isVideoOrientationSupported {
-                    previewConnection.videoOrientation = orientation
                 }
             }
 
