@@ -34,7 +34,7 @@ struct SettingsScreen: View {
                     slowMoFrameRateSection
                     slowMoResolutionSection
                 } else if settings.cameraMode == .photo {
-                    photoMegapixelsSection
+                    // Photo mode now always captures at full sensor resolution — no MP picker needed.
                 } else {
                     resolutionSection
                     frameRateSection
@@ -97,21 +97,6 @@ struct SettingsScreen: View {
                     enabled: recorder.availableResolutions.contains(r)) {
                     settings.resolution = r
                     recorder.updateCaptureFormat()
-                }
-            }
-        }
-    }
-
-    private var photoMegapixelsSection: some View {
-        Section(header: Text("Photo Quality").font(.system(size: 13, weight: .semibold)),
-                footer: Text("Higher megapixels capture more detail but make larger files. Only sizes your current camera lens supports are shown.")) {
-            ForEach(PhotoMegapixels.allCases) { mp in
-                let available = recorder.availablePhotoMegapixels.contains(mp)
-                row(title: mp.label,
-                    subtitle: available ? "\(Int(mp.rawValue)) megapixels" : "Not on this camera",
-                    selected: settings.photoMegapixels == mp,
-                    enabled: available) {
-                    settings.photoMegapixels = mp
                 }
             }
         }
