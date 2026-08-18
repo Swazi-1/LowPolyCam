@@ -1101,6 +1101,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         let targetMP = settings.photoMegapixels.megapixels
         let destination = settings.saveLocation
         let mirrored = isFrontCamera
+        let orientation = physicalOrientation.videoOrientation
 
         sessionQueue.async {
             var photoSettings: AVCapturePhotoSettings
@@ -1120,7 +1121,7 @@ final class CameraRecorder: NSObject, ObservableObject {
             photoSettings.flashMode = .off
 
             if let connection = self.photoOutput.connection(with: .video) {
-                if connection.isVideoOrientationSupported { connection.videoOrientation = .landscapeRight }
+                if connection.isVideoOrientationSupported { connection.videoOrientation = orientation }
                 if connection.isVideoMirroringSupported {
                     connection.automaticallyAdjustsVideoMirroring = false
                     connection.isVideoMirrored = mirrored
@@ -1147,13 +1148,16 @@ final class CameraRecorder: NSObject, ObservableObject {
 
         guard destination == .photos else {
             ioQueue.async {
-                guard let data = image.jpegData(compressionQuality: 0.92) else {
+                let heicData = Self.encodeHEIC(image)
+                let data = heicData ?? image.jpegData(compressionQuality: 0.95)
+                guard let data = data else {
                     DispatchQueue.main.async { self.notice = "Photo failed to save" }
                     return
                 }
                 let f = DateFormatter()
                 f.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-                let url = Self.clipsDirectory.appendingPathComponent("LowPolyCam_\(f.string(from: Date())).jpg")
+                let ext = (heicData != nil) ? "heic" : "jpg"
+                let url = Self.clipsDirectory.appendingPathComponent("LowPolyCam_\(f.string(from: Date())).\(ext)")
                 do {
                     try data.write(to: url, options: .atomic)
                     DispatchQueue.main.async {
@@ -1174,12 +1178,37 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
 
         PHPhotoLibrary.shared().performChanges({
-            PHAssetCreationRequest.creationRequestForAsset(from: image)
+            let request = PHAssetCreationRequest.forAsset()
+            let options = PHAssetResourceCreationOptions()
+            if let heicData = Self.encodeHEIC(image) {
+                request.addResource(with: .photo, data: heicData, options: options)
+            } else if let jpegData = image.jpegData(compressionQuality: 0.95) {
+                request.addResource(with: .photo, data: jpegData, options: options)
+            }
         }) { [weak self] success, _ in
             DispatchQueue.main.async {
                 self?.notice = success ? "Photo saved to Photos" : "Could not save photo"
             }
         }
+    }
+
+    /// Encodes as HEIC (what the native Camera app uses) at near-lossless
+    /// quality, preserving the image's orientation. Falls back to nil on
+    /// devices/simulators without HEIC encoder support so callers can use
+    /// JPEG instead.
+    private static func encodeHEIC(_ image: UIImage) -> Data? {
+        guard let cgImage = image.cgImage else { return nil }
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(data, "public.heic" as CFString, 1, nil) else {
+            return nil
+        }
+        let properties: [CFString: Any] = [
+            kCGImageDestinationLossyCompressionQuality: 0.92,
+            kCGImagePropertyOrientation: image.imageOrientation.cgImagePropertyOrientation.rawValue
+        ]
+        CGImageDestinationAddImage(destination, cgImage, properties as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return data as Data
     }
 
     // MARK: Recording control
@@ -1616,6 +1645,24 @@ enum SoundPlayer {
 
     static func play(_ click: Click) {
         AudioServicesPlaySystemSound(click.rawValue)
+    }
+}
+
+// MARK: - UIImage Orientation → CGImagePropertyOrientation
+
+extension UIImage.Orientation {
+    var cgImagePropertyOrientation: CGImagePropertyOrientation {
+        switch self {
+        case .up: return .up
+        case .down: return .down
+        case .left: return .left
+        case .right: return .right
+        case .upMirrored: return .upMirrored
+        case .downMirrored: return .downMirrored
+        case .leftMirrored: return .leftMirrored
+        case .rightMirrored: return .rightMirrored
+        @unknown default: return .up
+        }
     }
 }
 
