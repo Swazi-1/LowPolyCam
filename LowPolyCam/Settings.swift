@@ -32,6 +32,24 @@ enum PhysicalOrientation {
         case .portraitUpsideDown: return .portraitUpsideDown
         }
     }
+
+    /// iOS 17 deprecated AVCaptureConnection.videoOrientation/isVideoMirrored in
+    /// favor of videoRotationAngle. On iOS 17+ devices, setting videoOrientation
+    /// on the PHOTO connection is silently a no-op — the still lands with the
+    /// sensor's native (landscape) buffer and EXIF orientation = 1, which is
+    /// exactly the "flipped/rotated" bug: dimensions come out 4032x3024 instead
+    /// of 3024x4032. videoRotationAngle uses a different reference frame than
+    /// videoOrientation (it's "how far to rotate the buffer to reach this
+    /// orientation", measured the opposite way), so this is its own mapping,
+    /// not a passthrough of rotationAngle above.
+    var videoRotationAngle: CGFloat {
+        switch self {
+        case .portrait: return 90
+        case .landscapeRight: return 0
+        case .landscapeLeft: return 180
+        case .portraitUpsideDown: return 270
+        }
+    }
 }
 
 // MARK: - Resolution
