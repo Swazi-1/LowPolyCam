@@ -394,17 +394,6 @@ struct CapturePreset: Identifiable {
             recordAudio: true
         ),
         CapturePreset(
-            id: "silent",
-            name: "Silent Long",
-            icon: "mic.slash.fill",
-            detail: "720p · Saver · no audio",
-            resolution: .p720,
-            quality: .ultraLow,
-            frameRate: .fps30,
-            useHEVC: true,
-            recordAudio: false
-        ),
-        CapturePreset(
             id: "social",
             name: "Social",
             icon: "person.2.fill",
@@ -553,7 +542,8 @@ final class AppSettings: ObservableObject {
         quality = preset.quality
         frameRate = preset.frameRate
         useHEVC = preset.useHEVC
-        recordAudio = preset.recordAudio
+        // Audio is always on — no silent recordings
+        recordAudio = true
     }
 
     private init() {
@@ -580,7 +570,9 @@ final class AppSettings: ObservableObject {
         whiteBalance     = WhiteBalancePreset(rawValue: store.string(forKey: "whiteBalance") ?? "") ?? .auto
         torchBrightness  = store.object(forKey: "torchBrightness") as? Float ?? 1.0
         lowTorch         = store.object(forKey: "lowTorch") as? Bool ?? false
-        recordAudio      = store.object(forKey: "recordAudio") as? Bool ?? true
+        // Always record audio — mute option removed
+        recordAudio      = true
+        store.set(true, forKey: "recordAudio")
         stabilization    = store.object(forKey: "stabilization") as? Bool ?? true
         useHEVC          = store.object(forKey: "useHEVC") as? Bool ?? true
         showGrid         = store.object(forKey: "showGrid") as? Bool ?? false
@@ -675,13 +667,15 @@ struct EncodePlan {
 
 enum Encoder {
 
+    // Tuned for A10 (iPhone 7). Too-high 4K rates made the encoder drop frames
+    // so Photos reported ~24–26 fps instead of a solid 30.
     private static let videoKbps: [Resolution: [Quality: Int]] = [
-        .p2160: [.high: 24000, .medium: 14000, .low: 8000, .ultraLow: 4000],
-        .p1080: [.high: 8000,  .medium: 4000,  .low: 2000, .ultraLow: 400],
-        .p720:  [.high: 4000,  .medium: 2000,  .low: 1000, .ultraLow: 250],
-        .p480:  [.high: 2000,  .medium: 1000,  .low: 500,  .ultraLow: 130],
-        .p320:  [.high: 1000,  .medium: 500,   .low: 250,  .ultraLow: 80],
-        .p144:  [.high: 400,   .medium: 200,   .low: 100,  .ultraLow: 40]
+        .p2160: [.high: 12000, .medium: 8000,  .low: 5000, .ultraLow: 3000],
+        .p1080: [.high: 7000,  .medium: 3500,  .low: 1800, .ultraLow: 400],
+        .p720:  [.high: 3500,  .medium: 1800,  .low: 900,  .ultraLow: 250],
+        .p480:  [.high: 1800,  .medium: 900,   .low: 450,  .ultraLow: 130],
+        .p320:  [.high: 900,   .medium: 450,   .low: 220,  .ultraLow: 80],
+        .p144:  [.high: 350,   .medium: 180,   .low: 90,   .ultraLow: 40]
     ]
 
     private static let audioKbps: [Quality: Int] = [
@@ -696,7 +690,7 @@ enum Encoder {
 
     private static let fpsMultiplier: [FrameRate: Double] = [
         .fps30: 1.0,
-        .fps60: 1.7
+        .fps60: 1.45   // keep 60 fps sustainable on A10 without drops
     ]
 
     static func plan(for settings: AppSettings) -> EncodePlan {
