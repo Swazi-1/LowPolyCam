@@ -393,53 +393,17 @@ final class CameraRecorder: NSObject, ObservableObject {
         guard let device = cameraInput?.device else { return }
 
         if #available(iOS 16.0, *) {
-            let maxDims = device.activeFormat.supportedMaxPhotoDimensions.max { a, b in
-                Int(a.width) * Int(a.height) < Int(b.width) * Int(b.height)
-            }
+            // Use the TRUE max across all formats — device.activeFormat only reflects
+            // whatever video format is currently applied (often ~1080p/2MP), not the
+            // sensor's real max still-photo resolution.
+            let maxDims = device.formats
+                .flatMap { $0.supportedMaxPhotoDimensions }
+                .max { Int($0.width) * Int($0.height) < Int($1.width) * Int($1.height) }
             if let maxDims = maxDims {
                 photoOutput.maxPhotoDimensions = maxDims
             }
         } else {
             photoOutput.isHighResolutionCaptureEnabled = true
-        }
-
-        // Work out which of our MP presets the current lens can actually deliver.
-        // NOTE: device.activeFormat reflects the *video* format currently applied
-        // (often ~1080p/2MP), not the sensor's real max still-photo resolution.
-        // We must scan all formats for the largest photo dimensions the device supports.
-        let nativeMP: Double
-        if #available(iOS 16.0, *) {
-            let bestPhotoDims = device.formats
-                .flatMap { $0.supportedMaxPhotoDimensions }
-                .max { Int($0.width) * Int($0.height) < Int($1.width) * Int($1.height) }
-            if let best = bestPhotoDims {
-                nativeMP = (Double(best.width) * Double(best.height)) / 1_000_000.0
-            } else {
-                let dims = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
-                nativeMP = (Double(dims.width) * Double(dims.height)) / 1_000_000.0
-            }
-        } else {
-            // Pre-iOS 16: fall back to highResolutionStillImageDimensions across all formats.
-            let bestDims = device.formats
-                .map { $0.highResolutionStillImageDimensions }
-                .max { Int($0.width) * Int($0.height) < Int($1.width) * Int($1.height) }
-            if let best = bestDims {
-                nativeMP = (Double(best.width) * Double(best.height)) / 1_000_000.0
-            } else {
-                let dims = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
-                nativeMP = (Double(dims.width) * Double(dims.height)) / 1_000_000.0
-            }
-        }
-        var supported = PhotoMegapixels.allCases.filter { $0.megapixels <= nativeMP + 0.25 }
-        if supported.isEmpty {
-            // Very small native format (e.g. some ultra-wide low-light formats) — still offer the lowest option.
-            supported = [.mp2]
-        }
-        DispatchQueue.main.async {
-            self.availablePhotoMegapixels = supported
-            if !supported.contains(self.settings.photoMegapixels) {
-                self.settings.photoMegapixels = supported.last ?? .mp12
-            }
         }
     }
 
@@ -1010,6 +974,13 @@ final class CameraRecorder: NSObject, ObservableObject {
     @objc private func didBecomeActive() {
         sessionQueue.async {
             self.refreshTorchState()
+        }
+        // Restart motion updates cleanly — after being backgrounded (e.g. screen
+        // locked for a while), the previous raw angle used for unwrapping the roll
+        // is stale and can throw the level gauge off. Restarting resets that state.
+        if settings.showLevelGauge {
+            stopMotionUpdates()
+            startMotionUpdates()
         }
     }
 
