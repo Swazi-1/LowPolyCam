@@ -404,8 +404,32 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
 
         // Work out which of our MP presets the current lens can actually deliver.
-        let dims = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
-        let nativeMP = (Double(dims.width) * Double(dims.height)) / 1_000_000.0
+        // NOTE: device.activeFormat reflects the *video* format currently applied
+        // (often ~1080p/2MP), not the sensor's real max still-photo resolution.
+        // We must scan all formats for the largest photo dimensions the device supports.
+        let nativeMP: Double
+        if #available(iOS 16.0, *) {
+            let bestPhotoDims = device.formats
+                .flatMap { $0.supportedMaxPhotoDimensions }
+                .max { Int($0.width) * Int($0.height) < Int($1.width) * Int($1.height) }
+            if let best = bestPhotoDims {
+                nativeMP = (Double(best.width) * Double(best.height)) / 1_000_000.0
+            } else {
+                let dims = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
+                nativeMP = (Double(dims.width) * Double(dims.height)) / 1_000_000.0
+            }
+        } else {
+            // Pre-iOS 16: fall back to highResolutionStillImageDimensions across all formats.
+            let bestDims = device.formats
+                .map { $0.highResolutionStillImageDimensions }
+                .max { Int($0.width) * Int($0.height) < Int($1.width) * Int($1.height) }
+            if let best = bestDims {
+                nativeMP = (Double(best.width) * Double(best.height)) / 1_000_000.0
+            } else {
+                let dims = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
+                nativeMP = (Double(dims.width) * Double(dims.height)) / 1_000_000.0
+            }
+        }
         var supported = PhotoMegapixels.allCases.filter { $0.megapixels <= nativeMP + 0.25 }
         if supported.isEmpty {
             // Very small native format (e.g. some ultra-wide low-light formats) — still offer the lowest option.
@@ -1128,7 +1152,7 @@ final class CameraRecorder: NSObject, ObservableObject {
                 }
             }
 
-            let processor = PhotoCaptureProcessor(targetMegapixels: targetMP) { [weak self] image, errorMessage in
+            let processor = PhotoCaptureProcessor(targetMegapixels: targetMP) { [weak self] image, metadata, errorMessage in
                 guard let self = self else { return }
                 DispatchQueue.main.async { self.isCapturingPhoto = false }
                 self.activePhotoProcessors.removeValue(forKey: photoSettings.uniqueID)
@@ -1136,20 +1160,20 @@ final class CameraRecorder: NSObject, ObservableObject {
                     DispatchQueue.main.async { self.notice = errorMessage ?? "Photo capture failed" }
                     return
                 }
-                self.savePhoto(image, to: destination)
+                self.savePhoto(image, metadata: metadata, to: destination)
             }
             self.activePhotoProcessors[photoSettings.uniqueID] = processor
             self.photoOutput.capturePhoto(with: photoSettings, delegate: processor)
         }
     }
 
-    private func savePhoto(_ image: UIImage, to destination: SaveLocation) {
+    private func savePhoto(_ image: UIImage, metadata: [String: Any]?, to destination: SaveLocation) {
         DispatchQueue.main.async { self.lastPhotoThumbnail = image }
 
         guard destination == .photos else {
             ioQueue.async {
-                let heicData = Self.encodeHEIC(image)
-                let data = heicData ?? image.jpegData(compressionQuality: 0.95)
+                let heicData = Self.encodeHEIC(image, metadata: metadata)
+                let data = heicData ?? Self.encodeJPEG(image, metadata: metadata)
                 guard let data = data else {
                     DispatchQueue.main.async { self.notice = "Photo failed to save" }
                     return
@@ -1180,9 +1204,9 @@ final class CameraRecorder: NSObject, ObservableObject {
         PHPhotoLibrary.shared().performChanges({
             let request = PHAssetCreationRequest.forAsset()
             let options = PHAssetResourceCreationOptions()
-            if let heicData = Self.encodeHEIC(image) {
+            if let heicData = Self.encodeHEIC(image, metadata: metadata) {
                 request.addResource(with: .photo, data: heicData, options: options)
-            } else if let jpegData = image.jpegData(compressionQuality: 0.95) {
+            } else if let jpegData = Self.encodeJPEG(image, metadata: metadata) {
                 request.addResource(with: .photo, data: jpegData, options: options)
             }
         }) { [weak self] success, _ in
@@ -1193,22 +1217,78 @@ final class CameraRecorder: NSObject, ObservableObject {
     }
 
     /// Encodes as HEIC (what the native Camera app uses) at near-lossless
-    /// quality, preserving the image's orientation. Falls back to nil on
-    /// devices/simulators without HEIC encoder support so callers can use
-    /// JPEG instead.
-    private static func encodeHEIC(_ image: UIImage) -> Data? {
+    /// quality, preserving the image's orientation plus the original EXIF /
+    /// TIFF / lens capture metadata (ISO, shutter speed, aperture, focal
+    /// length, device model, etc.) so it shows up in the Photos "ⓘ" panel.
+    /// Falls back to nil on devices/simulators without HEIC encoder support
+    /// so callers can use JPEG instead.
+    private static func encodeHEIC(_ image: UIImage, metadata: [String: Any]?) -> Data? {
         guard let cgImage = image.cgImage else { return nil }
         let data = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(data, "public.heic" as CFString, 1, nil) else {
             return nil
         }
-        let properties: [CFString: Any] = [
-            kCGImageDestinationLossyCompressionQuality: 0.92,
-            kCGImagePropertyOrientation: image.imageOrientation.cgImagePropertyOrientation.rawValue
-        ]
+        var properties = Self.metadataMatchingDimensions(metadata, cgImage: cgImage)
+        properties[kCGImageDestinationLossyCompressionQuality as String] = 0.92
+        properties[kCGImagePropertyOrientation as String] = image.imageOrientation.cgImagePropertyOrientation.rawValue
         CGImageDestinationAddImage(destination, cgImage, properties as CFDictionary)
         guard CGImageDestinationFinalize(destination) else { return nil }
         return data as Data
+    }
+
+    /// JPEG fallback path that still carries the original capture metadata.
+    private static func encodeJPEG(_ image: UIImage, metadata: [String: Any]?) -> Data? {
+        guard let cgImage = image.cgImage else { return nil }
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil) else {
+            return nil
+        }
+        var properties = Self.metadataMatchingDimensions(metadata, cgImage: cgImage)
+        properties[kCGImageDestinationLossyCompressionQuality as String] = 0.95
+        properties[kCGImagePropertyOrientation as String] = image.imageOrientation.cgImagePropertyOrientation.rawValue
+        CGImageDestinationAddImage(destination, cgImage, properties as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return data as Data
+    }
+
+    /// Copies the original capture metadata (ISO, shutter speed, lens, GPS,
+    /// device model, etc.) but corrects the pixel-dimension fields so they
+    /// match the (possibly downscaled) output image, since a mismatch there
+    /// can confuse readers of the file.
+    private static func metadataMatchingDimensions(_ metadata: [String: Any]?, cgImage: CGImage) -> [String: Any] {
+        var properties = metadata ?? [:]
+        if var exif = properties[kCGImagePropertyExifDictionary as String] as? [String: Any] {
+            exif[kCGImagePropertyExifPixelXDimension as String] = cgImage.width
+            exif[kCGImagePropertyExifPixelYDimension as String] = cgImage.height
+            properties[kCGImagePropertyExifDictionary as String] = exif
+        }
+        properties[kCGImagePropertyPixelWidth as String] = cgImage.width
+        properties[kCGImagePropertyPixelHeight as String] = cgImage.height
+        return properties
+    }
+
+    /// Standard QuickTime metadata (make, model, software, creation date) so
+    /// recorded clips show device info in the Photos app's "ⓘ" panel, the
+    /// same fields the stock Camera app writes.
+    private static func captureMetadataItems() -> [AVMetadataItem] {
+        var items: [AVMetadataItem] = []
+
+        func item(_ identifier: AVMetadataIdentifier, _ value: String) -> AVMetadataItem {
+            let m = AVMutableMetadataItem()
+            m.identifier = identifier
+            m.value = value as NSString
+            m.dataType = kCMMetadataBaseDataType_UTF8 as String
+            return m
+        }
+
+        items.append(item(.quickTimeMetadataMake, "Apple"))
+        items.append(item(.quickTimeMetadataModel, UIDevice.current.modelIdentifier))
+        items.append(item(.quickTimeMetadataSoftware, "LowPolyCam"))
+
+        let iso8601 = ISO8601DateFormatter()
+        items.append(item(.quickTimeMetadataCreationDate, iso8601.string(from: Date())))
+
+        return items
     }
 
     // MARK: Recording control
@@ -1304,6 +1384,7 @@ final class CameraRecorder: NSObject, ObservableObject {
 
             let w = try AVAssetWriter(outputURL: url, fileType: .mov)
             w.movieFragmentInterval = CMTime(seconds: Self.fragmentSeconds, preferredTimescale: 600)
+            w.metadata = Self.captureMetadataItems()
 
             let v = AVAssetWriterInput(mediaType: .video,
                                        outputSettings: Encoder.videoSettings(for: plan, writer: w))
@@ -1648,6 +1729,48 @@ enum SoundPlayer {
     }
 }
 
+// MARK: - Device Model
+
+extension UIDevice {
+    /// Human-readable hardware name (e.g. "iPhone 7", "iPhone 15 Pro") for
+    /// use in saved-file metadata, resolved from the raw hardware identifier
+    /// (e.g. "iPhone9,1"). Falls back to the raw identifier for unrecognized
+    /// or newer hardware not yet in this table.
+    var modelIdentifier: String {
+        var systemInfo = utsname()
+        uname(&systemInfo)
+        let raw = withUnsafePointer(to: &systemInfo.machine) {
+            $0.withMemoryRebound(to: CChar.self, capacity: 1) { ptr in
+                String(cString: ptr)
+            }
+        }
+
+        let map: [String: String] = [
+            "iPhone8,4": "iPhone SE",
+            "iPhone9,1": "iPhone 7", "iPhone9,3": "iPhone 7",
+            "iPhone9,2": "iPhone 7 Plus", "iPhone9,4": "iPhone 7 Plus",
+            "iPhone10,1": "iPhone 8", "iPhone10,4": "iPhone 8",
+            "iPhone10,2": "iPhone 8 Plus", "iPhone10,5": "iPhone 8 Plus",
+            "iPhone10,3": "iPhone X", "iPhone10,6": "iPhone X",
+            "iPhone11,2": "iPhone XS", "iPhone11,4": "iPhone XS Max", "iPhone11,6": "iPhone XS Max",
+            "iPhone11,8": "iPhone XR",
+            "iPhone12,1": "iPhone 11", "iPhone12,3": "iPhone 11 Pro", "iPhone12,5": "iPhone 11 Pro Max",
+            "iPhone12,8": "iPhone SE (2nd generation)",
+            "iPhone13,1": "iPhone 12 mini", "iPhone13,2": "iPhone 12", "iPhone13,3": "iPhone 12 Pro", "iPhone13,4": "iPhone 12 Pro Max",
+            "iPhone14,4": "iPhone 13 mini", "iPhone14,5": "iPhone 13", "iPhone14,2": "iPhone 13 Pro", "iPhone14,3": "iPhone 13 Pro Max",
+            "iPhone14,6": "iPhone SE (3rd generation)",
+            "iPhone14,7": "iPhone 14", "iPhone14,8": "iPhone 14 Plus", "iPhone15,2": "iPhone 14 Pro", "iPhone15,3": "iPhone 14 Pro Max",
+            "iPhone15,4": "iPhone 15", "iPhone15,5": "iPhone 15 Plus", "iPhone16,1": "iPhone 15 Pro", "iPhone16,2": "iPhone 15 Pro Max",
+            "iPhone17,1": "iPhone 16 Pro", "iPhone17,2": "iPhone 16 Pro Max", "iPhone17,3": "iPhone 16", "iPhone17,4": "iPhone 16 Plus",
+            "iPhone17,5": "iPhone 16e"
+        ]
+
+        if let friendly = map[raw] { return friendly }
+        if raw.hasPrefix("iPhone") { return raw }
+        return raw // Simulator or unrecognized hardware — show the raw string.
+    }
+}
+
 // MARK: - UIImage Orientation → CGImagePropertyOrientation
 
 extension UIImage.Orientation {
@@ -1670,13 +1793,15 @@ extension UIImage.Orientation {
 
 /// Handles a single AVCapturePhotoOutput capture, decoding the delivered
 /// image and downscaling it to the requested megapixel target while
-/// preserving the original aspect ratio and EXIF orientation.
+/// preserving the original aspect ratio, EXIF orientation, and camera
+/// metadata (ISO, shutter speed, lens, focal length, aperture, etc.) so it
+/// still shows up in the Photos app's "ⓘ" info panel.
 final class PhotoCaptureProcessor: NSObject, AVCapturePhotoCaptureDelegate {
 
     private let targetMegapixels: Double
-    private let completion: (UIImage?, String?) -> Void
+    private let completion: (UIImage?, [String: Any]?, String?) -> Void
 
-    init(targetMegapixels: Double, completion: @escaping (UIImage?, String?) -> Void) {
+    init(targetMegapixels: Double, completion: @escaping (UIImage?, [String: Any]?, String?) -> Void) {
         self.targetMegapixels = targetMegapixels
         self.completion = completion
     }
@@ -1685,15 +1810,17 @@ final class PhotoCaptureProcessor: NSObject, AVCapturePhotoCaptureDelegate {
                      didFinishProcessingPhoto photo: AVCapturePhoto,
                      error: Error?) {
         if let error = error {
-            completion(nil, error.localizedDescription)
+            completion(nil, nil, error.localizedDescription)
             return
         }
         guard let data = photo.fileDataRepresentation(), let image = UIImage(data: data) else {
-            completion(nil, "Could not read photo data")
+            completion(nil, nil, "Could not read photo data")
             return
         }
+        // photo.metadata carries the real capture info from the sensor
+        // (ISO, exposure time, aperture, focal length, lens/device model).
         let resized = Self.resize(image, toMegapixels: targetMegapixels)
-        completion(resized, nil)
+        completion(resized, photo.metadata, nil)
     }
 
     /// Downscales while keeping aspect ratio and orientation. Never upscales.
