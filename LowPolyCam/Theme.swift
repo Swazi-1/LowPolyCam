@@ -43,6 +43,11 @@ enum Palette {
     static let record      = Color(hex: 0xFF4D5A)
     static let recordSoft  = Color(hex: 0xFF7A84)
 
+    // Ice Cyan — special fifth accent
+    static let ice         = Color(hex: 0x4EC8F0)
+    static let iceBright   = Color(hex: 0xA8ECFF)
+    static let iceDeep     = Color(hex: 0x1A8FB8)
+
     // Semantic
     static let success     = Color(hex: 0x4ADE80)
     static let warning     = Color(hex: 0xFBBF24)
