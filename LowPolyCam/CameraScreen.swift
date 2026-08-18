@@ -83,7 +83,7 @@ struct CameraScreen: View {
                     focusReticle.position(focusPoint)
                 }
 
-                if settings.showGrid { gridOverlay }
+                if settings.gridStyle != .off { gridOverlay }
 
                 if settings.showLevelGauge { levelGaugeOverlay }
 
@@ -348,6 +348,21 @@ struct CameraScreen: View {
                             .foregroundColor(.white.opacity(0.65))
                     }
 
+                    if settings.cameraMode != .photo, plan.megabytesPerHour > 0 {
+                        let hoursLeft = Double(max(0, recorder.freeBytes - 300_000_000)) / 1_000_000.0 / plan.megabytesPerHour
+                        Text("·")
+                            .foregroundColor(Palette.slateLight)
+                            .font(.system(size: 11, weight: .bold))
+                        HStack(spacing: 3) {
+                            Image(systemName: "clock")
+                                .font(.system(size: 9))
+                                .foregroundColor(Palette.slateLight)
+                            Text("~" + Fmt.hours(hoursLeft))
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(.white.opacity(0.65))
+                        }
+                    }
+
                     if recorder.batteryPercent >= 0 {
                         Text("·")
                             .foregroundColor(Palette.slateLight)
@@ -414,6 +429,12 @@ struct CameraScreen: View {
                     .font(.system(size: 12, weight: .black))
                 Text(Fmt.duration(recorder.elapsed))
                     .font(.system(size: 14, weight: .bold, design: .monospaced))
+
+                if let limit = settings.maxDuration.seconds {
+                    Text("/ " + Fmt.duration(limit))
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.55))
+                }
 
                 if recorder.droppedFrames > 0 {
                     Text("\(recorder.droppedFrames)d")
@@ -681,6 +702,38 @@ struct CameraScreen: View {
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
                         .stroke(Palette.slateLight.opacity(0.3), lineWidth: 0.8)
                 )
+            }
+
+            // Quick mic mute
+            if settings.cameraMode != .photo {
+                Button(action: {
+                    settings.recordAudio.toggle()
+                    recorder.syncMicInput()
+                }) {
+                    HStack(spacing: 8) {
+                        Image(systemName: settings.recordAudio ? "mic.fill" : "mic.slash.fill")
+                            .font(.system(size: 13, weight: .bold))
+                        Text(settings.recordAudio ? "Microphone On" : "Microphone Muted")
+                            .font(.system(size: 13, weight: .semibold))
+                        Spacer()
+                        Text(settings.recordAudio ? "ON" : "OFF")
+                            .font(.system(size: 11, weight: .black, design: .rounded))
+                            .foregroundColor(settings.recordAudio ? Palette.slateDeep : .white.opacity(0.7))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(
+                                Capsule().fill(settings.recordAudio ? settings.accentColor.bright : Palette.slate.opacity(0.8))
+                            )
+                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(Palette.slate.opacity(0.45))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(recorder.isRecording)
+                .opacity(recorder.isRecording ? 0.45 : 1)
             }
         }
         .padding(20)
@@ -1164,19 +1217,39 @@ struct CameraScreen: View {
 
     private var gridOverlay: some View {
         GeometryReader { geo in
+            let w = geo.size.width
+            let h = geo.size.height
             Path { path in
-                let w = geo.size.width
-                let h = geo.size.height
-                for i in 1...2 {
-                    let x = w * CGFloat(i) / 3
-                    path.move(to: CGPoint(x: x, y: 0))
-                    path.addLine(to: CGPoint(x: x, y: h))
-                    let y = h * CGFloat(i) / 3
-                    path.move(to: CGPoint(x: 0, y: y))
-                    path.addLine(to: CGPoint(x: w, y: y))
+                switch settings.gridStyle {
+                case .off:
+                    break
+                case .thirds:
+                    for i in 1...2 {
+                        let x = w * CGFloat(i) / 3
+                        path.move(to: CGPoint(x: x, y: 0))
+                        path.addLine(to: CGPoint(x: x, y: h))
+                        let y = h * CGFloat(i) / 3
+                        path.move(to: CGPoint(x: 0, y: y))
+                        path.addLine(to: CGPoint(x: w, y: y))
+                    }
+                case .crosshair:
+                    path.move(to: CGPoint(x: w / 2, y: 0))
+                    path.addLine(to: CGPoint(x: w / 2, y: h))
+                    path.move(to: CGPoint(x: 0, y: h / 2))
+                    path.addLine(to: CGPoint(x: w, y: h / 2))
+                case .square:
+                    let side = min(w, h) * 0.72
+                    let rect = CGRect(x: (w - side) / 2, y: (h - side) / 2, width: side, height: side)
+                    path.addRect(rect)
+                    // center cross ticks
+                    let tick: CGFloat = 12
+                    path.move(to: CGPoint(x: w / 2 - tick, y: h / 2))
+                    path.addLine(to: CGPoint(x: w / 2 + tick, y: h / 2))
+                    path.move(to: CGPoint(x: w / 2, y: h / 2 - tick))
+                    path.addLine(to: CGPoint(x: w / 2, y: h / 2 + tick))
                 }
             }
-            .stroke(Color.white.opacity(0.2), lineWidth: 0.5)
+            .stroke(Color.white.opacity(0.28), lineWidth: 0.7)
         }
         .allowsHitTesting(false)
     }
