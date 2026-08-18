@@ -135,6 +135,15 @@ final class CameraRecorder: NSObject, ObservableObject {
     private var lastVideoPTS = CMTime.invalid
     private var recordStartPTS = CMTime.invalid
     private var wantsRecording = false
+    // Guards against dispatching startSegment more than once for the same
+    // segment. Multiple video frames can arrive on videoQueue and all see
+    // writer == nil before the *first* startSegment call (running on
+    // ioQueue) finishes its setup and assigns `writer` — each of those
+    // frames would otherwise fire its own startSegment, all racing to
+    // create an AVAssetWriter at the same (or near-identical) file path,
+    // which fails with "Cannot Save" (AVFoundationErrorDomain -11823) and
+    // was the actual cause of "press record, it instantly stops."
+    private var segmentStartInFlight = false
     private var plan: EncodePlan?
     private var clipTransform = CGAffineTransform.identity
     private var freeBytesSnapshot: Int64 = .max
@@ -1519,6 +1528,7 @@ final class CameraRecorder: NSObject, ObservableObject {
             self.clipTransform = transform
             self.writerLock.lock()
             self.recordStartPTS = .invalid
+            self.segmentStartInFlight = false
             self.writerLock.unlock()
             self.lastElapsedPush = .invalid
             self.droppedFrameCount = 0
@@ -1593,10 +1603,15 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     private func startSegment(at pts: CMTime) {
         DebugLog.write("[0] startSegment called at pts=\(CMTimeGetSeconds(pts)) plan=\(plan != nil) freeBytesSnapshot=\(freeBytesSnapshot)")
-        guard let plan = plan else { DebugLog.write("❌ no plan, bailing"); return }
+        guard let plan = plan else {
+            DebugLog.write("❌ no plan, bailing")
+            writerLock.lock(); segmentStartInFlight = false; writerLock.unlock()
+            return
+        }
 
         guard freeBytesSnapshot > Self.reserveBytes else {
             DebugLog.write("❌ storage guard failed: freeBytesSnapshot=\(freeBytesSnapshot) reserveBytes=\(Self.reserveBytes)")
+            writerLock.lock(); segmentStartInFlight = false; writerLock.unlock()
             wantsRecording = false
             DispatchQueue.main.async {
                 self.isRecording = false
@@ -1654,6 +1669,7 @@ final class CameraRecorder: NSObject, ObservableObject {
             segmentStart = pts
             lastVideoPTS = pts
             if !recordStartPTS.isValid { recordStartPTS = pts }
+            segmentStartInFlight = false
             writerLock.unlock()
 
             DispatchQueue.main.async { self.clipsThisSession += 1 }
@@ -1661,6 +1677,9 @@ final class CameraRecorder: NSObject, ObservableObject {
 
         } catch {
             DebugLog.write("❌ startSegment threw: \(error.localizedDescription) | full: \(error)")
+            writerLock.lock()
+            segmentStartInFlight = false
+            writerLock.unlock()
             wantsRecording = false
             DispatchQueue.main.async {
                 self.isRecording = false
@@ -1925,7 +1944,17 @@ final class CameraRecorder: NSObject, ObservableObject {
     private static func newClipURL() -> URL {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-        return clipsDirectory.appendingPathComponent("LowPolyCam_\(f.string(from: Date())).mov")
+        // A plain timestamp string only has 1-second resolution, so if
+        // startSegment somehow runs more than once in the same second
+        // (e.g. duplicate dispatches racing on ioQueue), two writers could
+        // both try to create/open the exact same file path at once —
+        // AVAssetWriter's startWriting() then fails with "Cannot Save"
+        // (AVFoundationErrorDomain -11823 / NSOSStatusErrorDomain -12412)
+        // because the OS won't let two writers claim the same file. A short
+        // random suffix guarantees uniqueness even if that race happens, as
+        // a defense-in-depth alongside the dedicated startSegment guard.
+        let suffix = String(format: "%04X", UInt16.random(in: 0...0xFFFF))
+        return clipsDirectory.appendingPathComponent("LowPolyCam_\(f.string(from: Date()))_\(suffix).mov")
     }
 
     // MARK: Video Matrix Orientation
@@ -2148,12 +2177,13 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
 
         if isVideo {
             writerLock.lock()
-            let needsNewSegment = (writer == nil)
+            let needsNewSegment = (writer == nil) && !segmentStartInFlight
             var needsRotate = false
-            if !needsNewSegment, let splitLimit = plan?.splitInterval.seconds, segmentStart.isValid {
+            if writer != nil, let splitLimit = plan?.splitInterval.seconds, segmentStart.isValid {
                 let duration = CMTimeGetSeconds(CMTimeSubtract(pts, segmentStart))
                 needsRotate = duration >= splitLimit
             }
+            if needsNewSegment { segmentStartInFlight = true }
             writerLock.unlock()
 
             // Starting or rotating a segment spins up a brand-new
