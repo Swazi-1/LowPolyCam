@@ -1493,6 +1493,21 @@ final class CameraRecorder: NSObject, ObservableObject {
     func stopRecording(notice message: String?) {
         guard isRecording else { return }
 
+        // Guard against a stop landing in the same fraction of a second as
+        // the start (e.g. a double-fired button tap). Recording needs a
+        // moment to actually spin up its first segment on ioQueue; stopping
+        // before that produces a writer with ~0 frames, which still
+        // "succeeds" and shows a save confirmation for an empty clip.
+        writerLock.lock()
+        let hasStartedSegment = recordStartPTS.isValid
+        writerLock.unlock()
+        if !hasStartedSegment {
+            ioQueue.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                self?.stopRecording(notice: message)
+            }
+            return
+        }
+
         if settings.shutterSoundEnabled { SoundPlayer.play(.stop) }
         stopRequested = true
         isRecording = false
