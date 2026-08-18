@@ -552,10 +552,12 @@ final class CameraRecorder: NSObject, ObservableObject {
         do {
             try device.lockForConfiguration()
             
-            // 1. Format & Frame Rate
+            // 1. Format & Frame Rate — lock min AND max to the same duration so
+            // the sensor runs at a fixed rate (prevents VFR / under-30 fps files).
             device.activeFormat = format
-            let d = CMTime(value: 1, timescale: CMTimeScale(targetFPS.rounded()))
-            device.activeVideoMaxFrameDuration = CMTime.invalid
+            let fps = max(1.0, targetFPS.rounded())
+            // Higher-precision timescale avoids float rounding drift (e.g. 29.97-ish).
+            let d = CMTimeMake(1000, CMTimeScale(fps * 1000.0))
             device.activeVideoMinFrameDuration = d
             device.activeVideoMaxFrameDuration = d
             
@@ -620,15 +622,25 @@ final class CameraRecorder: NSObject, ObservableObject {
         for format in formats {
             let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
             guard Int(dims.width) >= width, Int(dims.height) >= height else { continue }
-            let supportsFPS = format.videoSupportedFrameRateRanges.contains {
+
+            // Prefer a range that solidly covers the target fps.
+            guard let matchingRange = format.videoSupportedFrameRateRanges.first(where: {
                 $0.minFrameRate <= (fps + 0.5) && (fps - 0.5) <= $0.maxFrameRate
-            }
-            guard supportsFPS else { continue }
+            }) else { continue }
+
             let areaDelta = Int(dims.width) * Int(dims.height) - width * height
 
+            // Prefer formats whose max rate is close to the target (more stable
+            // fixed-rate capture on older silicon than a wide 1–60 range).
+            let maxRateSlack = Int((matchingRange.maxFrameRate - fps).rounded())
+            let rateScore = max(0, maxRateSlack) * 50_000
+
+            // Prefer non-binned / non-HDR for predictable encode on A10.
+            let binnedScore = format.isVideoBinned ? 1_000_000 : 0
             let isHDR = format.supportedColorSpaces.contains(.HLG_BT2020)
             let colorScore = isHDR ? 10_000_000 : 0
-            let score = areaDelta + (format.isVideoBinned ? 1_000_000 : 0) + colorScore
+
+            let score = areaDelta + rateScore + binnedScore + colorScore
             scored.append((format, score))
         }
         return scored.sorted { $0.score < $1.score }.map { $0.format }
@@ -763,8 +775,11 @@ final class CameraRecorder: NSObject, ObservableObject {
     }
 
     func syncMicInput() {
-        if settings.recordAudio,
-           AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
+        // Audio is always required
+        if !settings.recordAudio {
+            settings.recordAudio = true
+        }
+        if AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
             AVCaptureDevice.requestAccess(for: .audio) { [weak self] _ in
                 self?.addOrRemoveMic()
             }
@@ -776,7 +791,7 @@ final class CameraRecorder: NSObject, ObservableObject {
     private func addOrRemoveMic() {
         sessionQueue.async {
             DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
-            let want = self.settings.recordAudio
+            let want = true // always record sound
             if want, self.micInput == nil {
                 guard let mic = AVCaptureDevice.default(for: .audio),
                       let input = try? AVCaptureDeviceInput(device: mic) else { return }
