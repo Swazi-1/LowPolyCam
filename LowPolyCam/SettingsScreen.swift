@@ -5,15 +5,23 @@ struct SettingsLabelStyle: LabelStyle {
     func makeBody(configuration: Configuration) -> some View {
         HStack(spacing: 14) {
             configuration.icon
-                .font(.system(size: 15, weight: .semibold))
+                .font(.system(size: 14, weight: .semibold))
                 .foregroundColor(.white)
-                .frame(width: 28, height: 28)
-                .background(color)
-                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                .shadow(color: color.opacity(0.3), radius: 3, x: 0, y: 2)
+                .frame(width: 30, height: 30)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [color, color.opacity(0.75)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                )
+                .shadow(color: color.opacity(0.35), radius: 4, x: 0, y: 2)
 
             configuration.title
-                .font(.system(size: 16, weight: .medium))
+                .font(.system(size: 16, weight: .medium, design: .rounded))
         }
     }
 }
@@ -232,22 +240,37 @@ struct SettingsScreen: View {
     private var appearanceSection: some View {
         Section(header: Text("Appearance").font(.system(size: 13, weight: .semibold)),
                 footer: Text("Colours the shutter ring, highlights, and controls across the app.")) {
-            HStack(spacing: 14) {
+            HStack(spacing: 16) {
                 ForEach(AccentColor.allCases) { color in
                     let isSelected = settings.accentColor == color
                     Button(action: { settings.accentColor = color }) {
-                        ZStack {
-                            Circle()
-                                .fill(color.color)
-                                .frame(width: 34, height: 34)
-                            if isSelected {
-                                Circle()
-                                    .stroke(Color.white, lineWidth: 2.5)
-                                    .frame(width: 40, height: 40)
-                                Image(systemName: "checkmark")
-                                    .font(.system(size: 13, weight: .bold))
-                                    .foregroundColor(.black)
+                        VStack(spacing: 6) {
+                            ZStack {
+                                Facet(sides: 6, rotation: .pi / 6)
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [color.bright, color.color],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        )
+                                    )
+                                    .frame(width: 36, height: 36)
+                                    .shadow(color: color.color.opacity(isSelected ? 0.5 : 0.2), radius: isSelected ? 8 : 3)
+
+                                if isSelected {
+                                    Facet(sides: 6, rotation: .pi / 6)
+                                        .stroke(Color.white, lineWidth: 2.5)
+                                        .frame(width: 42, height: 42)
+                                    Image(systemName: "checkmark")
+                                        .font(.system(size: 12, weight: .bold))
+                                        .foregroundColor(Palette.slateDeep)
+                                }
                             }
+                            .frame(width: 44, height: 44)
+
+                            Text(color.label.components(separatedBy: " ").last ?? color.label)
+                                .font(.system(size: 10, weight: isSelected ? .bold : .medium, design: .rounded))
+                                .foregroundColor(isSelected ? color.bright : .secondary)
                         }
                     }
                     .buttonStyle(.plain)
@@ -255,7 +278,7 @@ struct SettingsScreen: View {
                 }
                 Spacer()
             }
-            .padding(.vertical, 6)
+            .padding(.vertical, 8)
         }
     }
 
