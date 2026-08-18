@@ -1136,11 +1136,14 @@ final class CameraRecorder: NSObject, ObservableObject {
             }
 
             if #available(iOS 16.0, *) {
-                // Don't constrain maxPhotoDimensions on capture — let the sensor output its full
-                // resolution. The PhotoCaptureProcessor.resize() will scale down to user's selected MP.
-                // Setting maxPhotoDimensions here can artificially cap the sensor output before
-                // processing, preventing proper scaling for 12MP/8MP selections.
-                // Sensor will output max, then processor resizes as needed.
+                // Get the device's true maximum photo dimensions (not video format dimensions)
+                guard let device = self.cameraInput?.device else { return }
+                let maxPhotoDims = device.formats
+                    .flatMap { $0.supportedMaxPhotoDimensions }
+                    .max { Int($0.width) * Int($0.height) < Int($1.width) * Int($1.height) }
+                if let maxDims = maxPhotoDims {
+                    photoSettings.maxPhotoDimensions = maxDims
+                }
             } else {
                 photoSettings.isHighResolutionPhotoEnabled = self.photoOutput.isHighResolutionCaptureEnabled
             }
