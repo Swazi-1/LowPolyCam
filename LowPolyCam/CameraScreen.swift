@@ -226,27 +226,9 @@ struct CameraScreen: View {
 
             Spacer(minLength: 8)
 
-            // Settings button with extended rightside hitbox
-            Button(action: { showSettings = true }) {
-                Image(systemName: "gearshape.fill")
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundColor(.white)
-                    .frame(width: 48, height: 48)
-                    .background(Palette.panel.opacity(0.85))
-                    .environment(\.colorScheme, .dark)
-                    .clipShape(Facet(sides: 6, rotation: .pi / 6))
-                    .overlay(
-                        Facet(sides: 6, rotation: .pi / 6)
-                            .stroke(Palette.slateLight.opacity(0.35), lineWidth: 0.8)
-                    )
-                    .shadow(color: .black.opacity(0.2), radius: 6, x: 0, y: 3)
-            }
-            .buttonStyle(.plain)
-            .frame(width: 48, height: 48, alignment: .leading)
-            .contentShape(Rectangle())  // Extend hitbox to right edge
-            .padding(.trailing, -16)     // Negative padding to extend right into safe margin
-            .disabled(recorder.isRecording || recorder.isSaving || recorder.isSwitchingCamera)
-            .opacity((recorder.isRecording || recorder.isSaving || recorder.isSwitchingCamera) ? 0.35 : 1)
+            facetButton(system: "gearshape.fill") { showSettings = true }
+                .disabled(recorder.isRecording || recorder.isSaving || recorder.isSwitchingCamera)
+                .opacity((recorder.isRecording || recorder.isSaving || recorder.isSwitchingCamera) ? 0.35 : 1)
         }
     }
 
@@ -886,8 +868,9 @@ struct CameraScreen: View {
                 .shadow(color: .black.opacity(0.2), radius: 6, x: 0, y: 3)
         }
         .buttonStyle(.plain)
-        .frame(width: size + 20, height: size + 20)
-        .contentShape(Rectangle())
+        // Negative inset grows the TAPPABLE area by 8pt on every side without
+        // changing the button's actual layout size — neighboring buttons don't shift.
+        .contentShape(Rectangle().inset(by: -8))
     }
 
     // MARK: Overlays (Level Meter & Countdown)
