@@ -448,7 +448,10 @@ final class CameraRecorder: NSObject, ObservableObject {
         guard let c = connection ?? videoOutput.connection(with: .video) else { return }
         let supported = c.isVideoStabilizationSupported
         if supported {
-            c.preferredVideoStabilizationMode = settings.stabilization ? .auto : .off
+            // Stabilisation + 4K + VideoDataOutput overloads A10 and drops frames
+            // (~26 fps). Force off at 4K so the file stays a true 30 fps.
+            let wantStab = settings.stabilization && settings.resolution != .p2160
+            c.preferredVideoStabilizationMode = wantStab ? .auto : .off
         }
         DispatchQueue.main.async { self.stabilizationSupported = supported }
     }
@@ -555,11 +558,24 @@ final class CameraRecorder: NSObject, ObservableObject {
             // 1. Format & Frame Rate — lock min AND max to the same duration so
             // the sensor runs at a fixed rate (prevents VFR / under-30 fps files).
             device.activeFormat = format
-            let fps = max(1.0, targetFPS.rounded())
-            // Higher-precision timescale avoids float rounding drift (e.g. 29.97-ish).
-            let d = CMTimeMake(value: 1000, timescale: CMTimeScale(fps * 1000.0))
-            device.activeVideoMinFrameDuration = d
-            device.activeVideoMaxFrameDuration = d
+
+            let desiredFPS = max(1.0, targetFPS.rounded())
+            // Clamp to a range the active format actually supports.
+            var minDur = CMTimeMake(value: 1, timescale: CMTimeScale(desiredFPS))
+            var maxDur = minDur
+            if let range = format.videoSupportedFrameRateRanges.first(where: {
+                $0.minFrameRate - 0.5 <= desiredFPS && desiredFPS <= $0.maxFrameRate + 0.5
+            }) {
+                // Prefer exact target; fall back to nearest edge of the range.
+                let lo = range.minFrameDuration
+                let hi = range.maxFrameDuration
+                // minFrameDuration = duration of fastest rate; maxFrameDuration = slowest.
+                if CMTimeCompare(minDur, lo) < 0 { minDur = lo }
+                if CMTimeCompare(minDur, hi) > 0 { minDur = hi }
+                maxDur = minDur
+            }
+            device.activeVideoMinFrameDuration = minDur
+            device.activeVideoMaxFrameDuration = maxDur
             
             // 2. Autofocus
             if device.isSmoothAutoFocusSupported {
@@ -2162,3 +2178,4 @@ final class VolumeButtonObserver: NSObject {
         }
     }
 }
+
