@@ -55,13 +55,13 @@ enum PhysicalOrientation {
 // MARK: - Resolution
 
 enum Resolution: String, CaseIterable, Identifiable {
-    case p2160, p1080, p720, p480, p320, p144
+    // iPhone 7 focused - no 4K
+    case p1080, p720, p480, p320, p144
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
-        case .p2160: return "4K"
         case .p1080: return "1080p"
         case .p720: return "720p"
         case .p480: return "480p"
@@ -72,7 +72,6 @@ enum Resolution: String, CaseIterable, Identifiable {
 
     var pixels: (w: Int, h: Int) {
         switch self {
-        case .p2160: return (3840, 2160)
         case .p1080: return (1920, 1080)
         case .p720: return (1280, 720)
         case .p480: return (848, 480)
@@ -83,7 +82,6 @@ enum Resolution: String, CaseIterable, Identifiable {
 
     var captureDimensions: (w: Int, h: Int) {
         switch self {
-        case .p2160: return (3840, 2160)
         case .p1080: return (1920, 1080)
         default: return (1280, 720)
         }
@@ -128,7 +126,8 @@ enum PhotoMegapixels: Double, CaseIterable, Identifiable {
 // MARK: - Frame rate
 
 enum FrameRate: Int, CaseIterable, Identifiable {
-    case fps24 = 24, fps30 = 30, fps60 = 60
+    // iPhone 7 focused - 30 fps only for normal video
+    case fps30 = 30
 
     var id: Int { rawValue }
     var value: Int { rawValue }
@@ -136,11 +135,7 @@ enum FrameRate: Int, CaseIterable, Identifiable {
     var label: String { "\(rawValue) fps" }
 
     var detail: String {
-        switch self {
-        case .fps24: return "Film-like motion"
-        case .fps30: return "Standard, smallest files"
-        case .fps60: return "Smoothest motion, largest files"
-        }
+        "Standard frame rate"
     }
 }
 
@@ -372,8 +367,8 @@ struct CapturePreset: Identifiable {
             id: "quality",
             name: "High Quality",
             icon: "sparkles",
-            detail: "4K · High · best detail",
-            resolution: .p2160,
+            detail: "1080p · High · best detail",
+            resolution: .p1080,
             quality: .high,
             frameRate: .fps30,
             useHEVC: true,
@@ -397,7 +392,7 @@ struct CapturePreset: Identifiable {
             detail: "720p · Saver · no audio",
             resolution: .p720,
             quality: .ultraLow,
-            frameRate: .fps24,
+            frameRate: .fps30,
             useHEVC: true,
             recordAudio: false
         )
@@ -658,7 +653,6 @@ struct EncodePlan {
 enum Encoder {
 
     private static let videoKbps: [Resolution: [Quality: Int]] = [
-        .p2160: [.high: 24000, .medium: 12000, .low: 6000, .ultraLow: 1800],
         .p1080: [.high: 8000,  .medium: 4000,  .low: 2000, .ultraLow: 400],
         .p720:  [.high: 4000,  .medium: 2000,  .low: 1000, .ultraLow: 250],
         .p480:  [.high: 2000,  .medium: 1000,  .low: 500,  .ultraLow: 130],
@@ -677,7 +671,7 @@ enum Encoder {
     private static let h264Multiplier = 1.6
 
     private static let fpsMultiplier: [FrameRate: Double] = [
-        .fps24: 0.85, .fps30: 1.0, .fps60: 1.6
+        .fps30: 1.0
     ]
 
     static func plan(for settings: AppSettings) -> EncodePlan {
