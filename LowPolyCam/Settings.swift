@@ -269,6 +269,141 @@ enum CountdownTimer: Int, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - Max Recording Duration
+
+enum MaxDuration: Int, CaseIterable, Identifiable {
+    case off = 0
+    case fifteen = 15
+    case thirty = 30
+    case sixty = 60
+    case oneTwenty = 120
+
+    var id: Int { rawValue }
+
+    var label: String {
+        switch self {
+        case .off: return "Off"
+        case .fifteen: return "15 min"
+        case .thirty: return "30 min"
+        case .sixty: return "1 hour"
+        case .oneTwenty: return "2 hours"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .off: return "Record until you stop"
+        case .fifteen: return "Auto-stops after 15 minutes"
+        case .thirty: return "Auto-stops after 30 minutes"
+        case .sixty: return "Auto-stops after 1 hour"
+        case .oneTwenty: return "Auto-stops after 2 hours"
+        }
+    }
+
+    /// Seconds until auto-stop, or nil when disabled.
+    var seconds: TimeInterval? {
+        rawValue == 0 ? nil : TimeInterval(rawValue * 60)
+    }
+}
+
+// MARK: - Grid Style
+
+enum GridStyle: String, CaseIterable, Identifiable {
+    case off, thirds, crosshair, square
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .off: return "Off"
+        case .thirds: return "Rule of Thirds"
+        case .crosshair: return "Crosshair"
+        case .square: return "Center Square"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .off: return "grid"
+        case .thirds: return "grid"
+        case .crosshair: return "plus"
+        case .square: return "square.dashed"
+        }
+    }
+}
+
+// MARK: - Quick Capture Presets
+
+struct CapturePreset: Identifiable {
+    let id: String
+    let name: String
+    let icon: String
+    let detail: String
+    let resolution: Resolution
+    let quality: Quality
+    let frameRate: FrameRate
+    let useHEVC: Bool
+    let recordAudio: Bool
+
+    static let all: [CapturePreset] = [
+        CapturePreset(
+            id: "allday",
+            name: "All Day",
+            icon: "battery.100",
+            detail: "720p · Data Saver · ~123 MB/h",
+            resolution: .p720,
+            quality: .ultraLow,
+            frameRate: .fps30,
+            useHEVC: true,
+            recordAudio: true
+        ),
+        CapturePreset(
+            id: "balanced",
+            name: "Balanced",
+            icon: "scale.3d",
+            detail: "1080p · Medium · everyday use",
+            resolution: .p1080,
+            quality: .medium,
+            frameRate: .fps30,
+            useHEVC: true,
+            recordAudio: true
+        ),
+        CapturePreset(
+            id: "quality",
+            name: "High Quality",
+            icon: "sparkles",
+            detail: "4K · High · best detail",
+            resolution: .p2160,
+            quality: .high,
+            frameRate: .fps30,
+            useHEVC: true,
+            recordAudio: true
+        ),
+        CapturePreset(
+            id: "social",
+            name: "Social",
+            icon: "person.2.fill",
+            detail: "1080p · High · 30 fps",
+            resolution: .p1080,
+            quality: .high,
+            frameRate: .fps30,
+            useHEVC: true,
+            recordAudio: true
+        ),
+        CapturePreset(
+            id: "silent",
+            name: "Silent Long",
+            icon: "mic.slash.fill",
+            detail: "720p · Saver · no audio",
+            resolution: .p720,
+            quality: .ultraLow,
+            frameRate: .fps24,
+            useHEVC: true,
+            recordAudio: false
+        )
+    ]
+}
+
 // MARK: - White Balance Presets
 
 enum WhiteBalancePreset: String, CaseIterable, Identifiable {
@@ -342,6 +477,12 @@ final class AppSettings: ObservableObject {
     @Published var countdownTimer: CountdownTimer {
         didSet { store.set(countdownTimer.rawValue, forKey: "countdownTimer") }
     }
+    @Published var maxDuration: MaxDuration {
+        didSet { store.set(maxDuration.rawValue, forKey: "maxDuration") }
+    }
+    @Published var gridStyle: GridStyle {
+        didSet { store.set(gridStyle.rawValue, forKey: "gridStyle") }
+    }
     @Published var showLevelGauge: Bool {
         didSet { store.set(showLevelGauge, forKey: "showLevelGauge") }
     }
@@ -391,6 +532,16 @@ final class AppSettings: ObservableObject {
         didSet { store.set(hapticFeedbackEnabled, forKey: "hapticFeedbackEnabled") }
     }
 
+    /// Applies a capture preset. Forces video mode for recording-oriented presets.
+    func applyPreset(_ preset: CapturePreset) {
+        cameraMode = .video
+        resolution = preset.resolution
+        quality = preset.quality
+        frameRate = preset.frameRate
+        useHEVC = preset.useHEVC
+        recordAudio = preset.recordAudio
+    }
+
     private init() {
         cameraMode       = CameraMode(rawValue: store.string(forKey: "cameraMode") ?? "") ?? .video
         slowMoFrameRate  = SlowMoFrameRate(rawValue: store.integer(forKey: "slowMoFrameRate")) ?? .fps120
@@ -401,6 +552,15 @@ final class AppSettings: ObservableObject {
         saveLocation     = SaveLocation(rawValue: store.string(forKey: "saveLocation") ?? "") ?? .photos
         splitInterval    = SplitInterval(rawValue: store.string(forKey: "splitInterval") ?? "") ?? .off
         countdownTimer   = CountdownTimer(rawValue: store.integer(forKey: "countdownTimer")) ?? .off
+        maxDuration      = MaxDuration(rawValue: store.integer(forKey: "maxDuration")) ?? .off
+        // Migrate old showGrid bool → gridStyle if gridStyle not yet stored
+        if let raw = store.string(forKey: "gridStyle"), let style = GridStyle(rawValue: raw) {
+            gridStyle = style
+        } else if store.object(forKey: "showGrid") as? Bool == true {
+            gridStyle = .thirds
+        } else {
+            gridStyle = .off
+        }
         showLevelGauge   = store.object(forKey: "showLevelGauge") as? Bool ?? false
         exposureBias     = store.object(forKey: "exposureBias") as? Float ?? 0.0
         whiteBalance     = WhiteBalancePreset(rawValue: store.string(forKey: "whiteBalance") ?? "") ?? .auto
