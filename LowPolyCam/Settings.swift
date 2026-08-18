@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import VideoToolbox
 import Combine
 import SwiftUI
 
@@ -667,10 +668,37 @@ struct EncodePlan {
 
 enum Encoder {
 
+    // On devices without a dedicated hardware HEVC encoder block (A10/A10X
+    // Fusion and earlier — hardware HEVC encode arrived with A11), asking
+    // AVAssetWriter for HEVC doesn't reliably fail: VideoToolbox can silently
+    // fall back to a *software* HEVC encoder instead of returning an error.
+    // Software HEVC encoding 4K30 in real time is far too slow for those
+    // chips and is what was actually causing the sustained frame drops
+    // (Photos reporting ~29 fps or lower) — not bitrate. This checks the
+    // real hardware encoder list once and caches the result, so HEVC is only
+    // ever selected when there's an actual hardware encoder for it.
+    private static let hasHardwareHEVCEncoder: Bool = {
+        var encoderList: CFArray?
+        let status = VTCopyVideoEncoderList(nil, &encoderList)
+        guard status == noErr, let list = encoderList as? [[String: Any]] else {
+            // If the query itself fails/behaves unexpectedly, don't gamble on
+            // HEVC — fall back to H.264, which every device supports in
+            // hardware. Worst case we lose HEVC's size advantage; we never
+            // risk landing on a slow software encoder.
+            return false
+        }
+        return list.contains { entry in
+            guard let codecTypeNum = entry[kVTVideoEncoderList_CodecType as String] as? NSNumber else { return false }
+            let isHEVC = codecTypeNum.uint32Value == kCMVideoCodecType_HEVC
+            let isHardware = (entry[kVTVideoEncoderList_IsHardwareAccelerated as String] as? Bool) ?? false
+            return isHEVC && isHardware
+        }
+    }()
+
     // Conservative rates for A10 VideoDataOutput+AssetWriter path.
     // Higher values caused systematic frame drops → Photos showed ~24–26 fps.
     private static let videoKbps: [Resolution: [Quality: Int]] = [
-        .p2160: [.high: 8000,  .medium: 5500,  .low: 3500, .ultraLow: 2200],
+        .p2160: [.high: 7000,  .medium: 5000,  .low: 3200, .ultraLow: 2000],
         .p1080: [.high: 6000,  .medium: 3000,  .low: 1500, .ultraLow: 400],
         .p720:  [.high: 3000,  .medium: 1500,  .low: 800,  .ultraLow: 250],
         .p480:  [.high: 1500,  .medium: 800,   .low: 400,  .ultraLow: 130],
@@ -700,7 +728,10 @@ enum Encoder {
         let px = res.pixels
 
         let baseKbps = videoKbps[res]?[settings.quality] ?? 600
-        let codecMultiplier = settings.useHEVC ? 1.0 : h264Multiplier
+        // Never select HEVC without a hardware encoder for it — see
+        // hasHardwareHEVCEncoder above.
+        let effectiveUsesHEVC = settings.useHEVC && hasHardwareHEVCEncoder
+        let codecMultiplier = effectiveUsesHEVC ? 1.0 : h264Multiplier
         let fpsFactor: Double
         if isSlow {
             fpsFactor = fps >= 240 ? 4.2 : 2.5
@@ -722,7 +753,7 @@ enum Encoder {
             audioBitrate: aKbps * 1000,
             keyFrameInterval: gopSeconds * fps,
             frameRate: fps,
-            codec: settings.useHEVC ? .hevc : .h264,
+            codec: effectiveUsesHEVC ? .hevc : .h264,
             hasAudio: settings.recordAudio,
             saveLocation: settings.saveLocation,
             splitInterval: settings.splitInterval
