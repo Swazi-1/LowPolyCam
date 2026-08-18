@@ -48,8 +48,14 @@ struct SettingsScreen: View {
                     frameRateSection
                 }
                 qualitySection
+                if settings.cameraMode == .video {
+                    presetsSection
+                }
                 saveSection
                 splitSection
+                if settings.cameraMode != .photo {
+                    maxDurationSection
+                }
                 estimateSection
                 cameraSection
                 feedbackSection
@@ -175,6 +181,69 @@ struct SettingsScreen: View {
         }
     }
 
+    private var presetsSection: some View {
+        Section(header: Text("Quick Presets").font(.system(size: 13, weight: .semibold)),
+                footer: Text("One-tap setups for common shooting styles. You can still tweak anything after applying.")) {
+            ForEach(CapturePreset.all) { preset in
+                Button(action: {
+                    settings.applyPreset(preset)
+                    recorder.updateCaptureFormat()
+                    recorder.syncMicInput()
+                }) {
+                    HStack(spacing: 12) {
+                        Image(systemName: preset.icon)
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(.white)
+                            .frame(width: 30, height: 30)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [settings.accentColor.bright, settings.accentColor.color],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        )
+                                    )
+                            )
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(preset.name)
+                                .font(.system(size: 16, weight: .semibold, design: .rounded))
+                                .foregroundColor(.primary)
+                            Text(preset.detail)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.secondary.opacity(0.5))
+                    }
+                    .padding(.vertical, 2)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private var maxDurationSection: some View {
+        Section(header: Text("Auto-Stop").font(.system(size: 13, weight: .semibold)),
+                footer: Text("Automatically stops the recording when the timer hits the limit. Useful for unattended or battery-conscious sessions.")) {
+            Picker(selection: $settings.maxDuration) {
+                ForEach(MaxDuration.allCases) { d in
+                    Text(d.label).tag(d)
+                }
+            } label: {
+                Label("Max duration", systemImage: "timer")
+                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.deep))
+            }
+            if settings.maxDuration != .off {
+                Text(settings.maxDuration.subtitle)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.secondary)
+            }
+        }
+    }
+
     private var cameraSection: some View {
         Section(header: Text("Camera Tools").font(.system(size: 13, weight: .semibold)),
                 footer: Text(recorder.stabilizationSupported
@@ -199,7 +268,11 @@ struct SettingsScreen: View {
             }
             .onChange(of: settings.recordAudio) { _ in recorder.syncMicInput() }
 
-            Toggle(isOn: $settings.showGrid) {
+            Picker(selection: $settings.gridStyle) {
+                ForEach(GridStyle.allCases) { style in
+                    Text(style.label).tag(style)
+                }
+            } label: {
                 Label("Grid overlay", systemImage: "grid")
                     .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
             }
