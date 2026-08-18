@@ -70,10 +70,28 @@ enum Resolution: String, CaseIterable, Identifiable {
 
 enum CameraMode: String, CaseIterable, Identifiable {
     case video = "VIDEO"
+    case photo = "PHOTO"
     case slowMo = "SLO-MO"
 
     var id: String { rawValue }
     var label: String { rawValue }
+}
+
+// MARK: - Photo Megapixels
+
+enum PhotoMegapixels: Double, CaseIterable, Identifiable {
+    case mp2 = 2
+    case mp4 = 4
+    case mp8 = 8
+    case mp12 = 12
+
+    var id: Double { rawValue }
+
+    /// Plain megapixel count (e.g. 12), NOT multiplied by 1,000,000 —
+    /// callers that need raw pixel counts do that multiplication themselves.
+    var megapixels: Double { rawValue }
+
+    var label: String { "\(Int(rawValue))MP" }
 }
 
 // MARK: - Frame rate
@@ -326,6 +344,12 @@ final class AppSettings: ObservableObject {
     @Published var accentColor: AccentColor {
         didSet { store.set(accentColor.rawValue, forKey: "accentColor") }
     }
+    @Published var shutterSoundEnabled: Bool {
+        didSet { store.set(shutterSoundEnabled, forKey: "shutterSoundEnabled") }
+    }
+    @Published var photoMegapixels: PhotoMegapixels {
+        didSet { store.set(photoMegapixels.rawValue, forKey: "photoMegapixels") }
+    }
 
     private init() {
         cameraMode       = CameraMode(rawValue: store.string(forKey: "cameraMode") ?? "") ?? .video
@@ -348,6 +372,8 @@ final class AppSettings: ObservableObject {
         showGrid         = store.object(forKey: "showGrid") as? Bool ?? false
         autoDimOnRecord  = store.object(forKey: "autoDimOnRecord") as? Bool ?? false
         accentColor      = AccentColor(rawValue: store.string(forKey: "accentColor") ?? "") ?? .mint
+        shutterSoundEnabled = store.object(forKey: "shutterSoundEnabled") as? Bool ?? true
+        photoMegapixels  = PhotoMegapixels(rawValue: store.object(forKey: "photoMegapixels") as? Double ?? 12.0) ?? .mp12
     }
 }
 
