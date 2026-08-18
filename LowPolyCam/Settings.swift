@@ -19,6 +19,20 @@ enum PhysicalOrientation {
         case .portraitUpsideDown: return 180
         }
     }
+
+    /// Maps the physically-measured device orientation to the capture
+    /// connection orientation Apple expects. Note AVFoundation's landscape
+    /// naming is mirrored relative to UIKit's: when the device is physically
+    /// rotated so the home-button/notch side is on the right (UIKit
+    /// `.landscapeLeft`), AVCaptureVideoOrientation calls that `.landscapeRight`.
+    var videoOrientation: AVCaptureVideoOrientation {
+        switch self {
+        case .portrait: return .portrait
+        case .landscapeLeft: return .landscapeRight
+        case .landscapeRight: return .landscapeLeft
+        case .portraitUpsideDown: return .portraitUpsideDown
+        }
+    }
 }
 
 // MARK: - Resolution
