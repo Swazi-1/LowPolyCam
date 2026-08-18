@@ -2,7 +2,7 @@ import SwiftUI
 import AVFoundation
 import UIKit
 
-/// A single recorded clip on disk, with metadata for display.
+/// A single recorded clip or photo on disk, with metadata for display.
 struct RecordedClip: Identifiable, Equatable {
     let id: URL
     let url: URL
@@ -10,6 +10,7 @@ struct RecordedClip: Identifiable, Equatable {
     let createdAt: Date
     let fileSize: Int64
     let duration: TimeInterval
+    let isPhoto: Bool
 
     static func == (lhs: RecordedClip, rhs: RecordedClip) -> Bool { lhs.id == rhs.id }
 }
@@ -73,7 +74,11 @@ struct ClipGalleryScreen: View {
         .accentColor(Palette.mint)
         .onAppear(perform: reload)
         .sheet(item: $playingClip) { clip in
-            ClipPlayerView(url: clip.url)
+            if clip.isPhoto {
+                PhotoPreviewView(url: clip.url)
+            } else {
+                ClipPlayerView(url: clip.url)
+            }
         }
         .sheet(item: shareBinding) { wrapper in
             ShareSheet(items: wrapper.items)
@@ -138,7 +143,7 @@ struct ClipGalleryScreen: View {
                     .font(.system(size: 20))
             }
 
-            Image(systemName: "film")
+            Image(systemName: clip.isPhoto ? "photo" : "film")
                 .font(.system(size: 18))
                 .foregroundColor(Palette.mint)
                 .frame(width: 28, height: 28)
@@ -150,7 +155,9 @@ struct ClipGalleryScreen: View {
                     .font(.system(size: 14, weight: .semibold, design: .rounded))
                     .foregroundColor(.white)
                     .lineLimit(1)
-                Text("\(relativeDate(clip.createdAt)) · \(durationLabel(clip.duration)) · \(byteFormatter.string(fromByteCount: clip.fileSize))")
+                Text(clip.isPhoto
+                     ? "\(relativeDate(clip.createdAt)) · \(byteFormatter.string(fromByteCount: clip.fileSize))"
+                     : "\(relativeDate(clip.createdAt)) · \(durationLabel(clip.duration)) · \(byteFormatter.string(fromByteCount: clip.fileSize))")
                     .font(.system(size: 12))
                     .foregroundColor(.white.opacity(0.5))
             }
@@ -265,14 +272,17 @@ struct ClipGalleryScreen: View {
 
             let loaded: [RecordedClip] = files.compactMap { url in
                 let ext = url.pathExtension.lowercased()
-                guard ext == "mov" || ext == "mp4" else { return nil }
+                let isVideo = (ext == "mov" || ext == "mp4")
+                let isPhoto = (ext == "heic" || ext == "jpg" || ext == "jpeg")
+                guard isVideo || isPhoto else { return nil }
                 let values = try? url.resourceValues(forKeys: Set(keys))
                 let created = values?.creationDate ?? .distantPast
                 let size = Int64(values?.fileSize ?? 0)
-                let duration = CMTimeGetSeconds(AVURLAsset(url: url).duration)
+                let duration = isVideo ? CMTimeGetSeconds(AVURLAsset(url: url).duration) : 0
                 return RecordedClip(id: url, url: url, name: url.deletingPathExtension().lastPathComponent,
                                      createdAt: created, fileSize: size,
-                                     duration: duration.isFinite ? duration : 0)
+                                     duration: duration.isFinite ? duration : 0,
+                                     isPhoto: isPhoto)
             }.sorted { $0.createdAt > $1.createdAt }
 
             DispatchQueue.main.async {
@@ -341,4 +351,62 @@ private struct ShareSheet: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+}
+
+/// Simple full-screen still-image preview for photos saved by the app,
+/// mirroring ClipPlayerView's chrome so gallery browsing feels consistent
+/// whether you tap a video or a photo.
+struct PhotoPreviewView: View {
+    let url: URL
+    @Environment(\.presentationMode) private var presentation
+    @State private var image: UIImage?
+    @State private var loadFailed = false
+
+    var body: some View {
+        NavigationView {
+            ZStack {
+                Color.black.ignoresSafeArea()
+                if let image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .ignoresSafeArea(edges: .bottom)
+                } else if loadFailed {
+                    VStack(spacing: 16) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 40))
+                            .foregroundColor(Palette.amber)
+                            .shadow(color: Palette.amber.opacity(0.5), radius: 10)
+                        Text("Unable to load photo")
+                            .font(.headline)
+                            .foregroundColor(.white)
+                        Text("The photo file could not be found or opened.")
+                            .font(.subheadline)
+                            .foregroundColor(.white.opacity(0.6))
+                    }
+                    .padding()
+                } else {
+                    ProgressView().tint(Palette.mintBright).scaleEffect(1.2)
+                }
+            }
+            .navigationBarTitle("Preview", displayMode: .inline)
+            .navigationBarItems(trailing: Button("Done") {
+                presentation.wrappedValue.dismiss()
+            })
+        }
+        .navigationViewStyle(StackNavigationViewStyle())
+        .accentColor(Palette.mint)
+        .onAppear {
+            DispatchQueue.global(qos: .userInitiated).async {
+                let loaded = UIImage(contentsOfFile: url.path)
+                DispatchQueue.main.async {
+                    if let loaded = loaded {
+                        self.image = loaded
+                    } else {
+                        self.loadFailed = true
+                    }
+                }
+            }
+        }
+    }
 }
