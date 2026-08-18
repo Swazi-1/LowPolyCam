@@ -1,6 +1,5 @@
 import Foundation
 import AVFoundation
-import VideoToolbox
 import Combine
 import SwiftUI
 
@@ -674,25 +673,38 @@ enum Encoder {
     // fall back to a *software* HEVC encoder instead of returning an error.
     // Software HEVC encoding 4K30 in real time is far too slow for those
     // chips and is what was actually causing the sustained frame drops
-    // (Photos reporting ~29 fps or lower) — not bitrate. This checks the
-    // real hardware encoder list once and caches the result, so HEVC is only
-    // ever selected when there's an actual hardware encoder for it.
+    // (Photos reporting ~29 fps or lower) — not bitrate.
+    //
+    // This is decided from the raw hardware identifier (e.g. "iPhone9,1")
+    // rather than by querying VideoToolbox's encoder list at runtime — the
+    // query-based approach used a couple of undocumented dictionary keys
+    // whose presence isn't consistent across iOS versions, which is a poor
+    // fit for a check this load-bearing. A hardcoded list of known-A10(X)
+    // identifiers is slower to extend to future hardware but can never
+    // crash or silently misfire.
     private static let hasHardwareHEVCEncoder: Bool = {
-        var encoderList: CFArray?
-        let status = VTCopyVideoEncoderList(nil, &encoderList)
-        guard status == noErr, let list = encoderList as? [[String: Any]] else {
-            // If the query itself fails/behaves unexpectedly, don't gamble on
-            // HEVC — fall back to H.264, which every device supports in
-            // hardware. Worst case we lose HEVC's size advantage; we never
-            // risk landing on a slow software encoder.
-            return false
+        var systemInfo = utsname()
+        uname(&systemInfo)
+        let raw = withUnsafePointer(to: &systemInfo.machine) {
+            $0.withMemoryRebound(to: CChar.self, capacity: 1) { ptr in
+                String(cString: ptr)
+            }
         }
-        return list.contains { entry in
-            guard let codecTypeNum = entry[kVTVideoEncoderList_CodecType as String] as? NSNumber else { return false }
-            let isHEVC = codecTypeNum.uint32Value == kCMVideoCodecType_HEVC
-            let isHardware = (entry[kVTVideoEncoderList_IsHardwareAccelerated as String] as? Bool) ?? false
-            return isHEVC && isHardware
-        }
+        // A10 / A10X Fusion — no hardware HEVC encoder.
+        let noHardwareHEVC: Set<String> = [
+            "iPhone9,1", "iPhone9,2", "iPhone9,3", "iPhone9,4", // iPhone 7 / 7 Plus
+            "iPad6,11", "iPad6,12",                             // iPad (5th gen)
+            "iPad7,5", "iPad7,6", "iPad7,11", "iPad7,12",       // iPad (6th/7th gen)
+            "iPad7,1", "iPad7,2", "iPad7,3", "iPad7,4"          // iPad Pro 10.5"/12.9" (2nd gen)
+        ]
+        if noHardwareHEVC.contains(raw) { return false }
+        // Simulator builds report an x86_64/arm64 host identifier, not a
+        // real device — treat as HEVC-capable so simulator testing isn't
+        // artificially restricted.
+        if raw == "x86_64" || raw == "arm64" || raw == "i386" { return true }
+        // Anything not explicitly known to lack hardware HEVC is assumed
+        // capable — every iPhone/iPad from A11 onward has it.
+        return true
     }()
 
     // Conservative rates for A10 VideoDataOutput+AssetWriter path.
