@@ -45,7 +45,7 @@ struct SettingsScreen: View {
                     // Photo mode now always captures at full sensor resolution — no MP picker needed.
                 } else {
                     resolutionSection
-                    frameRateSection
+                    // Frame rate fixed at 30 fps for iPhone 7 focus
                 }
                 qualitySection
                 if settings.cameraMode == .video {
