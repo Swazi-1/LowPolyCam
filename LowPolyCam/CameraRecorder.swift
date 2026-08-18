@@ -168,16 +168,12 @@ final class CameraRecorder: NSObject, ObservableObject {
             guard !appliedThermalMitigation else { return }
             appliedThermalMitigation = true
 
-            // Auto-Cooling: drop frame rate to reduce encoder/GPU load.
-            if settings.cameraMode != .slowMo, settings.frameRate != .fps24 {
-                settings.frameRate = .fps24
-                updateCaptureFormat()
-            }
-            // Dim the screen a little to cut display power draw.
+            // Auto-Cooling: dim the screen to cut display power draw.
+            // Frame rate stays at 30 fps (only rate available for normal video).
             if UIScreen.main.brightness > 0.35 {
                 UIScreen.main.brightness = 0.35
             }
-            notice = "Phone is hot · Cooling down (24 fps)"
+            notice = "Phone is hot · Cooling down"
 
         case .serious:
             if !appliedThermalMitigation {
@@ -718,9 +714,8 @@ final class CameraRecorder: NSObject, ObservableObject {
 
         let supportedRates = FrameRate.allCases.filter { rates.contains($0) }
         let canDo1080 = widestPixels >= 1920 * 1080
-        let canDo4K   = widestPixels >= 3840 * 2160
         let supportedResolutions = Resolution.allCases.filter {
-            ($0 != .p1080 || canDo1080) && ($0 != .p2160 || canDo4K)
+            ($0 != .p1080 || canDo1080)
         }
         let supportedSlowRates = SlowMoFrameRate.allCases.filter { slowRates.contains($0) }
         let supportedSlowRes = Resolution.allCases.filter { slowResolutions.contains($0) }
@@ -851,8 +846,7 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     private var wantsPhysicalWideForFrameRate: Bool {
         settings.cameraMode == .video
-            && settings.frameRate == .fps60
-            && (settings.resolution == .p1080 || settings.resolution == .p2160)
+            && false /* 60 fps removed for iPhone 7 focus */
     }
 
     private var wantsPhysicalWideLens: Bool {
