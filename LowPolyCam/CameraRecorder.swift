@@ -557,7 +557,7 @@ final class CameraRecorder: NSObject, ObservableObject {
             device.activeFormat = format
             let fps = max(1.0, targetFPS.rounded())
             // Higher-precision timescale avoids float rounding drift (e.g. 29.97-ish).
-            let d = CMTimeMake(1000, CMTimeScale(fps * 1000.0))
+            let d = CMTimeMake(value: 1000, timescale: CMTimeScale(fps * 1000.0))
             device.activeVideoMinFrameDuration = d
             device.activeVideoMaxFrameDuration = d
             
