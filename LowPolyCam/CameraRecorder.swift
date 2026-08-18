@@ -1136,19 +1136,32 @@ final class CameraRecorder: NSObject, ObservableObject {
             }
 
             if #available(iOS 16.0, *) {
-                if self.photoOutput.maxPhotoDimensions.width > 0 {
-                    photoSettings.maxPhotoDimensions = self.photoOutput.maxPhotoDimensions
-                }
+                // Don't constrain maxPhotoDimensions on capture — let the sensor output its full
+                // resolution. The PhotoCaptureProcessor.resize() will scale down to user's selected MP.
+                // Setting maxPhotoDimensions here can artificially cap the sensor output before
+                // processing, preventing proper scaling for 12MP/8MP selections.
+                // Sensor will output max, then processor resizes as needed.
             } else {
                 photoSettings.isHighResolutionPhotoEnabled = self.photoOutput.isHighResolutionCaptureEnabled
             }
             photoSettings.flashMode = .off
 
             if let connection = self.photoOutput.connection(with: .video) {
-                if connection.isVideoOrientationSupported { connection.videoOrientation = orientation }
+                if connection.isVideoOrientationSupported {
+                    connection.videoOrientation = orientation
+                }
                 if connection.isVideoMirroringSupported {
                     connection.automaticallyAdjustsVideoMirroring = false
                     connection.isVideoMirrored = mirrored
+                }
+            }
+            
+            // iOS may cache/ignore orientation changes on the connection if not
+            // applied immediately before capture. This ensures the photo output
+            // connection has the latest orientation set by the current session state.
+            if let previewConnection = self.videoOutput.connection(with: .video) {
+                if previewConnection.isVideoOrientationSupported {
+                    previewConnection.videoOrientation = orientation
                 }
             }
 
