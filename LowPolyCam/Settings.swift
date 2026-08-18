@@ -20,16 +20,15 @@ enum PhysicalOrientation {
         }
     }
 
-    /// Maps the physically-measured device orientation to the capture
-    /// connection orientation Apple expects. Note AVFoundation's landscape
-    /// naming is mirrored relative to UIKit's: when the device is physically
-    /// rotated so the home-button/notch side is on the right (UIKit
-    /// `.landscapeLeft`), AVCaptureVideoOrientation calls that `.landscapeRight`.
+    /// Maps our gravity-measured physical orientation directly to AVFoundation's
+    /// capture orientation. This is computed straight from the accelerometer, not
+    /// from UIDevice.orientation, so no UIKit/AVFoundation landscape-swap applies here
+    /// — mapping landscapeLeft/landscapeRight directly (not swapped) is correct.
     var videoOrientation: AVCaptureVideoOrientation {
         switch self {
         case .portrait: return .portrait
-        case .landscapeLeft: return .landscapeRight
-        case .landscapeRight: return .landscapeLeft
+        case .landscapeLeft: return .landscapeLeft
+        case .landscapeRight: return .landscapeRight
         case .portraitUpsideDown: return .portraitUpsideDown
         }
     }
