@@ -10,6 +10,7 @@ struct CameraScreen: View {
     @State private var showSettings = false
     @State private var showPlayer = false
     @State private var showProMenu = false
+    @State private var showGallery = false
     @State private var dimmed = false
     @State private var savedBrightness: CGFloat = UIScreen.main.brightness
     @State private var blink = false
@@ -181,6 +182,15 @@ struct CameraScreen: View {
                 recorder.resumeVolumeMonitoring()
             }
         }
+        .onChange(of: showGallery) { isPresented in
+            if isPresented {
+                recorder.stopMotionUpdates()
+                recorder.pauseVolumeMonitoring()
+            } else {
+                if settings.showLevelGauge { recorder.startMotionUpdates() }
+                recorder.resumeVolumeMonitoring()
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
             if dimmed { leaveDim() }
         }
@@ -191,6 +201,9 @@ struct CameraScreen: View {
             if let url = recorder.lastClipURL {
                 ClipPlayerView(url: url)
             }
+        }
+        .sheet(isPresented: $showGallery) {
+            ClipGalleryScreen(settings: settings)
         }
     }
 
@@ -212,6 +225,10 @@ struct CameraScreen: View {
             compactInfoPill
 
             Spacer()
+
+            facetButton(system: "square.stack.3d.up.fill") { showGallery = true }
+                .disabled(recorder.isRecording || recorder.isSaving)
+                .opacity((recorder.isRecording || recorder.isSaving) ? 0.35 : 1)
 
             facetButton(system: "gearshape.fill") { showSettings = true }
                 .disabled(recorder.isRecording || recorder.isSaving || recorder.isSwitchingCamera)
@@ -243,7 +260,23 @@ struct CameraScreen: View {
                 recordingStatusRow
             } else {
                 HStack(spacing: 6) {
-                    if settings.cameraMode == .slowMo {
+                    if settings.cameraMode == .photo {
+                        Text("PHOTO")
+                            .font(.system(size: 10, weight: .black, design: .rounded))
+                            .foregroundColor(Palette.slateDeep)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(settings.accentColor.bright)
+                            .clipShape(Capsule())
+
+                        Text(settings.photoMegapixels.label)
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(.white)
+
+                        if recorder.isCapturingPhoto {
+                            ProgressView().tint(settings.accentColor.bright).scaleEffect(0.6)
+                        }
+                    } else if settings.cameraMode == .slowMo {
                         Text("SLO-MO")
                             .font(.system(size: 10, weight: .black, design: .rounded))
                             .foregroundColor(Palette.slateDeep)
@@ -271,13 +304,15 @@ struct CameraScreen: View {
                             .foregroundColor(.white.opacity(0.9))
                     }
 
-                    Text("·")
-                        .foregroundColor(Palette.slateLight)
-                        .font(.system(size: 11, weight: .bold))
+                    if settings.cameraMode != .photo {
+                        Text("·")
+                            .foregroundColor(Palette.slateLight)
+                            .font(.system(size: 11, weight: .bold))
 
-                    Text(dataRateLabel)
-                        .font(.system(size: 11, weight: .bold, design: .monospaced))
-                        .foregroundColor(settings.accentColor.bright)
+                        Text(dataRateLabel)
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                            .foregroundColor(settings.accentColor.bright)
+                    }
                 }
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
@@ -297,6 +332,13 @@ struct CameraScreen: View {
                             .foregroundColor(Palette.slateLight)
                             .font(.system(size: 11, weight: .bold))
                         batteryIndicator
+                    }
+
+                    if recorder.thermalState != .nominal && recorder.thermalState != .fair {
+                        Text("·")
+                            .foregroundColor(Palette.slateLight)
+                            .font(.system(size: 11, weight: .bold))
+                        thermalIndicator
                     }
                 }
                 .lineLimit(1)
@@ -374,6 +416,20 @@ struct CameraScreen: View {
             Image(systemName: recorder.batteryCharging ? "battery.100.bolt" : "battery.75")
                 .font(.system(size: 10))
             Text("\(pct)%")
+                .font(.system(size: 11, weight: .semibold))
+        }
+        .foregroundColor(color)
+    }
+
+    private var thermalIndicator: some View {
+        let state = recorder.thermalState
+        let color: Color = state == .critical ? Palette.record
+            : state == .serious ? settings.accentColor.bright
+            : .white.opacity(0.7)
+        return HStack(spacing: 3) {
+            Image(systemName: state.icon)
+                .font(.system(size: 10))
+            Text(state.shortLabel)
                 .font(.system(size: 11, weight: .semibold))
         }
         .foregroundColor(color)
@@ -690,8 +746,8 @@ struct CameraScreen: View {
                     facetButton(system: "arrow.triangle.2.circlepath.camera.fill", size: 56) {
                         recorder.flipCamera()
                     }
-                    .disabled(recorder.isSaving || recorder.isSwitchingCamera || countdownRemaining > 0)
-                    .opacity((recorder.isSaving || recorder.isSwitchingCamera || countdownRemaining > 0) ? 0.35 : 1)
+                    .disabled(recorder.isSaving || recorder.isSwitchingCamera || recorder.isCapturingPhoto || countdownRemaining > 0)
+                    .opacity((recorder.isSaving || recorder.isSwitchingCamera || recorder.isCapturingPhoto || countdownRemaining > 0) ? 0.35 : 1)
                 }
             }
             .padding(.horizontal, 8)
@@ -700,7 +756,19 @@ struct CameraScreen: View {
 
     private var recordButton: some View {
         Button {
-            guard !recorder.isSwitchingCamera, !isPinching else { return }
+            guard !recorder.isSwitchingCamera, !isPinching, !recorder.isCapturingPhoto else { return }
+
+            if settings.cameraMode == .photo {
+                if countdownRemaining > 0 {
+                    cancelCountdown()
+                } else if settings.countdownTimer != .off {
+                    startCountdown()
+                } else {
+                    recorder.capturePhoto()
+                }
+                return
+            }
+
             if recorder.isRecording {
                 stopHaptic.impactOccurred()
                 stopHaptic.prepare()
@@ -732,7 +800,7 @@ struct CameraScreen: View {
                     .stroke(settings.accentColor.deep.opacity(0.3), lineWidth: 1.5)
                     .frame(width: 66, height: 66)
 
-                if recorder.isSaving {
+                if recorder.isSaving || recorder.isCapturingPhoto {
                     ProgressView().tint(settings.accentColor.bright).scaleEffect(1.2)
                 } else if recorder.isRecording {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -754,7 +822,7 @@ struct CameraScreen: View {
             .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .disabled(recorder.isSaving || recorder.isSwitchingCamera)
+        .disabled(recorder.isSaving || recorder.isSwitchingCamera || recorder.isCapturingPhoto)
         .animation(.spring(response: 0.35, dampingFraction: 0.7), value: recorder.isRecording)
     }
 
@@ -882,8 +950,12 @@ struct CameraScreen: View {
                 countdownTimer = nil
                 countdownRemaining = 0
                 guard !recorder.isSwitchingCamera else { return }
-                startHaptic.impactOccurred()
-                recorder.startRecording()
+                if settings.cameraMode == .photo {
+                    recorder.capturePhoto()
+                } else {
+                    startHaptic.impactOccurred()
+                    recorder.startRecording()
+                }
             }
         }
     }
@@ -993,6 +1065,7 @@ struct CameraScreen: View {
                 let isSelected = abs(recorder.zoomFactor - preset) < 0.05
                 Button(action: {
                     zoomHaptic.selectionChanged()
+                    if settings.shutterSoundEnabled { SoundPlayer.play(.dial) }
                     recorder.suppressVolumeTriggerBriefly()
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                         recorder.setZoom(factor: preset)
