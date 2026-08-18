@@ -403,7 +403,34 @@ final class CameraRecorder: NSObject, ObservableObject {
                 photoOutput.maxPhotoDimensions = maxDims
             }
         } else {
+            // iOS <16 path (this is what iPhone 7 / iOS 15.8 actually uses).
+            // isHighResolutionCaptureEnabled alone is NOT enough — it captures at
+            // device.activeFormat.highResolutionStillImageDimensions, and activeFormat
+            // is usually whatever video preset is currently applied (often a 16:9 crop,
+            // ~9MP), not the sensor's true full 4:3 12MP resolution. We must find and
+            // switch to the format with the largest highResolutionStillImageDimensions —
+            // but ONLY in photo mode, so we never override the format the user picked
+            // for video/slow-mo recording.
             photoOutput.isHighResolutionCaptureEnabled = true
+
+            guard settings.cameraMode == .photo else { return }
+
+            let bestFormat = device.formats.max { a, b in
+                let aDims = a.highResolutionStillImageDimensions
+                let bDims = b.highResolutionStillImageDimensions
+                return Int(aDims.width) * Int(aDims.height) < Int(bDims.width) * Int(bDims.height)
+            }
+
+            if let bestFormat = bestFormat,
+               device.activeFormat.highResolutionStillImageDimensions != bestFormat.highResolutionStillImageDimensions {
+                do {
+                    try device.lockForConfiguration()
+                    device.activeFormat = bestFormat
+                    device.unlockForConfiguration()
+                } catch {
+                    // If we can't lock, we just keep whatever format is currently active.
+                }
+            }
         }
     }
 
