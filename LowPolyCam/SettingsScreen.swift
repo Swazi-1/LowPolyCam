@@ -84,10 +84,13 @@ struct SettingsScreen: View {
                 aboutSection
             }
             .listStyle(InsetGroupedListStyle())
-            // No implicit animations while scrolling
+            // Isolate list identity per mode so photo/slo-mo don't reuse heavy video cells
+            .id(settings.cameraMode)
+            // Kill implicit animations that fight scrolling on A10
             .animation(nil, value: settings.cameraMode)
             .animation(nil, value: settings.accentColor)
             .animation(nil, value: appliedPresetId)
+            .transaction { $0.animation = nil }
             .navigationBarTitle("Settings", displayMode: .inline)
             .navigationBarItems(trailing: Button(action: {
                 presentation.wrappedValue.dismiss()
@@ -321,12 +324,6 @@ struct SettingsScreen: View {
                 Label("Horizon level meter", systemImage: "gyroscope")
                     .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
             }
-
-            Toggle(isOn: $settings.recordAudio) {
-                Label("Record sound", systemImage: "mic.fill")
-                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.bright))
-            }
-            .onChange(of: settings.recordAudio) { _ in recorder.syncMicInput() }
 
             Picker(selection: $settings.gridStyle) {
                 ForEach(GridStyle.allCases) { style in
