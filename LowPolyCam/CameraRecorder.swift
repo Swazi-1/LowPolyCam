@@ -4,6 +4,8 @@ import Photos
 import MediaPlayer
 import CoreMotion
 import Combine
+import AudioToolbox
+import ImageIO
 
 final class CameraRecorder: NSObject, ObservableObject {
 
@@ -42,6 +44,14 @@ final class CameraRecorder: NSObject, ObservableObject {
     @Published private(set) var lastClipThumbnail: UIImage?
     @Published private(set) var lastClipURL: URL?
 
+    // Photo mode
+    @Published private(set) var isCapturingPhoto = false
+    @Published private(set) var availablePhotoMegapixels: [PhotoMegapixels] = PhotoMegapixels.allCases
+    @Published private(set) var lastPhotoThumbnail: UIImage?
+
+    // Thermal state
+    @Published private(set) var thermalState: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState
+
     // Level Telemetry & Physical Orientation
     @Published private(set) var physicalOrientation: PhysicalOrientation = .portrait
     @Published private(set) var uiRotationAngle: Double = 0
@@ -60,6 +70,9 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     private let videoOutput = AVCaptureVideoDataOutput()
     private let audioOutput = AVCaptureAudioDataOutput()
+    private let photoOutput = AVCapturePhotoOutput()
+    private var activePhotoProcessors: [Int64: PhotoCaptureProcessor] = [:]
+    private var appliedThermalMitigation = false
     private var cameraInput: AVCaptureDeviceInput?
     private var micInput: AVCaptureDeviceInput?
     private var position: AVCaptureDevice.Position = .back
@@ -125,6 +138,52 @@ final class CameraRecorder: NSObject, ObservableObject {
         NotificationCenter.default.addObserver(
             self, selector: #selector(handleAudioInterruption),
             name: AVAudioSession.interruptionNotification, object: nil)
+
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleThermalStateChanged),
+            name: ProcessInfo.thermalStateDidChangeNotification, object: nil)
+        thermalState = ProcessInfo.processInfo.thermalState
+    }
+
+    // MARK: Thermal State Monitor
+
+    @objc private func handleThermalStateChanged() {
+        let state = ProcessInfo.processInfo.thermalState
+        DispatchQueue.main.async { [weak self] in
+            self?.applyThermalState(state)
+        }
+    }
+
+    private func applyThermalState(_ state: ProcessInfo.ThermalState) {
+        thermalState = state
+
+        switch state {
+        case .critical:
+            guard !appliedThermalMitigation else { return }
+            appliedThermalMitigation = true
+
+            // Auto-Cooling: drop frame rate to reduce encoder/GPU load.
+            if settings.cameraMode != .slowMo, settings.frameRate != .fps24 {
+                settings.frameRate = .fps24
+                updateCaptureFormat()
+            }
+            // Dim the screen a little to cut display power draw.
+            if UIScreen.main.brightness > 0.35 {
+                UIScreen.main.brightness = 0.35
+            }
+            notice = "Phone is hot · Cooling down (24 fps)"
+
+        case .serious:
+            if !appliedThermalMitigation {
+                notice = "Phone is warm"
+            }
+
+        case .nominal, .fair:
+            appliedThermalMitigation = false
+
+        @unknown default:
+            break
+        }
     }
 
     deinit {
@@ -316,13 +375,48 @@ final class CameraRecorder: NSObject, ObservableObject {
         audioOutput.setSampleBufferDelegate(self, queue: ioQueue)
         if session.canAddOutput(audioOutput) { session.addOutput(audioOutput) }
 
+        if session.canAddOutput(photoOutput) { session.addOutput(photoOutput) }
+
         session.commitConfiguration()
 
         configureVideoConnection()
         refreshCapabilitiesThenApplyFormat()
+        configurePhotoOutput()
         refreshTorchState()
         resetFocusAndExposureToAuto()
         syncMicInput()
+    }
+
+    // MARK: Photo Output Configuration
+
+    private func configurePhotoOutput() {
+        guard let device = cameraInput?.device else { return }
+
+        if #available(iOS 16.0, *) {
+            let maxDims = device.activeFormat.supportedMaxPhotoDimensions.max { a, b in
+                Int(a.width) * Int(a.height) < Int(b.width) * Int(b.height)
+            }
+            if let maxDims = maxDims {
+                photoOutput.maxPhotoDimensions = maxDims
+            }
+        } else {
+            photoOutput.isHighResolutionCaptureEnabled = true
+        }
+
+        // Work out which of our MP presets the current lens can actually deliver.
+        let dims = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
+        let nativeMP = (Double(dims.width) * Double(dims.height)) / 1_000_000.0
+        var supported = PhotoMegapixels.allCases.filter { $0.megapixels <= nativeMP + 0.25 }
+        if supported.isEmpty {
+            // Very small native format (e.g. some ultra-wide low-light formats) — still offer the lowest option.
+            supported = [.mp2]
+        }
+        DispatchQueue.main.async {
+            self.availablePhotoMegapixels = supported
+            if !supported.contains(self.settings.photoMegapixels) {
+                self.settings.photoMegapixels = supported.last ?? .mp12
+            }
+        }
     }
 
     private func configureVideoConnection() {
@@ -422,6 +516,7 @@ final class CameraRecorder: NSObject, ObservableObject {
                     self.notice = "\(self.settings.slowMoFrameRate.label) set to \(closestRes.label)"
                 }
                 refreshZoomLimits()
+                configurePhotoOutput()
                 DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
                 return
             }
@@ -434,6 +529,7 @@ final class CameraRecorder: NSObject, ObservableObject {
 
         applyUnifiedHardwareConfiguration(to: device, format: finalFormat, targetFPS: targetFPS)
         refreshZoomLimits()
+        configurePhotoOutput()
         DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
     }
 
@@ -984,6 +1080,108 @@ final class CameraRecorder: NSObject, ObservableObject {
         resetFocusAndExposureToAuto()
     }
 
+    // MARK: Photo Capture
+
+    func capturePhoto() {
+        guard !isCapturingPhoto, !isRecording, !isSwitchingCamera else { return }
+        guard freeBytes > Self.reserveBytes else {
+            notice = "Low storage · Free space needed"
+            return
+        }
+
+        if settings.saveLocation == .photos { ensurePhotosAccess() }
+
+        isCapturingPhoto = true
+
+        let hapticGen = UIImpactFeedbackGenerator(style: .medium)
+        hapticGen.prepare()
+        hapticGen.impactOccurred()
+        if settings.shutterSoundEnabled { SoundPlayer.play(.shutter) }
+
+        let targetMP = settings.photoMegapixels.megapixels
+        let destination = settings.saveLocation
+        let mirrored = isFrontCamera
+
+        sessionQueue.async {
+            var photoSettings: AVCapturePhotoSettings
+            if self.photoOutput.availablePhotoCodecTypes.contains(.hevc) {
+                photoSettings = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.hevc])
+            } else {
+                photoSettings = AVCapturePhotoSettings()
+            }
+
+            if #available(iOS 16.0, *) {
+                if self.photoOutput.maxPhotoDimensions.width > 0 {
+                    photoSettings.maxPhotoDimensions = self.photoOutput.maxPhotoDimensions
+                }
+            } else {
+                photoSettings.isHighResolutionPhotoEnabled = self.photoOutput.isHighResolutionCaptureEnabled
+            }
+            photoSettings.flashMode = .off
+
+            if let connection = self.photoOutput.connection(with: .video) {
+                if connection.isVideoOrientationSupported { connection.videoOrientation = .landscapeRight }
+                if connection.isVideoMirroringSupported {
+                    connection.automaticallyAdjustsVideoMirroring = false
+                    connection.isVideoMirrored = mirrored
+                }
+            }
+
+            let processor = PhotoCaptureProcessor(targetMegapixels: targetMP) { [weak self] image, errorMessage in
+                guard let self = self else { return }
+                DispatchQueue.main.async { self.isCapturingPhoto = false }
+                self.activePhotoProcessors.removeValue(forKey: photoSettings.uniqueID)
+                guard let image = image else {
+                    DispatchQueue.main.async { self.notice = errorMessage ?? "Photo capture failed" }
+                    return
+                }
+                self.savePhoto(image, to: destination)
+            }
+            self.activePhotoProcessors[photoSettings.uniqueID] = processor
+            self.photoOutput.capturePhoto(with: photoSettings, delegate: processor)
+        }
+    }
+
+    private func savePhoto(_ image: UIImage, to destination: SaveLocation) {
+        DispatchQueue.main.async { self.lastPhotoThumbnail = image }
+
+        guard destination == .photos else {
+            ioQueue.async {
+                guard let data = image.jpegData(compressionQuality: 0.92) else {
+                    DispatchQueue.main.async { self.notice = "Photo failed to save" }
+                    return
+                }
+                let f = DateFormatter()
+                f.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+                let url = Self.clipsDirectory.appendingPathComponent("LowPolyCam_\(f.string(from: Date())).jpg")
+                do {
+                    try data.write(to: url, options: .atomic)
+                    DispatchQueue.main.async {
+                        self.notice = "Photo saved to Files"
+                        self.refreshFreeSpace()
+                    }
+                } catch {
+                    DispatchQueue.main.async { self.notice = "Photo failed to save" }
+                }
+            }
+            return
+        }
+
+        let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
+        guard status == .authorized || status == .limited else {
+            DispatchQueue.main.async { self.notice = "Enable Photos access in Settings to save" }
+            return
+        }
+
+        PHPhotoLibrary.shared().performChanges({
+            PHAssetCreationRequest.creationRequestForAsset(from: image)
+        }) { [weak self] success, _ in
+            DispatchQueue.main.async {
+                self?.notice = success ? "Photo saved to Photos" : "Could not save photo"
+            }
+        }
+    }
+
     // MARK: Recording control
 
     func toggleRecording() {
@@ -1021,11 +1219,13 @@ final class CameraRecorder: NSObject, ObservableObject {
         audioLevel = 0
         isRecording = true
         UIApplication.shared.isIdleTimerDisabled = true
+        if settings.shutterSoundEnabled { SoundPlayer.play(.start) }
     }
 
     func stopRecording(notice message: String?) {
         guard isRecording else { return }
 
+        if settings.shutterSoundEnabled { SoundPlayer.play(.stop) }
         stopRequested = true
         isRecording = false
         isSaving = true
@@ -1379,6 +1579,103 @@ final class CameraRecorder: NSObject, ObservableObject {
     enum RecorderError: LocalizedError {
         case cannotAddInput
         var errorDescription: String? { "Encoder rejected format settings" }
+    }
+}
+
+// MARK: - Thermal State Display
+
+extension ProcessInfo.ThermalState {
+    var shortLabel: String {
+        switch self {
+        case .nominal, .fair: return "Normal"
+        case .serious: return "Warm"
+        case .critical: return "Hot"
+        @unknown default: return "Normal"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .nominal, .fair: return "thermometer.low"
+        case .serious: return "thermometer.medium"
+        case .critical: return "thermometer.high"
+        @unknown default: return "thermometer.low"
+        }
+    }
+}
+
+// MARK: - Shutter / Dial Click Sounds
+
+enum SoundPlayer {
+    enum Click: SystemSoundID {
+        case start = 1117   // begin_record
+        case stop = 1118    // end_record
+        case shutter = 1108 // photoShutter
+        case dial = 1104    // Tock
+    }
+
+    static func play(_ click: Click) {
+        AudioServicesPlaySystemSound(click.rawValue)
+    }
+}
+
+// MARK: - Photo Capture Processor
+
+/// Handles a single AVCapturePhotoOutput capture, decoding the delivered
+/// image and downscaling it to the requested megapixel target while
+/// preserving the original aspect ratio and EXIF orientation.
+final class PhotoCaptureProcessor: NSObject, AVCapturePhotoCaptureDelegate {
+
+    private let targetMegapixels: Double
+    private let completion: (UIImage?, String?) -> Void
+
+    init(targetMegapixels: Double, completion: @escaping (UIImage?, String?) -> Void) {
+        self.targetMegapixels = targetMegapixels
+        self.completion = completion
+    }
+
+    func photoOutput(_ output: AVCapturePhotoOutput,
+                     didFinishProcessingPhoto photo: AVCapturePhoto,
+                     error: Error?) {
+        if let error = error {
+            completion(nil, error.localizedDescription)
+            return
+        }
+        guard let data = photo.fileDataRepresentation(), let image = UIImage(data: data) else {
+            completion(nil, "Could not read photo data")
+            return
+        }
+        let resized = Self.resize(image, toMegapixels: targetMegapixels)
+        completion(resized, nil)
+    }
+
+    /// Downscales while keeping aspect ratio and orientation. Never upscales.
+    private static func resize(_ image: UIImage, toMegapixels targetMP: Double) -> UIImage {
+        guard let cg = image.cgImage else { return image }
+        let currentPixels = Double(cg.width * cg.height)
+        let targetPixels = targetMP * 1_000_000
+        guard targetPixels > 0, currentPixels > targetPixels * 1.02 else { return image }
+
+        let scale = (targetPixels / currentPixels).squareRoot()
+        let newWidth = max(1, Int((Double(cg.width) * scale).rounded()))
+        let newHeight = max(1, Int((Double(cg.height) * scale).rounded()))
+
+        let colorSpace = cg.colorSpace ?? CGColorSpaceCreateDeviceRGB()
+        var bitmapInfo = cg.bitmapInfo.rawValue
+        // Normalize to a context-compatible alpha layout.
+        bitmapInfo = (bitmapInfo & ~CGBitmapInfo.alphaInfoMask.rawValue) | CGImageAlphaInfo.premultipliedLast.rawValue
+
+        guard let context = CGContext(data: nil,
+                                       width: newWidth,
+                                       height: newHeight,
+                                       bitsPerComponent: 8,
+                                       bytesPerRow: 0,
+                                       space: colorSpace,
+                                       bitmapInfo: bitmapInfo) else { return image }
+        context.interpolationQuality = .high
+        context.draw(cg, in: CGRect(x: 0, y: 0, width: newWidth, height: newHeight))
+        guard let scaledCG = context.makeImage() else { return image }
+        return UIImage(cgImage: scaledCG, scale: 1, orientation: image.imageOrientation)
     }
 }
 
