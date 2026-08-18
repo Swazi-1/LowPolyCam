@@ -226,9 +226,27 @@ struct CameraScreen: View {
 
             Spacer(minLength: 8)
 
-            facetButton(system: "gearshape.fill") { showSettings = true }
-                .disabled(recorder.isRecording || recorder.isSaving || recorder.isSwitchingCamera)
-                .opacity((recorder.isRecording || recorder.isSaving || recorder.isSwitchingCamera) ? 0.35 : 1)
+            // Settings button with extended rightside hitbox
+            Button(action: { showSettings = true }) {
+                Image(systemName: "gearshape.fill")
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundColor(.white)
+                    .frame(width: 48, height: 48)
+                    .background(Palette.panel.opacity(0.85))
+                    .environment(\.colorScheme, .dark)
+                    .clipShape(Facet(sides: 6, rotation: .pi / 6))
+                    .overlay(
+                        Facet(sides: 6, rotation: .pi / 6)
+                            .stroke(Palette.slateLight.opacity(0.35), lineWidth: 0.8)
+                    )
+                    .shadow(color: .black.opacity(0.2), radius: 6, x: 0, y: 3)
+            }
+            .buttonStyle(.plain)
+            .frame(width: 48, height: 48, alignment: .leading)
+            .contentShape(Rectangle())  // Extend hitbox to right edge
+            .padding(.trailing, -16)     // Negative padding to extend right into safe margin
+            .disabled(recorder.isRecording || recorder.isSaving || recorder.isSwitchingCamera)
+            .opacity((recorder.isRecording || recorder.isSaving || recorder.isSwitchingCamera) ? 0.35 : 1)
         }
     }
 
@@ -264,10 +282,6 @@ struct CameraScreen: View {
                             .padding(.vertical, 2)
                             .background(settings.accentColor.bright)
                             .clipShape(Capsule())
-
-                        Text(settings.photoMegapixels.label)
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundColor(.white)
 
                         if recorder.isCapturingPhoto {
                             ProgressView().tint(settings.accentColor.bright).scaleEffect(0.6)
@@ -734,6 +748,7 @@ struct CameraScreen: View {
                     .buttonStyle(.plain)
                     .disabled(recorder.isSwitchingCamera)
                     .opacity(recorder.isSwitchingCamera ? 0.35 : 1)
+                    .padding(.trailing, 16)  // Push ... button away from shutter
                 }
 
                 recordButton
