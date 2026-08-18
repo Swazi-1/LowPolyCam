@@ -44,6 +44,7 @@ struct SettingsScreen: View {
                 splitSection
                 estimateSection
                 cameraSection
+                feedbackSection
                 appearanceSection
                 advancedSection
                 aboutSection
@@ -190,6 +191,17 @@ struct SettingsScreen: View {
                     .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
             }
 
+            Toggle(isOn: $settings.saveSelfiesUnmirrored) {
+                Label("Save selfies unmirrored", systemImage: "camera.filters")
+                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.deep))
+            }
+        }
+    }
+
+    private var feedbackSection: some View {
+        Section(header: Text("App Feedback").font(.system(size: 13, weight: .semibold)),
+                footer: Text("Sounds, vibrations, and on-screen confirmations the app gives you — none of these change what's actually recorded or saved.")) {
+
             Toggle(isOn: $settings.autoDimOnRecord) {
                 Label("Auto-dim when filming", systemImage: "moon.stars.fill")
                     .labelStyle(SettingsLabelStyle(color: settings.accentColor.deep))
@@ -208,11 +220,6 @@ struct SettingsScreen: View {
             Toggle(isOn: $settings.captureFlashConfirmation) {
                 Label("Flash on capture", systemImage: "bolt.badge.a.fill")
                     .labelStyle(SettingsLabelStyle(color: settings.accentColor.bright))
-            }
-
-            Toggle(isOn: $settings.saveSelfiesUnmirrored) {
-                Label("Save selfies unmirrored", systemImage: "camera.filters")
-                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.deep))
             }
         }
     }
