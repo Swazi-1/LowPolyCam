@@ -38,6 +38,11 @@ struct CameraScreen: View {
     @State private var startHaptic = UIImpactFeedbackGenerator(style: .medium)
     @State private var stopHaptic = UIImpactFeedbackGenerator(style: .light)
     @State private var levelHaptic = UISelectionFeedbackGenerator()
+    // Reused instead of created per-render (see zoomPresetRow/modeSelector) —
+    // allocating + preparing a new UIFeedbackGenerator on every SwiftUI body
+    // re-evaluation is wasted work that adds up on slower A10-class devices.
+    @State private var zoomHaptic = UISelectionFeedbackGenerator()
+    @State private var modeHaptic = UISelectionFeedbackGenerator()
 
     private var plan: EncodePlan { Encoder.plan(for: settings) }
 
@@ -138,6 +143,8 @@ struct CameraScreen: View {
             startHaptic.prepare()
             stopHaptic.prepare()
             levelHaptic.prepare()
+            zoomHaptic.prepare()
+            modeHaptic.prepare()
             // Sync the screen-flash overlay to the moment the sensor actually
             // captures the frame (not to button-tap), so it fires exactly once.
             // On rear camera, iOS's system already shows a flash from the hardware,
@@ -844,7 +851,6 @@ struct CameraScreen: View {
 
     private var modeSelector: some View {
         let modes = CameraMode.allCases
-        let modeHaptic = UISelectionFeedbackGenerator()
 
         return HStack(spacing: 0) {
             ForEach(modes) { mode in
@@ -1077,8 +1083,7 @@ struct CameraScreen: View {
     }
 
     private var zoomPresetRow: some View {
-        let zoomHaptic = UISelectionFeedbackGenerator()
-        return HStack(spacing: 8) {
+        HStack(spacing: 8) {
             ForEach(zoomPresets, id: \.self) { preset in
                 let isSelected = abs(recorder.zoomFactor - preset) < 0.05
                 Button(action: {
