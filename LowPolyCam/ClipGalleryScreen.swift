@@ -32,6 +32,8 @@ struct ClipGalleryScreen: View {
     @State private var confirmDeleteOld = false
     @State private var confirmDeleteSelection = false
     @State private var playingClip: RecordedClip?
+    @State private var renameClip: RecordedClip?
+    @State private var renameText: String = ""
 
     private let byteFormatter: ByteCountFormatter = {
         let f = ByteCountFormatter()
@@ -97,6 +99,16 @@ struct ClipGalleryScreen: View {
                              isPresented: $confirmDeleteSelection, titleVisibility: .visible) {
             Button("Delete Selected", role: .destructive) { deleteSelection() }
             Button("Cancel", role: .cancel) {}
+        }
+        .alert("Rename Clip", isPresented: Binding(
+            get: { renameClip != nil },
+            set: { if !$0 { renameClip = nil } }
+        )) {
+            TextField("Name", text: $renameText)
+            Button("Save") { commitRename() }
+            Button("Cancel", role: .cancel) { renameClip = nil }
+        } message: {
+            Text("Enter a new name for this file.")
         }
     }
 
@@ -201,6 +213,13 @@ struct ClipGalleryScreen: View {
                 Label("Share", systemImage: "square.and.arrow.up")
             }
             .tint(Palette.mintDeep)
+            Button {
+                renameText = (clip.url.deletingPathExtension().lastPathComponent)
+                renameClip = clip
+            } label: {
+                Label("Rename", systemImage: "pencil")
+            }
+            .tint(Palette.violetDeep)
         }
     }
 
@@ -308,6 +327,43 @@ struct ClipGalleryScreen: View {
                 self.clips = loaded
                 self.isLoading = false
             }
+        }
+    }
+
+    private func commitRename() {
+        guard let clip = renameClip else { return }
+        let trimmed = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            renameClip = nil
+            return
+        }
+        // Keep original extension
+        let ext = clip.url.pathExtension
+        let safe = trimmed
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+        let newURL = clip.url.deletingLastPathComponent()
+            .appendingPathComponent(safe)
+            .appendingPathExtension(ext)
+        // Avoid overwriting an existing file
+        var finalURL = newURL
+        if FileManager.default.fileExists(atPath: finalURL.path), finalURL != clip.url {
+            var i = 2
+            while FileManager.default.fileExists(atPath: finalURL.path) {
+                finalURL = clip.url.deletingLastPathComponent()
+                    .appendingPathComponent("\(safe) \(i)")
+                    .appendingPathExtension(ext)
+                i += 1
+            }
+        }
+        do {
+            if finalURL != clip.url {
+                try FileManager.default.moveItem(at: clip.url, to: finalURL)
+            }
+            renameClip = nil
+            reload()
+        } catch {
+            renameClip = nil
         }
     }
 
