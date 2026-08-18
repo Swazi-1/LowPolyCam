@@ -118,7 +118,7 @@ struct CameraScreen: View {
 
                     bottomHUD
                 }
-                .padding(.horizontal, 16)
+                .padding(.horizontal, 18)
                 .padding(.vertical, 10)
             }
         }
@@ -220,15 +220,11 @@ struct CameraScreen: View {
                 Spacer().frame(width: 48, height: 48)
             }
 
-            Spacer()
+            Spacer(minLength: 8)
 
             compactInfoPill
 
-            Spacer()
-
-            facetButton(system: "square.stack.3d.up.fill") { showGallery = true }
-                .disabled(recorder.isRecording || recorder.isSaving)
-                .opacity((recorder.isRecording || recorder.isSaving) ? 0.35 : 1)
+            Spacer(minLength: 8)
 
             facetButton(system: "gearshape.fill") { showSettings = true }
                 .disabled(recorder.isRecording || recorder.isSaving || recorder.isSwitchingCamera)
@@ -691,12 +687,35 @@ struct CameraScreen: View {
                 .disabled(recorder.isSwitchingCamera || recorder.isSaving)
                 .opacity((recorder.isSwitchingCamera || recorder.isSaving) ? 0.35 : 1)
 
-            HStack {
-                if !recorder.isRecording && !recorder.isSaving {
-                    modeSelector
-                        .disabled(recorder.isSwitchingCamera)
-                        .opacity(recorder.isSwitchingCamera ? 0.35 : 1)
+            if !recorder.isRecording && !recorder.isSaving {
+                modeSelector
+                    .disabled(recorder.isSwitchingCamera)
+                    .opacity(recorder.isSwitchingCamera ? 0.35 : 1)
+                    .frame(maxWidth: .infinity, alignment: .center)
+            }
 
+            HStack(alignment: .center) {
+                if !recorder.isRecording && !recorder.isSaving,
+                   let thumb = recorder.lastClipThumbnail ?? recorder.lastPhotoThumbnail {
+                    Button(action: { showGallery = true }) {
+                        Image(uiImage: thumb)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(width: 50, height: 50)
+                            .clipShape(Facet(sides: 6, rotation: .pi / 6))
+                            .overlay(Facet(sides: 6, rotation: .pi / 6).stroke(settings.accentColor.color.opacity(0.7), lineWidth: 1.5))
+                            .shadow(color: .black.opacity(0.3), radius: 5)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    facetButton(system: "square.stack.3d.up.fill", size: 50) { showGallery = true }
+                        .disabled(recorder.isRecording || recorder.isSaving)
+                        .opacity((recorder.isRecording || recorder.isSaving) ? 0.35 : 1)
+                }
+
+                Spacer()
+
+                if !recorder.isRecording && !recorder.isSaving {
                     Button(action: {
                         withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
                             showProMenu.toggle()
@@ -716,25 +735,6 @@ struct CameraScreen: View {
                     .disabled(recorder.isSwitchingCamera)
                     .opacity(recorder.isSwitchingCamera ? 0.35 : 1)
                 }
-            }
-
-            HStack(alignment: .center) {
-                if !recorder.isRecording && !recorder.isSaving, let thumb = recorder.lastClipThumbnail {
-                    Button(action: { showPlayer = true }) {
-                        Image(uiImage: thumb)
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                            .frame(width: 50, height: 50)
-                            .clipShape(Facet(sides: 6, rotation: .pi / 6))
-                            .overlay(Facet(sides: 6, rotation: .pi / 6).stroke(settings.accentColor.color.opacity(0.7), lineWidth: 1.5))
-                            .shadow(color: .black.opacity(0.3), radius: 5)
-                    }
-                    .buttonStyle(.plain)
-                } else {
-                    Spacer().frame(width: 50, height: 50)
-                }
-
-                Spacer()
 
                 recordButton
 
