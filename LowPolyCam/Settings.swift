@@ -578,7 +578,7 @@ final class AppSettings: ObservableObject {
 // MARK: - Accent Colour
 
 enum AccentColor: String, CaseIterable, Identifiable {
-    case mint, violet, amber, red
+    case mint, violet, amber, red, ice
 
     var id: String { rawValue }
 
@@ -588,6 +588,7 @@ enum AccentColor: String, CaseIterable, Identifiable {
         case .violet: return "Dial Lavender"
         case .amber: return "Button Gold"
         case .red: return "Record Red"
+        case .ice: return "Ice Cyan"
         }
     }
 
@@ -597,6 +598,7 @@ enum AccentColor: String, CaseIterable, Identifiable {
         case .violet: return Palette.violet
         case .amber: return Palette.amber
         case .red: return Palette.record
+        case .ice: return Palette.ice
         }
     }
 
@@ -606,6 +608,7 @@ enum AccentColor: String, CaseIterable, Identifiable {
         case .violet: return Palette.violet.opacity(0.9)
         case .amber: return Palette.amberBright
         case .red: return Color(hex: 0xFF7A70)
+        case .ice: return Palette.iceBright
         }
     }
 
@@ -615,6 +618,7 @@ enum AccentColor: String, CaseIterable, Identifiable {
         case .violet: return Palette.violetDeep
         case .amber: return Palette.amberDeep
         case .red: return Palette.record
+        case .ice: return Palette.iceDeep
         }
     }
 }
