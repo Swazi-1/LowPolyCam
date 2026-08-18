@@ -2045,6 +2045,16 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
         let seconds = CMTimeGetSeconds(CMTimeSubtract(pts, recordStartPTS))
         let drops = droppedFrameCount
         let level = currentAudioLevel()
+
+        // Auto-stop when max duration is reached
+        if let limit = self.settings.maxDuration.seconds, seconds >= limit {
+            DispatchQueue.main.async {
+                self.elapsed = seconds
+                self.stopRecording(notice: "Max duration reached · Recording stopped")
+            }
+            return
+        }
+
         DispatchQueue.main.async {
             self.elapsed = seconds
             if self.droppedFrames != drops { self.droppedFrames = drops }
