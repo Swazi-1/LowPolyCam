@@ -1,6 +1,6 @@
 import SwiftUI
 
-// MARK: - Lightweight label style (keeps List scrolling smooth)
+// MARK: - Lightweight label style (keeps List scrolling smooth on A10)
 
 struct SettingsLabelStyle: LabelStyle {
     var color: Color
@@ -14,7 +14,6 @@ struct SettingsLabelStyle: LabelStyle {
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
                         .fill(color)
                 )
-
             configuration.title
                 .font(.system(size: 16, weight: .medium, design: .rounded))
         }
@@ -24,51 +23,68 @@ struct SettingsLabelStyle: LabelStyle {
 struct SettingsScreen: View {
 
     @ObservedObject var settings: AppSettings
-    @ObservedObject var recorder: CameraRecorder
+    /// Recorder is only used for one-shot capability checks + format updates.
+    /// We intentionally do NOT observe live battery/free-space ticks while the
+    /// sheet is open — that was the main source of scroll stutter in photo / slo-mo.
+    let recorder: CameraRecorder
     @Environment(\.presentationMode) private var presentation
 
     @State private var appliedPresetId: String? = nil
     @State private var presetHaptic = UISelectionFeedbackGenerator()
+    @State private var freeBytesSnapshot: Int64 = 0
+    @State private var isFrontSnapshot = false
+    @State private var availableResolutions: [Resolution] = Resolution.allCases
+    @State private var availableFrameRates: [FrameRate] = FrameRate.allCases
+    @State private var availableSlowMoRates: [SlowMoFrameRate] = SlowMoFrameRate.allCases
+    @State private var availableSlowMoResolutions: [Resolution] = [.p1080, .p720]
+    @State private var isSlowMoSupported = true
+    @State private var stabilizationSupported = true
 
     private var plan: EncodePlan { Encoder.plan(for: settings) }
 
     var body: some View {
         NavigationView {
             List {
-                if recorder.isFrontCamera { frontCameraBanner }
+                // 1. Appearance first — quick visual change
+                appearanceSection
 
+                // 2. Mode-specific capture controls
                 if settings.cameraMode == .slowMo {
+                    if isFrontSnapshot { frontCameraBanner }
                     slowMoFrameRateSection
                     slowMoResolutionSection
+                    qualitySection
                 } else if settings.cameraMode == .photo {
-                    // Full-sensor capture — no resolution picker
+                    // Photo uses full sensor — keep UI light
+                    qualitySection
                 } else {
-                    resolutionSection
-                }
-
-                qualitySection
-
-                if settings.cameraMode == .video {
+                    if isFrontSnapshot { frontCameraBanner }
                     presetsSection
+                    resolutionSection
+                    frameRateSection
+                    qualitySection
                 }
 
+                // 3. Save / duration
                 saveSection
-                splitSection
-
                 if settings.cameraMode != .photo {
+                    splitSection
                     maxDurationSection
                 }
 
-                estimateSection
+                // 4. Tools & feedback
                 cameraSection
                 feedbackSection
-                appearanceSection
+
+                // 5. Format + cost
                 advancedSection
+                estimateSection
+
+                // 6. About
                 aboutSection
             }
             .listStyle(InsetGroupedListStyle())
-            // Kill implicit animations that fight scrolling on older devices
-            .animation(nil, value: recorder.isFrontCamera)
+            // No implicit animations while scrolling
             .animation(nil, value: settings.cameraMode)
             .animation(nil, value: settings.accentColor)
             .animation(nil, value: appliedPresetId)
@@ -82,7 +98,18 @@ struct SettingsScreen: View {
         }
         .navigationViewStyle(StackNavigationViewStyle())
         .accentColor(settings.accentColor.color)
-        .onAppear { presetHaptic.prepare() }
+        .onAppear {
+            presetHaptic.prepare()
+            // Snapshot once — prevents continuous body rebuilds from live stats
+            freeBytesSnapshot = recorder.freeBytes
+            isFrontSnapshot = recorder.isFrontCamera
+            availableResolutions = recorder.availableResolutions
+            availableFrameRates = recorder.availableFrameRates
+            availableSlowMoRates = recorder.availableSlowMoRates
+            availableSlowMoResolutions = recorder.availableSlowMoResolutions
+            isSlowMoSupported = recorder.isSlowMoSupportedOnCurrentLens
+            stabilizationSupported = recorder.stabilizationSupported
+        }
     }
 
     // MARK: - Banner
@@ -100,7 +127,7 @@ struct SettingsScreen: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Selfie camera")
                         .font(.system(size: 15, weight: .bold, design: .rounded))
-                    Text("Standard video only. Unsupported slow-mo options stay greyed out.")
+                    Text("Standard video only. Unsupported options stay greyed out.")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -115,12 +142,35 @@ struct SettingsScreen: View {
     private var resolutionSection: some View {
         Section(header: sectionHeader("Resolution", icon: "rectangle.dashed"),
                 footer: Text("Recording at \(plan.sizeLabel).")) {
-            ForEach(Resolution.allCases) { r in
+            ForEach(Resolution.allCases.filter { $0 != .p144 || availableResolutions.contains(.p144) }) { r in
+                let enabled = availableResolutions.contains(r)
                 row(title: r.label,
-                    subtitle: recorder.availableResolutions.contains(r) ? r.detail : "Not on this camera",
+                    subtitle: enabled ? r.detail : "Not on this camera",
                     selected: settings.resolution == r,
-                    enabled: recorder.availableResolutions.contains(r)) {
+                    enabled: enabled) {
                     settings.resolution = r
+                    if let locked = r.lockedFrameRate {
+                        settings.frameRate = locked
+                    }
+                    recorder.updateCaptureFormat()
+                }
+            }
+        }
+    }
+
+    private var frameRateSection: some View {
+        Section(header: sectionHeader("Frame Rate", icon: "timer"),
+                footer: Text(settings.resolution == .p2160
+                             ? "4K is limited to 30 fps on this iPhone."
+                             : "60 fps looks smoother and uses more space.")) {
+            ForEach(FrameRate.allCases) { f in
+                let enabled = availableFrameRates.contains(f)
+                    && !(settings.resolution == .p2160 && f == .fps60)
+                row(title: f.label,
+                    subtitle: enabled ? f.detail : (settings.resolution == .p2160 ? "Not with 4K" : "Not on this camera"),
+                    selected: settings.frameRate == f,
+                    enabled: enabled) {
+                    settings.frameRate = f
                     recorder.updateCaptureFormat()
                 }
             }
@@ -137,11 +187,11 @@ struct SettingsScreen: View {
         }
     }
 
-    // MARK: - Quick Presets (instant)
+    // MARK: - Quick Presets
 
     private var presetsSection: some View {
         Section(header: sectionHeader("Quick Presets", icon: "bolt.fill"),
-                footer: Text("Tap once — applies instantly. You can still tweak anything after.")) {
+                footer: Text("One tap applies instantly. Tweak anything after.")) {
             ForEach(CapturePreset.all) { preset in
                 Button(action: { applyPresetNow(preset) }) {
                     HStack(spacing: 12) {
@@ -185,23 +235,16 @@ struct SettingsScreen: View {
     }
 
     private func applyPresetNow(_ preset: CapturePreset) {
-        // Instant tactile + visual feedback first
         presetHaptic.selectionChanged()
         presetHaptic.prepare()
         appliedPresetId = preset.id
 
-        // Settings apply on main thread immediately
         settings.applyPreset(preset)
-
-        // Heavy camera work already runs off the main queue
         recorder.updateCaptureFormat()
         recorder.syncMicInput()
 
-        // Clear the checkmark after a short moment so it feels responsive
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) {
-            if appliedPresetId == preset.id {
-                appliedPresetId = nil
-            }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            if appliedPresetId == preset.id { appliedPresetId = nil }
         }
     }
 
@@ -219,7 +262,7 @@ struct SettingsScreen: View {
 
     private var splitSection: some View {
         Section(header: sectionHeader("Split Recordings", icon: "scissors"),
-                footer: Text("Shorter segments are easier to transfer and edit. No frames are lost between clips.")) {
+                footer: Text("Shorter segments are easier to transfer and edit. No frames are lost.")) {
             ForEach(SplitInterval.allCases) { interval in
                 row(title: interval.label, subtitle: interval.detail, selected: settings.splitInterval == interval) {
                     settings.splitInterval = interval
@@ -230,7 +273,7 @@ struct SettingsScreen: View {
 
     private var maxDurationSection: some View {
         Section(header: sectionHeader("Auto-Stop", icon: "timer"),
-                footer: Text("Stops the recording when the timer hits the limit. Handy for unattended or battery-saving shoots.")) {
+                footer: Text("Stops recording when the timer hits the limit.")) {
             Picker(selection: $settings.maxDuration) {
                 ForEach(MaxDuration.allCases) { d in
                     Text(d.label).tag(d)
@@ -247,7 +290,7 @@ struct SettingsScreen: View {
         }
     }
 
-    // MARK: - Estimates
+    // MARK: - Estimates (uses snapshot — no live updates)
 
     private var estimateSection: some View {
         Section(header: sectionHeader("Storage Cost", icon: "internaldrive")) {
@@ -255,7 +298,7 @@ struct SettingsScreen: View {
             infoRow("Room left", Fmt.hours(hoursLeft))
             infoRow("Bitrate", "\(plan.videoBitrate / 1000) kbit/s"
                      + (plan.hasAudio ? " + \(plan.audioBitrate / 1000) audio" : ""))
-            infoRow("Free space", Fmt.size(recorder.freeBytes))
+            infoRow("Free space", Fmt.size(freeBytesSnapshot))
         }
     }
 
@@ -263,8 +306,8 @@ struct SettingsScreen: View {
 
     private var cameraSection: some View {
         Section(header: sectionHeader("Camera Tools", icon: "camera.fill"),
-                footer: Text(recorder.stabilizationSupported
-                             ? "Stabilisation steadies the picture. Off = slightly wider view and a little less power."
+                footer: Text(stabilizationSupported
+                             ? "Stabilisation steadies the picture. Off = slightly wider view."
                              : "This camera does not offer stabilisation.")) {
 
             Toggle(isOn: $settings.stabilization) {
@@ -272,7 +315,7 @@ struct SettingsScreen: View {
                     .labelStyle(SettingsLabelStyle(color: settings.accentColor.deep))
             }
             .onChange(of: settings.stabilization) { _ in recorder.updateStabilization() }
-            .disabled(!recorder.stabilizationSupported)
+            .disabled(!stabilizationSupported)
 
             Toggle(isOn: $settings.showLevelGauge) {
                 Label("Horizon level meter", systemImage: "gyroscope")
@@ -305,7 +348,7 @@ struct SettingsScreen: View {
 
     private var feedbackSection: some View {
         Section(header: sectionHeader("Feedback", icon: "hand.tap.fill"),
-                footer: Text("Sounds, haptics and on-screen cues. None of these change what is recorded.")) {
+                footer: Text("Sounds, haptics and on-screen cues. None change what is recorded.")) {
 
             Toggle(isOn: $settings.autoDimOnRecord) {
                 Label("Auto-dim when filming", systemImage: "moon.stars.fill")
@@ -329,11 +372,11 @@ struct SettingsScreen: View {
         }
     }
 
-    // MARK: - Appearance (5 colours)
+    // MARK: - Appearance
 
     private var appearanceSection: some View {
         Section(header: sectionHeader("Appearance", icon: "paintpalette.fill"),
-                footer: Text("Accent colour for the shutter, highlights and controls.")) {
+                footer: Text("Accent colour for shutter, highlights and controls.")) {
             HStack(spacing: 0) {
                 ForEach(AccentColor.allCases) { color in
                     let isSelected = settings.accentColor == color
@@ -352,7 +395,8 @@ struct SettingsScreen: View {
                                         )
                                     )
                                     .frame(width: 34, height: 34)
-                                    .shadow(color: color.color.opacity(isSelected ? 0.45 : 0.15), radius: isSelected ? 6 : 2)
+                                    .shadow(color: color.color.opacity(isSelected ? 0.45 : 0.15),
+                                            radius: isSelected ? 6 : 2)
 
                                 if isSelected {
                                     Facet(sides: 6, rotation: .pi / 6)
@@ -396,8 +440,8 @@ struct SettingsScreen: View {
     private var advancedSection: some View {
         Section(header: sectionHeader("Video Format", icon: "film"),
                 footer: Text(settings.useHEVC
-                             ? "HEVC packs the same picture into roughly half the space. Switch to H.264 if an older player refuses the files."
-                             : "H.264 plays everywhere but needs about 60% more space.")) {
+                             ? "HEVC packs the same picture into roughly half the space."
+                             : "H.264 plays everywhere but needs more space.")) {
 
             row(title: "HEVC",
                 subtitle: "Smaller files · modern default",
@@ -425,7 +469,7 @@ struct SettingsScreen: View {
                      body: "Video is saved in short fragments. If the battery dies, footage up to that moment is recovered.")
             aboutRow(icon: "moon.fill",
                      title: "Screen Must Stay On",
-                     body: "iOS does not allow background filming. Use the moon button to dim the screen while recording.")
+                     body: "iOS does not allow background filming. Use the moon button to dim while recording.")
             aboutRow(icon: "hand.tap.fill",
                      title: "Quick Shortcuts",
                      body: "Double-tap the preview to flip cameras. Volume Up/Down work as a shutter.")
@@ -436,11 +480,11 @@ struct SettingsScreen: View {
 
     private var slowMoFrameRateSection: some View {
         Section(header: sectionHeader("Slow-Mo Speed", icon: "tortoise.fill"),
-                footer: Text(recorder.isSlowMoSupportedOnCurrentLens
+                footer: Text(isSlowMoSupported
                              ? "Higher fps = smoother, slower playback."
                              : "Slow motion is not available on this camera lens.")) {
             ForEach(SlowMoFrameRate.allCases) { rate in
-                let available = recorder.availableSlowMoRates.contains(rate)
+                let available = availableSlowMoRates.contains(rate)
                 row(title: "\(rate.label)  (\(rate.multiplierLabel) slow)",
                     subtitle: available ? rate.detail : "Not available on this camera",
                     selected: settings.slowMoFrameRate == rate,
@@ -455,8 +499,8 @@ struct SettingsScreen: View {
     private var slowMoResolutionSection: some View {
         Section(header: sectionHeader("Slow-Mo Resolution", icon: "rectangle.dashed"),
                 footer: Text("Some frame rates limit the maximum resolution on this iPhone.")) {
-            ForEach(Resolution.allCases) { r in
-                let available = recorder.availableSlowMoResolutions.contains(r)
+            ForEach(Resolution.allCases.filter { $0 != .p2160 }) { r in
+                let available = availableSlowMoResolutions.contains(r)
                 row(title: r.label,
                     subtitle: available ? r.detail : "Not available at \(settings.slowMoFrameRate.label)",
                     selected: settings.slowMoResolution == r,
@@ -566,11 +610,11 @@ struct SettingsScreen: View {
     private var hoursLeft: Double {
         let perHour = plan.megabytesPerHour * 1_000_000
         guard perHour > 0 else { return 0 }
-        return Double(max(0, recorder.freeBytes - CameraRecorder.reserveBytes)) / perHour
+        return Double(max(0, freeBytesSnapshot - CameraRecorder.reserveBytes)) / perHour
     }
 }
 
-// MARK: - Snappy preset button (no delay, big hit area)
+// MARK: - Snappy preset button
 
 private struct PresetButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
