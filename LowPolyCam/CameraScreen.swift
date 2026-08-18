@@ -32,6 +32,9 @@ struct CameraScreen: View {
     // Notice Auto-Dismiss
     @State private var noticeHideToken = 0
 
+    // Capture flash confirmation
+    @State private var showCaptureFlash = false
+
     @State private var startHaptic = UIImpactFeedbackGenerator(style: .medium)
     @State private var stopHaptic = UIImpactFeedbackGenerator(style: .light)
     @State private var levelHaptic = UISelectionFeedbackGenerator()
@@ -88,6 +91,12 @@ struct CameraScreen: View {
                     .allowsHitTesting(false)
                     .animation(.easeInOut(duration: 0.18), value: recorder.isSwitchingCamera)
 
+                // Quick white flash confirming a photo was taken (like Camera.app).
+                Color.white
+                    .opacity(showCaptureFlash ? 0.85 : 0)
+                    .allowsHitTesting(false)
+                    .animation(.easeOut(duration: 0.18), value: showCaptureFlash)
+
                 if dimmed { dimOverlay }
             }
             .ignoresSafeArea()
@@ -136,7 +145,7 @@ struct CameraScreen: View {
             countdownTimer?.invalidate()
         }
         .onChange(of: recorder.isLevel) { isLevel in
-            if isLevel && settings.showLevelGauge {
+            if isLevel && settings.showLevelGauge && settings.hapticFeedbackEnabled {
                 levelHaptic.selectionChanged()
             }
         }
@@ -721,9 +730,9 @@ struct CameraScreen: View {
 
                     Spacer()
 
-                    // Reserve space equal to recordButton's own width so the HStack's
-                    // flexible Spacers don't get pulled toward one side.
-                    Spacer().frame(width: 84 + 16)
+                    // Reserve space equal to recordButton's full footprint (its 84pt
+                    // frame plus shadow bleed) so the "..." button doesn't clip into it.
+                    Spacer().frame(width: 84 + 28)
 
                     if !recorder.isRecording && !recorder.isSaving {
                         Button(action: {
@@ -745,7 +754,7 @@ struct CameraScreen: View {
                         .disabled(recorder.isSwitchingCamera)
                         .opacity(recorder.isSwitchingCamera ? 0.35 : 1)
 
-                        Spacer(minLength: 12)
+                        Spacer(minLength: 16)
                     }
 
                     if recorder.isRecording {
@@ -773,14 +782,20 @@ struct CameraScreen: View {
                 } else if settings.countdownTimer != .off {
                     startCountdown()
                 } else {
+                    if settings.captureFlashConfirmation {
+                        showCaptureFlash = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { showCaptureFlash = false }
+                    }
                     recorder.capturePhoto()
                 }
                 return
             }
 
             if recorder.isRecording {
-                stopHaptic.impactOccurred()
-                stopHaptic.prepare()
+                if settings.hapticFeedbackEnabled {
+                    stopHaptic.impactOccurred()
+                    stopHaptic.prepare()
+                }
                 if dimmed { leaveDim() }
                 recorder.toggleRecording()
             } else {
@@ -789,8 +804,10 @@ struct CameraScreen: View {
                 } else if settings.countdownTimer != .off {
                     startCountdown()
                 } else {
-                    startHaptic.impactOccurred()
-                    startHaptic.prepare()
+                    if settings.hapticFeedbackEnabled {
+                        startHaptic.impactOccurred()
+                        startHaptic.prepare()
+                    }
                     recorder.toggleRecording()
                 }
             }
