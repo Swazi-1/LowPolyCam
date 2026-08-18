@@ -422,7 +422,8 @@ final class CameraRecorder: NSObject, ObservableObject {
             }
 
             if let bestFormat = bestFormat,
-               device.activeFormat.highResolutionStillImageDimensions != bestFormat.highResolutionStillImageDimensions {
+               (device.activeFormat.highResolutionStillImageDimensions.width != bestFormat.highResolutionStillImageDimensions.width ||
+                device.activeFormat.highResolutionStillImageDimensions.height != bestFormat.highResolutionStillImageDimensions.height) {
                 do {
                     try device.lockForConfiguration()
                     device.activeFormat = bestFormat
