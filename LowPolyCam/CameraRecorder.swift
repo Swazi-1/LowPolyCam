@@ -1157,6 +1157,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         // others want it saved exactly as the sensor sees it. New setting controls this.
         let mirrored = isFrontCamera && !settings.saveSelfiesUnmirrored
         let orientation = physicalOrientation.videoOrientation
+        let rotationAngle = physicalOrientation.videoRotationAngle
 
         sessionQueue.async {
             // On iOS <16, still-photo resolution is tied to activeFormat, which is
@@ -1211,12 +1212,28 @@ final class CameraRecorder: NSObject, ObservableObject {
             }
 
             if let connection = self.photoOutput.connection(with: .video) {
-                if connection.isVideoOrientationSupported {
-                    connection.videoOrientation = orientation
-                }
-                if connection.isVideoMirroringSupported {
-                    connection.automaticallyAdjustsVideoMirroring = false
-                    connection.isVideoMirrored = mirrored
+                // videoOrientation/isVideoMirrored are deprecated as of iOS 17 and
+                // are silently ignored on the photo connection there — the still
+                // then saves with the sensor's raw landscape buffer and EXIF
+                // orientation 1, which is the "rotated/flipped" photo bug. Use the
+                // replacement videoRotationAngle/isVideoMirrored(for photo) API
+                // when available, and only fall back to the old API pre-iOS 17.
+                if #available(iOS 17.0, *) {
+                    if connection.isVideoRotationAngleSupported(rotationAngle) {
+                        connection.videoRotationAngle = rotationAngle
+                    }
+                    if connection.isVideoMirroringSupported {
+                        connection.automaticallyAdjustsVideoMirroring = false
+                        connection.isVideoMirrored = mirrored
+                    }
+                } else {
+                    if connection.isVideoOrientationSupported {
+                        connection.videoOrientation = orientation
+                    }
+                    if connection.isVideoMirroringSupported {
+                        connection.automaticallyAdjustsVideoMirroring = false
+                        connection.isVideoMirrored = mirrored
+                    }
                 }
             }
 
