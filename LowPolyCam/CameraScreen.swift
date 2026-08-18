@@ -726,37 +726,7 @@ struct CameraScreen: View {
                 )
             }
 
-            // Quick mic mute
-            if settings.cameraMode != .photo {
-                Button(action: {
-                    settings.recordAudio.toggle()
-                    recorder.syncMicInput()
-                }) {
-                    HStack(spacing: 8) {
-                        Image(systemName: settings.recordAudio ? "mic.fill" : "mic.slash.fill")
-                            .font(.system(size: 13, weight: .bold))
-                        Text(settings.recordAudio ? "Microphone On" : "Microphone Muted")
-                            .font(.system(size: 13, weight: .semibold))
-                        Spacer()
-                        Text(settings.recordAudio ? "ON" : "OFF")
-                            .font(.system(size: 11, weight: .black, design: .rounded))
-                            .foregroundColor(settings.recordAudio ? Palette.slateDeep : .white.opacity(0.7))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(
-                                Capsule().fill(settings.recordAudio ? settings.accentColor.bright : Palette.slate.opacity(0.8))
-                            )
-                    }
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .background(Palette.slate.opacity(0.45))
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .disabled(recorder.isRecording)
-                .opacity(recorder.isRecording ? 0.45 : 1)
-            }
+            // Audio is always recorded — no mute control
         }
         .padding(14)
         .background(
