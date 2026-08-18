@@ -814,6 +814,7 @@ struct CameraScreen: View {
             .frame(width: 84, height: 84)
         }
         .buttonStyle(.plain)
+        .contentShape(Circle())
         .disabled(recorder.isSaving || recorder.isSwitchingCamera || recorder.isCapturingPhoto)
         .animation(.spring(response: 0.35, dampingFraction: 0.7), value: recorder.isRecording)
     }
@@ -870,9 +871,8 @@ struct CameraScreen: View {
                 .shadow(color: .black.opacity(0.2), radius: 6, x: 0, y: 3)
         }
         .buttonStyle(.plain)
-        // Use a larger square hitbox to ensure taps register reliably
+        .frame(width: size + 20, height: size + 20)
         .contentShape(Rectangle())
-        .frame(width: size + 12, height: size + 12)
     }
 
     // MARK: Overlays (Level Meter & Countdown)
