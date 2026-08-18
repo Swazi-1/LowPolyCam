@@ -127,7 +127,7 @@ struct ClipGalleryScreen: View {
             }
         }
         .listStyle(.insetGrouped)
-        .scrollContentBackground(.hidden)
+        .modifier(HiddenScrollBackground())
     }
 
     private func row(for clip: RecordedClip) -> some View {
@@ -318,6 +318,17 @@ struct ClipGalleryScreen: View {
             get: { shareItems.map { ShareWrapper(items: $0) } },
             set: { newValue in shareItems = newValue?.items }
         )
+    }
+}
+
+/// iOS 16+ only modifier, applied conditionally so this still builds on older deployment targets.
+private struct HiddenScrollBackground: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 16.0, *) {
+            content.scrollContentBackground(.hidden)
+        } else {
+            content
+        }
     }
 }
 
