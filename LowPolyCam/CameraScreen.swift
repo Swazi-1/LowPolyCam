@@ -236,7 +236,7 @@ struct CameraScreen: View {
     // MARK: Top HUD Bar
 
     private var topHUD: some View {
-        HStack(alignment: .center, spacing: 10) {
+        HStack(alignment: .center, spacing: 8) {
             if recorder.hasTorch {
                 facetButton(system: recorder.torchOn ? "bolt.fill" : "bolt.slash.fill",
                             size: 40,
@@ -244,14 +244,20 @@ struct CameraScreen: View {
                     recorder.toggleTorch()
                 }
             } else {
-                Spacer().frame(width: 40, height: 40)
+                // Keep layout balanced even when torch is unavailable.
+                Color.clear.frame(width: 40, height: 40)
             }
 
-            Spacer(minLength: 6)
+            Spacer(minLength: 4)
 
             compactInfoPill
+                // Hard cap so the pill never forces the side icons past the
+                // screen edge on iPhone 7–class widths. Content can still
+                // shrink via minimumScaleFactor when needed.
+                .frame(maxWidth: UIScreen.main.bounds.width - 112)
+                .layoutPriority(1)
 
-            Spacer(minLength: 6)
+            Spacer(minLength: 4)
 
             facetButton(system: "gearshape.fill", size: 40) { showSettings = true }
                 .disabled(recorder.isRecording || recorder.isSaving || recorder.isSwitchingCamera)
@@ -285,13 +291,13 @@ struct CameraScreen: View {
             if recorder.isRecording || recorder.isSaving {
                 recordingStatusRow
             } else {
-                HStack(spacing: 6) {
+                HStack(spacing: 5) {
                     if settings.cameraMode == .photo {
                         Text("PHOTO")
                             .font(.system(size: 10, weight: .black, design: .rounded))
                             .foregroundColor(Palette.slateDeep)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 2.5)
                             .background(settings.accentColor.bright)
                             .clipShape(Capsule())
 
@@ -302,28 +308,36 @@ struct CameraScreen: View {
                         Text("SLO-MO")
                             .font(.system(size: 10, weight: .black, design: .rounded))
                             .foregroundColor(Palette.slateDeep)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 2.5)
                             .background(settings.accentColor.bright)
                             .clipShape(Capsule())
 
                         Text(settings.slowMoFrameRate.label)
-                            .font(.system(size: 12, weight: .bold))
+                            .font(.system(size: 12, weight: .bold, design: .rounded))
                             .foregroundColor(.white)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.75)
                     } else {
                         Text(settings.resolution.label)
                             .font(.system(size: 10, weight: .black, design: .rounded))
                             .foregroundColor(Palette.slateDeep)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 2.5)
                             .background(
-                                LinearGradient(colors: [settings.accentColor.bright, settings.accentColor.color], startPoint: .topLeading, endPoint: .bottomTrailing)
+                                LinearGradient(
+                                    colors: [settings.accentColor.bright, settings.accentColor.color],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
                             )
                             .clipShape(Capsule())
 
                         Text(qualityShortLabel)
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundColor(.white.opacity(0.9))
+                            .font(.system(size: 12, weight: .bold, design: .rounded))
+                            .foregroundColor(.white.opacity(0.92))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.75)
                     }
 
                     if settings.cameraMode != .photo {
@@ -334,19 +348,22 @@ struct CameraScreen: View {
                         Text(dataRateLabel)
                             .font(.system(size: 11, weight: .bold, design: .monospaced))
                             .foregroundColor(settings.accentColor.bright)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
                     }
                 }
                 .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
 
-                HStack(spacing: 6) {
+                HStack(spacing: 5) {
                     HStack(spacing: 3) {
                         Image(systemName: "internaldrive")
-                            .font(.system(size: 9))
+                            .font(.system(size: 9, weight: .semibold))
                             .foregroundColor(Palette.slateLight)
                         Text(Fmt.size(recorder.freeBytes) + " free")
                             .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(.white.opacity(0.65))
+                            .foregroundColor(.white.opacity(0.68))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
                     }
 
                     if settings.cameraMode != .photo, plan.megabytesPerHour > 0 {
@@ -356,11 +373,13 @@ struct CameraScreen: View {
                             .font(.system(size: 11, weight: .bold))
                         HStack(spacing: 3) {
                             Image(systemName: "clock")
-                                .font(.system(size: 9))
+                                .font(.system(size: 9, weight: .semibold))
                                 .foregroundColor(Palette.slateLight)
                             Text("~" + Fmt.hours(hoursLeft))
                                 .font(.system(size: 11, weight: .medium))
-                                .foregroundColor(.white.opacity(0.65))
+                                .foregroundColor(.white.opacity(0.68))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.7)
                         }
                     }
 
@@ -379,7 +398,6 @@ struct CameraScreen: View {
                     }
                 }
                 .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
             }
 
             if recorder.isRecording && settings.recordAudio {
@@ -387,11 +405,12 @@ struct CameraScreen: View {
                     .padding(.top, 2)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 11)
+        .padding(.vertical, 7)
+        .frame(minHeight: 36)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Palette.panel.opacity(0.82))
+                .fill(Palette.panel.opacity(0.84))
                 .background(
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .fill(.ultraThinMaterial)
@@ -403,9 +422,9 @@ struct CameraScreen: View {
                 .stroke(
                     LinearGradient(
                         colors: [
-                            settings.accentColor.bright.opacity(0.45),
-                            Color.white.opacity(0.08),
-                            settings.accentColor.color.opacity(0.2)
+                            settings.accentColor.bright.opacity(0.5),
+                            Color.white.opacity(0.1),
+                            settings.accentColor.color.opacity(0.22)
                         ],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
@@ -413,7 +432,9 @@ struct CameraScreen: View {
                     lineWidth: 1
                 )
         )
-        .shadow(color: .black.opacity(0.45), radius: 10, x: 0, y: 5)
+        .shadow(color: .black.opacity(0.4), radius: 10, x: 0, y: 4)
+        // Soft clip so long status text never draws past the rounded corners.
+        .clipped()
     }
 
     private var recordingStatusRow: some View {
@@ -951,7 +972,7 @@ struct CameraScreen: View {
     private var modeSelector: some View {
         let modes = CameraMode.allCases
 
-        return HStack(spacing: 4) {
+        return HStack(spacing: 2) {
             ForEach(modes) { mode in
                 let isActive = settings.cameraMode == mode
                 Button {
@@ -964,8 +985,11 @@ struct CameraScreen: View {
                 } label: {
                     Text(mode.label)
                         .font(.system(size: 13, weight: isActive ? .bold : .semibold, design: .rounded))
-                        .foregroundColor(isActive ? Palette.slateDeep : .white.opacity(0.7))
-                        .padding(.horizontal, 12)
+                        .foregroundColor(isActive ? Palette.slateDeep : .white.opacity(0.72))
+                        // Fixed horizontal padding keeps the control the same
+                        // width across modes so it never expands/clips at edges.
+                        .frame(minWidth: 58)
+                        .padding(.horizontal, 10)
                         .padding(.vertical, 7)
                         .background(
                             Group {
@@ -1004,6 +1028,8 @@ struct CameraScreen: View {
                 )
         )
         .shadow(color: .black.opacity(0.35), radius: 12, x: 0, y: 6)
+        // Centered, never forced wider than content so it stays clear of screen edges.
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 
     private func facetButton(system: String,
@@ -1286,11 +1312,11 @@ struct CameraScreen: View {
                     scheduleHideZoomLabel()
                 }) {
                     Text(zoomLabel(for: preset))
-                        .font(.system(size: isSelected ? 12 : 11, weight: .bold, design: .rounded))
+                        .font(.system(size: 12, weight: .bold, design: .rounded))
                         .lineLimit(1)
                         .minimumScaleFactor(0.7)
                         .foregroundColor(isSelected ? Palette.slateDeep : .white.opacity(0.85))
-                        .frame(width: isSelected ? 38 : 32, height: isSelected ? 38 : 32)
+                        .frame(width: 36, height: 36)
                         .background(
                             Group {
                                 if isSelected {
@@ -1330,7 +1356,9 @@ struct CameraScreen: View {
                 .stroke(Color.white.opacity(0.12), lineWidth: 1)
         )
         .shadow(color: .black.opacity(0.3), radius: 10, y: 4)
-        .frame(maxWidth: .infinity)
+        // Keep the control centered without forcing full-bleed width that can
+        // push neighboring bottom-HUD elements toward the screen edges.
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 
     private var zoomLabel: some View {
