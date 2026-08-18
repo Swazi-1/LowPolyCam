@@ -404,34 +404,13 @@ final class CameraRecorder: NSObject, ObservableObject {
             }
         } else {
             // iOS <16 path (this is what iPhone 7 / iOS 15.8 actually uses).
-            // isHighResolutionCaptureEnabled alone is NOT enough — it captures at
-            // device.activeFormat.highResolutionStillImageDimensions, and activeFormat
-            // is usually whatever video preset is currently applied (often a 16:9 crop,
-            // ~9MP), not the sensor's true full 4:3 12MP resolution. We must find and
-            // switch to the format with the largest highResolutionStillImageDimensions —
-            // but ONLY in photo mode, so we never override the format the user picked
-            // for video/slow-mo recording.
+            // NOTE: we deliberately do NOT switch activeFormat here anymore — on
+            // iOS <16, activeFormat drives BOTH the live preview AND still capture,
+            // so permanently locking it to a high-res-optimized format made the live
+            // preview blurry/pixelated. The high-res format swap now happens only
+            // briefly, right before actually taking the photo (see capturePhoto()),
+            // and is restored immediately after — keeping the live preview smooth.
             photoOutput.isHighResolutionCaptureEnabled = true
-
-            guard settings.cameraMode == .photo else { return }
-
-            let bestFormat = device.formats.max { a, b in
-                let aDims = a.highResolutionStillImageDimensions
-                let bDims = b.highResolutionStillImageDimensions
-                return Int(aDims.width) * Int(aDims.height) < Int(bDims.width) * Int(bDims.height)
-            }
-
-            if let bestFormat = bestFormat,
-               (device.activeFormat.highResolutionStillImageDimensions.width != bestFormat.highResolutionStillImageDimensions.width ||
-                device.activeFormat.highResolutionStillImageDimensions.height != bestFormat.highResolutionStillImageDimensions.height) {
-                do {
-                    try device.lockForConfiguration()
-                    device.activeFormat = bestFormat
-                    device.unlockForConfiguration()
-                } catch {
-                    // If we can't lock, we just keep whatever format is currently active.
-                }
-            }
         }
     }
 
@@ -1127,6 +1106,31 @@ final class CameraRecorder: NSObject, ObservableObject {
         let orientation = physicalOrientation.videoOrientation
 
         sessionQueue.async {
+            // On iOS <16, still-photo resolution is tied to activeFormat, which is
+            // also what drives the live preview. To get a true 12MP photo without
+            // permanently degrading the preview, briefly switch to the highest-res
+            // format just for this one capture, then switch back immediately after.
+            var restoreFormat: AVCaptureDevice.Format?
+            if #unavailable(iOS 16.0), let device = self.cameraInput?.device {
+                let bestFormat = device.formats.max { a, b in
+                    let aDims = a.highResolutionStillImageDimensions
+                    let bDims = b.highResolutionStillImageDimensions
+                    return Int(aDims.width) * Int(aDims.height) < Int(bDims.width) * Int(bDims.height)
+                }
+                if let bestFormat = bestFormat,
+                   (device.activeFormat.highResolutionStillImageDimensions.width != bestFormat.highResolutionStillImageDimensions.width ||
+                    device.activeFormat.highResolutionStillImageDimensions.height != bestFormat.highResolutionStillImageDimensions.height) {
+                    restoreFormat = device.activeFormat
+                    do {
+                        try device.lockForConfiguration()
+                        device.activeFormat = bestFormat
+                        device.unlockForConfiguration()
+                    } catch {
+                        restoreFormat = nil
+                    }
+                }
+            }
+
             var photoSettings: AVCapturePhotoSettings
             if self.photoOutput.availablePhotoCodecTypes.contains(.hevc) {
                 photoSettings = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.hevc])
@@ -1156,6 +1160,20 @@ final class CameraRecorder: NSObject, ObservableObject {
                 guard let self = self else { return }
                 DispatchQueue.main.async { self.isCapturingPhoto = false }
                 self.activePhotoProcessors.removeValue(forKey: photoSettings.uniqueID)
+
+                // Restore the smooth-preview format now that capture is done.
+                if let restoreFormat = restoreFormat, let device = self.cameraInput?.device {
+                    self.sessionQueue.async {
+                        do {
+                            try device.lockForConfiguration()
+                            device.activeFormat = restoreFormat
+                            device.unlockForConfiguration()
+                        } catch {
+                            // Preview may stay at capture resolution until next mode change — not ideal but not broken.
+                        }
+                    }
+                }
+
                 guard let image = image else {
                     DispatchQueue.main.async { self.notice = errorMessage ?? "Photo capture failed" }
                     return
