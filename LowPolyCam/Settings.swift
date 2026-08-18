@@ -667,45 +667,13 @@ struct EncodePlan {
 
 enum Encoder {
 
-    // On devices without a dedicated hardware HEVC encoder block (A10/A10X
-    // Fusion and earlier — hardware HEVC encode arrived with A11), asking
-    // AVAssetWriter for HEVC doesn't reliably fail: VideoToolbox can silently
-    // fall back to a *software* HEVC encoder instead of returning an error.
-    // Software HEVC encoding 4K30 in real time is far too slow for those
-    // chips and is what was actually causing the sustained frame drops
-    // (Photos reporting ~29 fps or lower) — not bitrate.
-    //
-    // This is decided from the raw hardware identifier (e.g. "iPhone9,1")
-    // rather than by querying VideoToolbox's encoder list at runtime — the
-    // query-based approach used a couple of undocumented dictionary keys
-    // whose presence isn't consistent across iOS versions, which is a poor
-    // fit for a check this load-bearing. A hardcoded list of known-A10(X)
-    // identifiers is slower to extend to future hardware but can never
-    // crash or silently misfire.
-    private static let hasHardwareHEVCEncoder: Bool = {
-        var systemInfo = utsname()
-        uname(&systemInfo)
-        let raw = withUnsafePointer(to: &systemInfo.machine) {
-            $0.withMemoryRebound(to: CChar.self, capacity: 1) { ptr in
-                String(cString: ptr)
-            }
-        }
-        // A10 / A10X Fusion — no hardware HEVC encoder.
-        let noHardwareHEVC: Set<String> = [
-            "iPhone9,1", "iPhone9,2", "iPhone9,3", "iPhone9,4", // iPhone 7 / 7 Plus
-            "iPad6,11", "iPad6,12",                             // iPad (5th gen)
-            "iPad7,5", "iPad7,6", "iPad7,11", "iPad7,12",       // iPad (6th/7th gen)
-            "iPad7,1", "iPad7,2", "iPad7,3", "iPad7,4"          // iPad Pro 10.5"/12.9" (2nd gen)
-        ]
-        if noHardwareHEVC.contains(raw) { return false }
-        // Simulator builds report an x86_64/arm64 host identifier, not a
-        // real device — treat as HEVC-capable so simulator testing isn't
-        // artificially restricted.
-        if raw == "x86_64" || raw == "arm64" || raw == "i386" { return true }
-        // Anything not explicitly known to lack hardware HEVC is assumed
-        // capable — every iPhone/iPad from A11 onward has it.
-        return true
-    }()
+    // Note: A10/A10X Fusion (iPhone 7/7 Plus, iPad 6th/7th gen, iPad Pro
+    // 2017) DOES have a real hardware HEVC encoder — it's the chip HEVC
+    // recording was introduced for in iOS 11. So HEVC itself was never the
+    // cause of the frame-drop issue on this device; codec choice doesn't
+    // need to be restricted here. (An earlier version of this file
+    // incorrectly assumed A10 lacked hardware HEVC encode and forced H.264
+    // for it — that assumption was wrong and has been removed.)
 
     // Conservative rates for A10 VideoDataOutput+AssetWriter path.
     // Higher values caused systematic frame drops → Photos showed ~24–26 fps.
@@ -740,10 +708,7 @@ enum Encoder {
         let px = res.pixels
 
         let baseKbps = videoKbps[res]?[settings.quality] ?? 600
-        // Never select HEVC without a hardware encoder for it — see
-        // hasHardwareHEVCEncoder above.
-        let effectiveUsesHEVC = settings.useHEVC && hasHardwareHEVCEncoder
-        let codecMultiplier = effectiveUsesHEVC ? 1.0 : h264Multiplier
+        let codecMultiplier = settings.useHEVC ? 1.0 : h264Multiplier
         let fpsFactor: Double
         if isSlow {
             fpsFactor = fps >= 240 ? 4.2 : 2.5
@@ -765,7 +730,7 @@ enum Encoder {
             audioBitrate: aKbps * 1000,
             keyFrameInterval: gopSeconds * fps,
             frameRate: fps,
-            codec: effectiveUsesHEVC ? .hevc : .h264,
+            codec: settings.useHEVC ? .hevc : .h264,
             hasAudio: settings.recordAudio,
             saveLocation: settings.saveLocation,
             splitInterval: settings.splitInterval
