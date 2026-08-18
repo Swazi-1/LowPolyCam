@@ -212,6 +212,7 @@ struct CameraScreen: View {
         }
         .sheet(isPresented: $showSettings) {
             SettingsScreen(settings: settings, recorder: recorder)
+                .interactiveDismissDisabled(false)
         }
         .sheet(isPresented: $showPlayer) {
             if let url = recorder.lastClipURL {
@@ -707,12 +708,40 @@ struct CameraScreen: View {
                     .frame(maxWidth: .infinity, alignment: .center)
             }
 
-            ZStack {
+            ZStack(alignment: .center) {
                 // recordButton is centered via ZStack overlay so it stays perfectly
-                // centered regardless of asymmetric content in the HStack row below
-                // (gallery thumbnail vs flip-camera button are different sizes, and
-                // the "..." button only appears on one side).
+                // centered regardless of asymmetric content in the HStack row below.
                 recordButton
+
+                // Pro menu button ("...") also centered via overlay, positioned to
+                // the right of the record button so it sits in the true middle of the
+                // gap between shutter and flip-camera button.
+                if !recorder.isRecording && !recorder.isSaving {
+                    HStack(spacing: 0) {
+                        Spacer().frame(width: 42 + 18)  // Half of record button + gap to pro button
+                        
+                        Button(action: {
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                                showProMenu.toggle()
+                            }
+                        }) {
+                            Image(systemName: "ellipsis")
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundColor(showProMenu ? settings.accentColor.bright : .white)
+                                .frame(width: 36, height: 36)
+                                .background(Palette.panel.opacity(0.85))
+                                .environment(\.colorScheme, .dark)
+                                .clipShape(Circle())
+                                .overlay(Circle().stroke(Palette.slateLight.opacity(0.35), lineWidth: 0.8))
+                                .shadow(color: .black.opacity(0.2), radius: 4)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(recorder.isSwitchingCamera)
+                        .opacity(recorder.isSwitchingCamera ? 0.35 : 1)
+                        
+                        Spacer()
+                    }
+                }
 
                 HStack(alignment: .center) {
                     if !recorder.isRecording && !recorder.isSaving,
@@ -734,35 +763,6 @@ struct CameraScreen: View {
                     }
 
                     Spacer()
-
-                    // Reserve space equal to half the recordButton's footprint on
-                    // each side of the "..." button, so it sits centered in the
-                    // gap between the shutter and the flip-camera button instead
-                    // of hugging the shutter's shadow edge.
-                    Spacer().frame(width: (84 + 28) / 2)
-
-                    if !recorder.isRecording && !recorder.isSaving {
-                        Button(action: {
-                            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                                showProMenu.toggle()
-                            }
-                        }) {
-                            Image(systemName: "ellipsis")
-                                .font(.system(size: 14, weight: .bold))
-                                .foregroundColor(showProMenu ? settings.accentColor.bright : .white)
-                                .frame(width: 36, height: 36)
-                                .background(Palette.panel.opacity(0.85))
-                                .environment(\.colorScheme, .dark)
-                                .clipShape(Circle())
-                                .overlay(Circle().stroke(Palette.slateLight.opacity(0.35), lineWidth: 0.8))
-                                .shadow(color: .black.opacity(0.2), radius: 4)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(recorder.isSwitchingCamera)
-                        .opacity(recorder.isSwitchingCamera ? 0.35 : 1)
-
-                        Spacer().frame(width: (84 + 28) / 2)
-                    }
 
                     if recorder.isRecording {
                         facetButton(system: "moon.fill", size: 56) { enterDim() }
