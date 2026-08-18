@@ -59,6 +59,12 @@ final class CameraRecorder: NSObject, ObservableObject {
     @Published private(set) var rollAngle: Double = 0
     @Published var notice: String?
 
+    /// Fired the instant the sensor actually captures the photo (from
+    /// AVCapturePhotoOutput's willCapturePhotoFor delegate callback), so the
+    /// UI's screen-flash overlay is synced to the real capture moment
+    /// instead of firing early on button tap.
+    var onWillCapturePhoto: (() -> Void)?
+
     let session = AVCaptureSession()
 
     // MARK: Private
@@ -302,7 +308,12 @@ final class CameraRecorder: NSObject, ObservableObject {
         refreshFreeSpace()
         recoverInterruptedRecording()
         loadLastSavedClip()
-        if settings.showLevelGauge { startMotionUpdates() }
+        // Motion updates always run (regardless of the level-gauge UI toggle):
+        // they're also what drives physicalOrientation, which photo capture
+        // needs to save images right-side-up. Gating this on showLevelGauge
+        // meant photos came out rotated/flipped whenever the level gauge was
+        // off, since physicalOrientation would just freeze at its default.
+        startMotionUpdates()
 
         spaceTimer?.invalidate()
         spaceTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
@@ -392,6 +403,15 @@ final class CameraRecorder: NSObject, ObservableObject {
     private func configurePhotoOutput() {
         guard let device = cameraInput?.device else { return }
 
+        // Enable the highest quality prioritization AVCapturePhotoOutput offers,
+        // which lets the system apply the same Smart-HDR / multi-frame scene
+        // rendering the live preview already benefits from. Without this, the
+        // saved photo can come out noticeably darker/flatter than what was seen
+        // live, especially in low light, because the discrete still capture was
+        // otherwise using a plainer single-frame render.
+        if #available(iOS 13.0, *) {
+            photoOutput.maxPhotoQualityPrioritization = .quality
+        }
         if #available(iOS 16.0, *) {
             // Use the TRUE max across all formats — device.activeFormat only reflects
             // whatever video format is currently applied (often ~1080p/2MP), not the
@@ -974,21 +994,37 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     @objc private func willResignActive() {
         setTorch(on: false)
-        guard isRecording else { return }
-        stopRecording(notice: "Recording stopped (app backgrounded)")
+        if isRecording {
+            stopRecording(notice: "Recording stopped (app backgrounded)")
+        }
+        // Stop the capture session while backgrounded. Without this the
+        // session (and therefore the photo/video outputs) kept running with
+        // the app suspended, which could let a shutter tap that was already
+        // in flight complete and save a photo taken "in the background", and
+        // wasted power keeping the sensor active while not visible.
+        pauseVolumeMonitoring()
+        stopMotionUpdates()
+        sessionQueue.async {
+            if self.session.isRunning { self.session.stopRunning() }
+            DispatchQueue.main.async { self.isSessionRunning = false }
+        }
     }
 
     @objc private func didBecomeActive() {
         sessionQueue.async {
+            if !self.session.isRunning { self.session.startRunning() }
             self.refreshTorchState()
+            DispatchQueue.main.async { self.isSessionRunning = self.session.isRunning }
         }
         // Restart motion updates cleanly — after being backgrounded (e.g. screen
         // locked for a while), the previous raw angle used for unwrapping the roll
         // is stale and can throw the level gauge off. Restarting resets that state.
-        if settings.showLevelGauge {
-            stopMotionUpdates()
-            startMotionUpdates()
-        }
+        // We always (re)start briefly even with the level gauge UI off, so photo
+        // capture's physicalOrientation stays correct instead of freezing at
+        // whatever orientation it was in before backgrounding (see startMotionUpdates).
+        stopMotionUpdates()
+        startMotionUpdates()
+        resumeVolumeMonitoring()
     }
 
     // MARK: Zoom
@@ -1100,7 +1136,15 @@ final class CameraRecorder: NSObject, ObservableObject {
             hapticGen.prepare()
             hapticGen.impactOccurred()
         }
-        if settings.shutterSoundEnabled { SoundPlayer.play(.shutter) }
+        // NOTE: the shutter sound and screen flash are triggered from
+        // PhotoCaptureProcessor's willBeginCapture callback (fired by
+        // AVCapturePhotoOutput right as the sensor actually captures the
+        // frame), not here. AVCapturePhotoOutput already plays its own
+        // system shutter sound and a system screen-flash the instant
+        // capturePhoto() is called; firing our own sound/flash here too
+        // produced the "flashes twice / double shutter sound" bug. Doing
+        // it from the delegate callback keeps everything to a single,
+        // correctly-timed flash + click.
 
         let targetMP = 12.0  // Always capture at full 12MP sensor resolution
         let destination = settings.saveLocation
@@ -1150,6 +1194,17 @@ final class CameraRecorder: NSObject, ObservableObject {
                 photoSettings.isHighResolutionPhotoEnabled = self.photoOutput.isHighResolutionCaptureEnabled
             }
             photoSettings.flashMode = .off
+            // Match the live preview's rendering: request the same top quality
+            // tier the output is configured for (Smart HDR / multi-frame fusion),
+            // and let the system apply still-image stabilization if it decides
+            // the scene needs it. Previously neither was set, so the discrete
+            // still capture rendered flatter/darker than the live feed.
+            if #available(iOS 13.0, *) {
+                photoSettings.photoQualityPrioritization = .quality
+            }
+            if self.photoOutput.isStillImageStabilizationSupported {
+                photoSettings.isAutoStillImageStabilizationEnabled = true
+            }
 
             if let connection = self.photoOutput.connection(with: .video) {
                 if connection.isVideoOrientationSupported {
@@ -1161,7 +1216,13 @@ final class CameraRecorder: NSObject, ObservableObject {
                 }
             }
 
-            let processor = PhotoCaptureProcessor(targetMegapixels: targetMP) { [weak self] image, metadata, errorMessage in
+            let processor = PhotoCaptureProcessor(targetMegapixels: targetMP, willCapture: { [weak self] in
+                guard let self = self else { return }
+                DispatchQueue.main.async {
+                    if self.settings.shutterSoundEnabled { SoundPlayer.play(.shutter) }
+                    self.onWillCapturePhoto?()
+                }
+            }, completion: { [weak self] image, metadata, errorMessage in
                 guard let self = self else { return }
                 DispatchQueue.main.async { self.isCapturingPhoto = false }
                 self.activePhotoProcessors.removeValue(forKey: photoSettings.uniqueID)
@@ -1184,7 +1245,7 @@ final class CameraRecorder: NSObject, ObservableObject {
                     return
                 }
                 self.savePhoto(image, metadata: metadata, to: destination)
-            }
+            })
             self.activePhotoProcessors[photoSettings.uniqueID] = processor
             self.photoOutput.capturePhoto(with: photoSettings, delegate: processor)
         }
@@ -1822,11 +1883,22 @@ extension UIImage.Orientation {
 final class PhotoCaptureProcessor: NSObject, AVCapturePhotoCaptureDelegate {
 
     private let targetMegapixels: Double
+    private let willCapture: () -> Void
     private let completion: (UIImage?, [String: Any]?, String?) -> Void
 
-    init(targetMegapixels: Double, completion: @escaping (UIImage?, [String: Any]?, String?) -> Void) {
+    init(targetMegapixels: Double,
+         willCapture: @escaping () -> Void,
+         completion: @escaping (UIImage?, [String: Any]?, String?) -> Void) {
         self.targetMegapixels = targetMegapixels
+        self.willCapture = willCapture
         self.completion = completion
+    }
+
+    /// Fires right as the sensor captures the frame — this is when we play
+    /// our shutter sound / trigger our screen-flash overlay, so they land
+    /// exactly on the real capture moment instead of on button-tap.
+    func photoOutput(_ output: AVCapturePhotoOutput, willCapturePhotoFor resolvedSettings: AVCaptureResolvedPhotoSettings) {
+        willCapture()
     }
 
     func photoOutput(_ output: AVCapturePhotoOutput,
