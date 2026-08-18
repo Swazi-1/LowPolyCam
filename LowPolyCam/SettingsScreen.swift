@@ -23,7 +23,7 @@ struct SettingsScreen: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject var recorder: CameraRecorder
     @Environment(\.presentationMode) private var presentation
-
+    
     private var plan: EncodePlan { Encoder.plan(for: settings) }
 
     var body: some View {
@@ -50,6 +50,9 @@ struct SettingsScreen: View {
                 aboutSection
             }
             .listStyle(InsetGroupedListStyle())
+            // Disable animations during scrolling/list operations to prevent lag
+            .animation(nil, value: recorder.isFrontCamera)
+            .animation(nil, value: settings.cameraMode)
             .navigationBarTitle("Settings", displayMode: .inline)
             .navigationBarItems(trailing: Button(action: {
                 presentation.wrappedValue.dismiss()
@@ -60,6 +63,8 @@ struct SettingsScreen: View {
         }
         .navigationViewStyle(StackNavigationViewStyle())
         .accentColor(settings.accentColor.color)
+        // Disable transition animation on settings sheet to reduce perceived lag
+        .transition(.identity)
     }
 
     // MARK: Sections
