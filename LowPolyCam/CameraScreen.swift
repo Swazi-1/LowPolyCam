@@ -22,6 +22,7 @@ struct CameraScreen: View {
     // Zoom
     @State private var zoomGestureBase: CGFloat = 1
     @State private var isPinching = false
+    @State private var lastRecordButtonTap = Date.distantPast
     @State private var showZoomLabel = false
     @State private var zoomLabelHideToken = 0
 
@@ -843,6 +844,9 @@ struct CameraScreen: View {
     private var recordButton: some View {
         Button {
             guard !recorder.isSwitchingCamera, !isPinching, !recorder.isCapturingPhoto else { return }
+            let now = Date()
+            guard now.timeIntervalSince(lastRecordButtonTap) > 0.4 else { return }
+            lastRecordButtonTap = now
 
             if settings.cameraMode == .photo {
                 if countdownRemaining > 0 {
