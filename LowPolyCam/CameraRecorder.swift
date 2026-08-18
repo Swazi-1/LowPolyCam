@@ -1095,14 +1095,19 @@ final class CameraRecorder: NSObject, ObservableObject {
 
         isCapturingPhoto = true
 
-        let hapticGen = UIImpactFeedbackGenerator(style: .medium)
-        hapticGen.prepare()
-        hapticGen.impactOccurred()
+        if settings.hapticFeedbackEnabled {
+            let hapticGen = UIImpactFeedbackGenerator(style: .medium)
+            hapticGen.prepare()
+            hapticGen.impactOccurred()
+        }
         if settings.shutterSoundEnabled { SoundPlayer.play(.shutter) }
 
         let targetMP = 12.0  // Always capture at full 12MP sensor resolution
         let destination = settings.saveLocation
-        let mirrored = isFrontCamera
+        // Front camera preview is mirrored by default (like a real mirror). Some people
+        // want the SAVED photo mirrored back too (so text/writing reads correctly),
+        // others want it saved exactly as the sensor sees it. New setting controls this.
+        let mirrored = isFrontCamera && !settings.saveSelfiesUnmirrored
         let orientation = physicalOrientation.videoOrientation
 
         sessionQueue.async {
