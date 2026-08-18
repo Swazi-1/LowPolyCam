@@ -721,6 +721,10 @@ struct CameraScreen: View {
 
                     Spacer()
 
+                    // Reserve space equal to recordButton's own width so the HStack's
+                    // flexible Spacers don't get pulled toward one side.
+                    Spacer().frame(width: 84 + 16)
+
                     if !recorder.isRecording && !recorder.isSaving {
                         Button(action: {
                             withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
@@ -740,11 +744,9 @@ struct CameraScreen: View {
                         .buttonStyle(.plain)
                         .disabled(recorder.isSwitchingCamera)
                         .opacity(recorder.isSwitchingCamera ? 0.35 : 1)
-                    }
 
-                    // Reserve space equal to recordButton's own width so the HStack's
-                    // flexible Spacers don't get pulled toward one side.
-                    Spacer().frame(width: 84 + 16)
+                        Spacer(minLength: 12)
+                    }
 
                     if recorder.isRecording {
                         facetButton(system: "moon.fill", size: 56) { enterDim() }
@@ -1124,13 +1126,29 @@ struct CameraScreen: View {
     }
 
     private var focusReticle: some View {
-        Facet(sides: 6, rotation: .pi / 6)
-            .stroke(settings.accentColor.bright, lineWidth: 1.5)
-            .frame(width: 56, height: 56)
-            .shadow(color: settings.accentColor.color.opacity(0.5), radius: 4)
-            .scaleEffect(focusPoint == nil ? 1.2 : 1.0)
-            .opacity(focusPoint == nil ? 0 : 1)
-            .animation(.spring(response: 0.3, dampingFraction: 0.6), value: focusPoint)
+        ZStack {
+            // Thin square outline — classic camera-app focus box, not a hexagon.
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .stroke(settings.accentColor.bright, lineWidth: 1.2)
+                .frame(width: 64, height: 64)
+
+            // Small corner tick marks for that "locking on" feel.
+            ForEach(0..<4) { i in
+                Rectangle()
+                    .fill(settings.accentColor.bright)
+                    .frame(width: 8, height: 2)
+                    .offset(x: (i % 2 == 0 ? -1 : 1) * 28, y: (i < 2 ? -1 : 1) * 32)
+            }
+
+            // Small center dot to mark the exact focus point.
+            Circle()
+                .fill(settings.accentColor.bright)
+                .frame(width: 4, height: 4)
+        }
+        .shadow(color: settings.accentColor.color.opacity(0.5), radius: 4)
+        .scaleEffect(focusPoint == nil ? 1.3 : 1.0)
+        .opacity(focusPoint == nil ? 0 : 1)
+        .animation(.spring(response: 0.3, dampingFraction: 0.6), value: focusPoint)
     }
 
     private func showFocusReticle(at point: CGPoint) {
