@@ -1,3 +1,5 @@
+# LowPolyCam README
+
 <p align="center">
   <img src="LowPolyCam/Assets.xcassets/AppIcon.appiconset/icon-180.png" width="120" alt="LowPolyCam icon">
 </p>
@@ -5,7 +7,7 @@
 <h1 align="center">LowPolyCam</h1>
 
 <p align="center">
-  <b>A lightweight iOS camera app built for long recordings and low storage use.</b><br>
+  <b>A lightweight iOS camera app built for long recordings, low storage use, and flexible shooting.</b><br>
   Built and tested on iPhone 7 with iOS 15.8.x and newer iPhones.
 </p>
 
@@ -13,54 +15,62 @@
 
 ## 📸 Overview
 
-**LowPolyCam** is made for recording for hours without quickly filling your iPhone.
+**LowPolyCam** is built for recording and capturing photos without quickly filling your iPhone.
 
-Choose your resolution, quality, frame rate, and format, then start recording.
+Choose your resolution, quality, frame rate, format, and camera mode, then start shooting.
 
-Simple, lightweight, and built for long sessions.
+Simple, lightweight, and designed for long sessions.
 
 ---
 
 ## ✨ Features
 
+### 📸 Photo Mode
+
+**Dedicated Photo Mode** — Quickly switch from recording to capturing photos.<br>
+**Unmirrored Selfies** — Save front-camera selfies without mirroring.<br>
+**Flash Control** — Choose whether the flash fires when capturing photos.<br>
+**Tap to Focus** — Quickly focus by tapping anywhere on the viewfinder.<br>
+**Camera Zoom** — Use the available zoom levels supported by your iPhone.<br>
+**Save to Photos** — Photos are saved directly to your camera roll.
+
 ### 🎥 Camera & Recording
 
-* **Resolutions:** 4K, 1080p, 720p, 480p, 320p, 144p
-* **Frame rates:** 24, 30, 60 fps
-* **Modes:** Video and Slo-Mo
-* **Quality:** High, Medium, Low, Data Saver
-* **Codecs:** HEVC or H.264
-* **Zoom:** 0.5×, 1×, 2×, 5×
-* **File splitting:** 1 hour, 4 hours, or one continuous file
-* **Save to:** Photos or Files
+**Resolutions:** 4K, 1080p, 720p, 480p, 320p, 144p<br>
+**Frame Rates:** 24, 30, 60 fps<br>
+**Modes:** Video, Photo, and Slo-Mo<br>
+**Quality:** High, Medium, Low, Data Saver<br>
+**Codecs:** HEVC or H.264<br>
+**Zoom:** 0.5×, 1×, 2×, 5×<br>
+**File Splitting:** 1 hour, 4 hours, or one continuous file<br>
+**Save To:** Photos or Files
 
 ### 🛠 Pro Tools
 
-* **Exposure:** −2.0 to +2.0 EV
-* **White Balance:** Auto, Sunny, Warm, Cool, Golden
-* **Horizon Level:** Gyroscope-based level with haptic feedback
-* **Hardware Shutter:** Volume buttons can start and stop recording
-* **Double-Tap Flip:** Double-tap the viewfinder to switch cameras
+**Exposure** — −2.0 to +2.0 EV<br>
+**White Balance** — Auto, Sunny, Warm, Cool, Golden<br>
+**Horizon Level** — Gyroscope-based level with haptic feedback<br>
+**Hardware Shutter** — Volume buttons can start and stop recording<br>
+**Double-Tap Flip** — Double-tap the viewfinder to switch cameras<br>
+**Haptic Feedback** — Toggle haptic feedback on or off
 
 ### 🔋 Battery & Storage
 
-* **Auto-Dim:** Automatically turns the screen black after 10 seconds while filming.
-* **Moon Button:** Manually turns the screen black while recording.
-* **Low-Space Protection:** Stops recording below **300 MB** of free space.
+**Auto-Dim** — Automatically turns the screen black after 10 seconds while filming.<br>
+**Moon Button** — Manually turns the screen black while recording.<br>
+**Low-Space Protection** — Stops recording below **300 MB** of free space.
 
 ### 🛡 Recovery
 
-* Recordings are saved in **4-second fragments** to reduce data loss.
-* Interrupted recordings are automatically detected and recovered when the app opens.
+**4-Second Fragments** — Recordings are saved in small fragments to reduce data loss.<br>
+**Automatic Recovery** — Interrupted recordings are detected and recovered when the app opens.
 
 ### 🎨 Themes
 
-Choose from:
-
-* **Lens Mint**
-* **Dial Lavender**
-* **Button Gold**
-* **Record Red**
+**Lens Mint** — Clean mint-colored interface.<br>
+**Dial Lavender** — Soft lavender interface.<br>
+**Button Gold** — Warm gold interface.<br>
+**Record Red** — Classic recording-focused red interface.
 
 The entire interface adapts to the selected theme.
 
@@ -70,7 +80,7 @@ The entire interface adapts to the selected theme.
 
 Approximate storage usage with **HEVC at 30 fps**:
 
-| Resolution |       High |    Medium |       Low |     Ultra Low |
+| Resolution |       High |    Medium |       Low |    Data Saver |
 | ---------- | ---------: | --------: | --------: | ------------: |
 | **4K**     | ~10.8 GB/h | ~5.4 GB/h | ~2.7 GB/h |     ~810 MB/h |
 | **1080p**  |  ~3.6 GB/h | ~1.8 GB/h | ~900 MB/h |     ~180 MB/h |
@@ -85,10 +95,10 @@ Approximate storage usage with **HEVC at 30 fps**:
 
 ## 📱 iOS Notes
 
-* **The screen must stay on.** iOS does not allow normal apps to record from the background.
-* Use **Auto-Dim** or the **Moon Button** to turn the screen black while recording.
-* Older iPhones may support fewer resolutions, frame rates, or camera features.
-* Unsupported options are automatically disabled.
+**Screen Must Stay On** — iOS does not allow normal apps to record from the background.<br>
+**Auto-Dim / Moon Button** — Use either option to turn the screen black while recording.<br>
+**Older iPhones** — Some resolutions, frame rates, camera lenses, or features may not be available.<br>
+**Automatic Compatibility** — Unsupported options are automatically disabled.
 
 ---
 
