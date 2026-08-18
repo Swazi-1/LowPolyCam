@@ -714,11 +714,19 @@ final class CameraRecorder: NSObject, ObservableObject {
 
         let supportedRates = FrameRate.allCases.filter { rates.contains($0) }
         let canDo1080 = widestPixels >= 1920 * 1080
-        let supportedResolutions = Resolution.allCases.filter {
-            ($0 != .p1080 || canDo1080)
+        let canDo4K = widestPixels >= 3840 * 2160
+        let supportedResolutions = Resolution.allCases.filter { res in
+            switch res {
+            case .p2160: return canDo4K
+            case .p1080: return canDo1080
+            default: return true
+            }
         }
+        // Slow-mo never uses 4K on this device class
         let supportedSlowRates = SlowMoFrameRate.allCases.filter { slowRates.contains($0) }
-        let supportedSlowRes = Resolution.allCases.filter { slowResolutions.contains($0) }
+        let supportedSlowRes = Resolution.allCases.filter {
+            $0 != .p2160 && slowResolutions.contains($0)
+        }
 
         DispatchQueue.main.sync {
             self.availableFrameRates = supportedRates.isEmpty ? [.fps30] : supportedRates
@@ -735,6 +743,10 @@ final class CameraRecorder: NSObject, ObservableObject {
             if !self.availableResolutions.contains(self.settings.resolution) {
                 let fallback: Resolution = self.availableResolutions.first ?? .p720
                 self.settings.resolution = fallback
+            }
+            // 4K locks to 30 fps
+            if self.settings.resolution == .p2160, self.settings.frameRate != .fps30 {
+                self.settings.frameRate = .fps30
             }
 
             if self.settings.cameraMode == .slowMo {
