@@ -103,15 +103,25 @@ struct ClipGalleryScreen: View {
     // MARK: Empty State
 
     private var emptyState: some View {
-        VStack(spacing: 14) {
-            Image(systemName: "film.stack")
-                .font(.system(size: 44))
-                .foregroundColor(Palette.slateLight)
+        VStack(spacing: 18) {
+            ZStack {
+                Facet(sides: 6, rotation: .pi / 6)
+                    .fill(Palette.slateMid.opacity(0.6))
+                    .frame(width: 88, height: 88)
+                Facet(sides: 6, rotation: .pi / 6)
+                    .stroke(Palette.mint.opacity(0.35), lineWidth: 1.5)
+                    .frame(width: 88, height: 88)
+                Image(systemName: "film.stack")
+                    .font(.system(size: 32, weight: .medium))
+                    .foregroundColor(Palette.mintBright)
+            }
+            .shadow(color: Palette.mint.opacity(0.2), radius: 16)
+
             Text("No Clips Yet")
-                .font(.headline)
+                .font(.system(size: 20, weight: .bold, design: .rounded))
                 .foregroundColor(.white)
-            Text("Recordings saved in the app will show up here.")
-                .font(.subheadline)
+            Text("Recordings and photos saved in the app will show up here.")
+                .font(.system(size: 14, weight: .medium))
                 .foregroundColor(.white.opacity(0.55))
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 40)
@@ -143,12 +153,21 @@ struct ClipGalleryScreen: View {
                     .font(.system(size: 20))
             }
 
-            Image(systemName: clip.isPhoto ? "photo" : "film")
-                .font(.system(size: 18))
-                .foregroundColor(Palette.mint)
-                .frame(width: 28, height: 28)
-                .background(Palette.panel)
-                .clipShape(Facet(sides: 6))
+            Image(systemName: clip.isPhoto ? "photo.fill" : "film.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(Palette.slateDeep)
+                .frame(width: 32, height: 32)
+                .background(
+                    Facet(sides: 6, rotation: .pi / 6)
+                        .fill(
+                            LinearGradient(
+                                colors: [Palette.mintBright, Palette.mint],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                )
+                .shadow(color: Palette.mint.opacity(0.3), radius: 4, y: 2)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(clip.name)
