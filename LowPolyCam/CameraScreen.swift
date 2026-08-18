@@ -229,6 +229,9 @@ struct CameraScreen: View {
             facetButton(system: "gearshape.fill") { showSettings = true }
                 .disabled(recorder.isRecording || recorder.isSaving || recorder.isSwitchingCamera)
                 .opacity((recorder.isRecording || recorder.isSaving || recorder.isSwitchingCamera) ? 0.35 : 1)
+                // Bigger tap target just for settings — inset further than the other
+                // facetButtons since this is the one you reach for most.
+                .contentShape(Rectangle().inset(by: -16))
         }
     }
 
@@ -690,64 +693,71 @@ struct CameraScreen: View {
                     .frame(maxWidth: .infinity, alignment: .center)
             }
 
-            HStack(alignment: .center) {
-                if !recorder.isRecording && !recorder.isSaving,
-                   let thumb = recorder.lastClipThumbnail ?? recorder.lastPhotoThumbnail {
-                    Button(action: { showGallery = true }) {
-                        Image(uiImage: thumb)
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                            .frame(width: 50, height: 50)
-                            .clipShape(Facet(sides: 6, rotation: .pi / 6))
-                            .overlay(Facet(sides: 6, rotation: .pi / 6).stroke(settings.accentColor.color.opacity(0.7), lineWidth: 1.5))
-                            .shadow(color: .black.opacity(0.3), radius: 5)
-                    }
-                    .buttonStyle(.plain)
-                } else {
-                    facetButton(system: "square.stack.3d.up.fill", size: 50) { showGallery = true }
-                        .disabled(recorder.isRecording || recorder.isSaving)
-                        .opacity((recorder.isRecording || recorder.isSaving) ? 0.35 : 1)
-                }
-
-                Spacer()
-
-                if !recorder.isRecording && !recorder.isSaving {
-                    Button(action: {
-                        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                            showProMenu.toggle()
-                        }
-                    }) {
-                        Image(systemName: "ellipsis")
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundColor(showProMenu ? settings.accentColor.bright : .white)
-                            .frame(width: 36, height: 36)
-                            .background(Palette.panel.opacity(0.85))
-                            .environment(\.colorScheme, .dark)
-                            .clipShape(Circle())
-                            .overlay(Circle().stroke(Palette.slateLight.opacity(0.35), lineWidth: 0.8))
-                            .shadow(color: .black.opacity(0.2), radius: 4)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(recorder.isSwitchingCamera)
-                    .opacity(recorder.isSwitchingCamera ? 0.35 : 1)
-                    .padding(.trailing, 16)  // Push ... button away from shutter
-                }
-
+            ZStack {
+                // recordButton is centered via ZStack overlay so it stays perfectly
+                // centered regardless of asymmetric content in the HStack row below
+                // (gallery thumbnail vs flip-camera button are different sizes, and
+                // the "..." button only appears on one side).
                 recordButton
 
-                Spacer()
-
-                if recorder.isRecording {
-                    facetButton(system: "moon.fill", size: 56) { enterDim() }
-                } else {
-                    facetButton(system: "arrow.triangle.2.circlepath.camera.fill", size: 56) {
-                        recorder.flipCamera()
+                HStack(alignment: .center) {
+                    if !recorder.isRecording && !recorder.isSaving,
+                       let thumb = recorder.lastClipThumbnail ?? recorder.lastPhotoThumbnail {
+                        Button(action: { showGallery = true }) {
+                            Image(uiImage: thumb)
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                                .frame(width: 50, height: 50)
+                                .clipShape(Facet(sides: 6, rotation: .pi / 6))
+                                .overlay(Facet(sides: 6, rotation: .pi / 6).stroke(settings.accentColor.color.opacity(0.7), lineWidth: 1.5))
+                                .shadow(color: .black.opacity(0.3), radius: 5)
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        facetButton(system: "square.stack.3d.up.fill", size: 50) { showGallery = true }
+                            .disabled(recorder.isRecording || recorder.isSaving)
+                            .opacity((recorder.isRecording || recorder.isSaving) ? 0.35 : 1)
                     }
-                    .disabled(recorder.isSaving || recorder.isSwitchingCamera || recorder.isCapturingPhoto || countdownRemaining > 0)
-                    .opacity((recorder.isSaving || recorder.isSwitchingCamera || recorder.isCapturingPhoto || countdownRemaining > 0) ? 0.35 : 1)
+
+                    Spacer()
+
+                    if !recorder.isRecording && !recorder.isSaving {
+                        Button(action: {
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                                showProMenu.toggle()
+                            }
+                        }) {
+                            Image(systemName: "ellipsis")
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundColor(showProMenu ? settings.accentColor.bright : .white)
+                                .frame(width: 36, height: 36)
+                                .background(Palette.panel.opacity(0.85))
+                                .environment(\.colorScheme, .dark)
+                                .clipShape(Circle())
+                                .overlay(Circle().stroke(Palette.slateLight.opacity(0.35), lineWidth: 0.8))
+                                .shadow(color: .black.opacity(0.2), radius: 4)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(recorder.isSwitchingCamera)
+                        .opacity(recorder.isSwitchingCamera ? 0.35 : 1)
+                    }
+
+                    // Reserve space equal to recordButton's own width so the HStack's
+                    // flexible Spacers don't get pulled toward one side.
+                    Spacer().frame(width: 84 + 16)
+
+                    if recorder.isRecording {
+                        facetButton(system: "moon.fill", size: 56) { enterDim() }
+                    } else {
+                        facetButton(system: "arrow.triangle.2.circlepath.camera.fill", size: 56) {
+                            recorder.flipCamera()
+                        }
+                        .disabled(recorder.isSaving || recorder.isSwitchingCamera || recorder.isCapturingPhoto || countdownRemaining > 0)
+                        .opacity((recorder.isSaving || recorder.isSwitchingCamera || recorder.isCapturingPhoto || countdownRemaining > 0) ? 0.35 : 1)
+                    }
                 }
+                .padding(.horizontal, 8)
             }
-            .padding(.horizontal, 8)
         }
     }
 
