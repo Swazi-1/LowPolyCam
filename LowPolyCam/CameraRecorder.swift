@@ -9,6 +9,37 @@ import ImageIO
 
 final class CameraRecorder: NSObject, ObservableObject {
 
+    // MARK: Debug file logger
+    // Writes to a plain text file inside the app's Documents folder so it
+    // can be pulled off-device via the Files app (On My iPhone > LowPolyCam)
+    // without needing Xcode/a Mac. Call DebugLog.write(...) anywhere.
+    enum DebugLog {
+        static let url: URL = {
+            let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            return dir.appendingPathComponent("recording_debug_log.txt")
+        }()
+
+        static func write(_ message: String) {
+            let stamp = ISO8601DateFormatter().string(from: Date())
+            let line = "[\(stamp)] \(message)\n"
+            print(line, terminator: "")
+            guard let data = line.data(using: .utf8) else { return }
+            if FileManager.default.fileExists(atPath: url.path) {
+                if let handle = try? FileHandle(forWritingTo: url) {
+                    handle.seekToEndOfFile()
+                    handle.write(data)
+                    try? handle.close()
+                }
+            } else {
+                try? data.write(to: url)
+            }
+        }
+
+        static func reset() {
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
     // MARK: Tunables
 
     static let fragmentSeconds: Double = 4
@@ -1465,7 +1496,10 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     func startRecording() {
         guard !isRecording else { return }
+        DebugLog.reset()
+        DebugLog.write("===== startRecording() called =====")
         guard freeBytes > Self.reserveBytes else {
+            DebugLog.write("❌ blocked: low storage, freeBytes=\(freeBytes)")
             notice = "Low storage · Free space needed"
             return
         }
@@ -1558,9 +1592,11 @@ final class CameraRecorder: NSObject, ObservableObject {
     // MARK: Segments & Rolling Split
 
     private func startSegment(at pts: CMTime) {
-        guard let plan = plan else { return }
+        DebugLog.write("[0] startSegment called at pts=\(CMTimeGetSeconds(pts)) plan=\(plan != nil) freeBytesSnapshot=\(freeBytesSnapshot)")
+        guard let plan = plan else { DebugLog.write("❌ no plan, bailing"); return }
 
         guard freeBytesSnapshot > Self.reserveBytes else {
+            DebugLog.write("❌ storage guard failed: freeBytesSnapshot=\(freeBytesSnapshot) reserveBytes=\(Self.reserveBytes)")
             wantsRecording = false
             DispatchQueue.main.async {
                 self.isRecording = false
@@ -1572,30 +1608,44 @@ final class CameraRecorder: NSObject, ObservableObject {
 
         do {
             let url = Self.newClipURL()
+            DebugLog.write("[1] clip URL=\(url.lastPathComponent)")
             UserDefaults.standard.set(url.lastPathComponent, forKey: Self.inProgressKey)
 
             let w = try AVAssetWriter(outputURL: url, fileType: .mov)
+            DebugLog.write("[2] AVAssetWriter created OK")
             w.movieFragmentInterval = CMTime(seconds: Self.fragmentSeconds, preferredTimescale: 600)
             w.metadata = Self.captureMetadataItems()
 
-            let v = AVAssetWriterInput(mediaType: .video,
-                                       outputSettings: Encoder.videoSettings(for: plan, writer: w))
+            let videoSettings = Encoder.videoSettings(for: plan, writer: w)
+            DebugLog.write("[3] video settings=\(videoSettings)")
+            let v = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
             v.expectsMediaDataInRealTime = true
             v.transform = clipTransform
-            guard w.canAdd(v) else { throw RecorderError.cannotAddInput }
+            let canAddVideo = w.canAdd(v)
+            DebugLog.write("[4] canAdd video input=\(canAddVideo)")
+            guard canAddVideo else { throw RecorderError.cannotAddInput }
             w.add(v)
+            DebugLog.write("[5] video input added")
 
             var a: AVAssetWriterInput?
             if plan.hasAudio, let aSettings = audioSettings(for: plan, writer: w) {
+                DebugLog.write("[6] audio settings=\(aSettings)")
                 let ai = AVAssetWriterInput(mediaType: .audio, outputSettings: aSettings)
                 ai.expectsMediaDataInRealTime = true
-                if w.canAdd(ai) { w.add(ai); a = ai }
+                if w.canAdd(ai) { w.add(ai); a = ai; DebugLog.write("[7] audio input added") }
+                else { DebugLog.write("[7] audio input REJECTED by canAdd") }
+            } else {
+                DebugLog.write("[6] no audio (hasAudio=\(plan.hasAudio))")
             }
 
+            DebugLog.write("[8] calling startWriting()...")
             guard w.startWriting() else {
+                DebugLog.write("❌ startWriting() returned FALSE. writer.error=\(w.error?.localizedDescription ?? "nil") status=\(w.status.rawValue)")
                 throw w.error ?? RecorderError.cannotAddInput
             }
+            DebugLog.write("[8] startWriting() OK status=\(w.status.rawValue)")
             w.startSession(atSourceTime: pts)
+            DebugLog.write("[9] startSession OK at pts=\(CMTimeGetSeconds(pts))")
 
             writerLock.lock()
             writer = w
@@ -1607,8 +1657,10 @@ final class CameraRecorder: NSObject, ObservableObject {
             writerLock.unlock()
 
             DispatchQueue.main.async { self.clipsThisSession += 1 }
+            DebugLog.write("[10] segment fully started ✅")
 
         } catch {
+            DebugLog.write("❌ startSegment threw: \(error.localizedDescription) | full: \(error)")
             wantsRecording = false
             DispatchQueue.main.async {
                 self.isRecording = false
@@ -1617,6 +1669,7 @@ final class CameraRecorder: NSObject, ObservableObject {
             }
         }
     }
+
 
     private func finishSegment(_ completion: (() -> Void)? = nil) {
         writerLock.lock()
@@ -2075,7 +2128,10 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
                        didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
 
-        if stopRequested { return }
+        if stopRequested {
+            if wantsRecording { DebugLog.write("⚠️ frame dropped: stopRequested=true while wantsRecording=true (race)") }
+            return
+        }
 
         guard CMSampleBufferDataIsReady(sampleBuffer) else { return }
         let isVideo = (output === videoOutput)
@@ -2086,7 +2142,7 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
             writerLock.lock()
             let hasWriter = writer != nil
             writerLock.unlock()
-            if hasWriter { finishSegment() }
+            if hasWriter { DebugLog.write("finishSegment triggered from didOutput (wantsRecording=false, writer still present)"); finishSegment() }
             return
         }
 
@@ -2111,6 +2167,7 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
             // drop at a segment boundary is imperceptible, whereas a stalled
             // video queue compounds into many dropped frames.
             if needsNewSegment {
+                DebugLog.write("first video frame arrived, dispatching startSegment to ioQueue")
                 ioQueue.async { [weak self] in self?.startSegment(at: pts) }
                 return
             }
