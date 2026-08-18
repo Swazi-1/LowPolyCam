@@ -371,28 +371,33 @@ struct CameraScreen: View {
                     .padding(.top, 2)
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
         .background(
-            ZStack {
-                Palette.panel.opacity(0.92)
-                LinearGradient(colors: [Palette.slate.opacity(0.35), Color.clear], startPoint: .top, endPoint: .bottom)
-            }
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(Palette.panel.opacity(0.82))
+                .background(
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .fill(.ultraThinMaterial)
+                        .environment(\.colorScheme, .dark)
+                )
         )
-        .environment(\.colorScheme, .dark)
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .stroke(
                     LinearGradient(
-                        colors: [settings.accentColor.bright.opacity(0.4), Palette.slateLight.opacity(0.2), settings.accentColor.color.opacity(0.2)],
+                        colors: [
+                            settings.accentColor.bright.opacity(0.45),
+                            Color.white.opacity(0.08),
+                            settings.accentColor.color.opacity(0.2)
+                        ],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     ),
                     lineWidth: 1
                 )
         )
-        .shadow(color: .black.opacity(0.45), radius: 12, x: 0, y: 6)
+        .shadow(color: .black.opacity(0.5), radius: 16, x: 0, y: 8)
     }
 
     private var recordingStatusRow: some View {
@@ -678,27 +683,32 @@ struct CameraScreen: View {
                 )
             }
         }
-        .padding(18)
+        .padding(20)
         .background(
-            ZStack {
-                Palette.panel.opacity(0.92)
-                LinearGradient(colors: [Palette.slate.opacity(0.3), Color.clear], startPoint: .top, endPoint: .bottom)
-            }
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .fill(Palette.panel.opacity(0.88))
+                .background(
+                    RoundedRectangle(cornerRadius: 26, style: .continuous)
+                        .fill(.ultraThinMaterial)
+                        .environment(\.colorScheme, .dark)
+                )
         )
-        .environment(\.colorScheme, .dark)
-        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
                 .stroke(
                     LinearGradient(
-                        colors: [settings.accentColor.bright.opacity(0.5), Palette.slateLight.opacity(0.2), settings.accentColor.color.opacity(0.3)],
+                        colors: [
+                            settings.accentColor.bright.opacity(0.5),
+                            Color.white.opacity(0.08),
+                            settings.accentColor.color.opacity(0.25)
+                        ],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     ),
                     lineWidth: 1.2
                 )
         )
-        .shadow(color: .black.opacity(0.55), radius: 25, x: 0, y: 12)
+        .shadow(color: .black.opacity(0.55), radius: 28, x: 0, y: 14)
     }
 
     // MARK: Bottom HUD Bar (Live Zoom Always Visible)
@@ -817,31 +827,66 @@ struct CameraScreen: View {
             }
         } label: {
             ZStack {
-                // Outer ring (no thin artifact line)
+                // Soft outer glow
                 Facet(sides: 12)
-                    .stroke(LinearGradient(colors: [settings.accentColor.bright, settings.accentColor.deep], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 4)
-                    .frame(width: 84, height: 84)
-                    .shadow(color: settings.accentColor.color.opacity(0.4), radius: 8)
+                    .fill(settings.accentColor.color.opacity(0.18))
+                    .frame(width: 96, height: 96)
+                    .blur(radius: 10)
+
+                // Outer ring
+                Facet(sides: 12)
+                    .stroke(
+                        LinearGradient(
+                            colors: [settings.accentColor.bright, settings.accentColor.deep],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 3.5
+                    )
+                    .frame(width: 88, height: 88)
+                    .shadow(color: settings.accentColor.color.opacity(0.45), radius: 12)
+
+                // Inner track
+                Facet(sides: 12)
+                    .stroke(Color.white.opacity(0.12), lineWidth: 1.5)
+                    .frame(width: 76, height: 76)
 
                 if recorder.isSaving || recorder.isCapturingPhoto {
-                    ProgressView().tint(settings.accentColor.bright).scaleEffect(1.2)
+                    ProgressView().tint(settings.accentColor.bright).scaleEffect(1.25)
                 } else if recorder.isRecording {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(LinearGradient(colors: [Palette.record, Palette.record.opacity(0.85)], startPoint: .top, endPoint: .bottom))
-                        .frame(width: 32, height: 32)
-                        .shadow(color: Palette.record.opacity(0.6), radius: 10)
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [Palette.record, Palette.record.opacity(0.82)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                        .frame(width: 30, height: 30)
+                        .shadow(color: Palette.record.opacity(0.7), radius: 12)
                 } else if countdownRemaining > 0 {
                     Image(systemName: "xmark")
-                        .font(.system(size: 24, weight: .bold))
+                        .font(.system(size: 22, weight: .bold))
                         .foregroundColor(.white)
                 } else {
                     Facet(sides: 12)
-                        .fill(LinearGradient(colors: [Color.white, Color.white.opacity(0.92)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                        .frame(width: 58, height: 58)
-                        .shadow(color: Color.white.opacity(0.35), radius: 6, x: 0, y: 3)
+                        .fill(
+                            LinearGradient(
+                                colors: [Color.white, Color.white.opacity(0.9)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .frame(width: 62, height: 62)
+                        .shadow(color: Color.white.opacity(0.4), radius: 8, x: 0, y: 3)
+                        .overlay(
+                            Facet(sides: 12)
+                                .stroke(Color.black.opacity(0.06), lineWidth: 1)
+                                .frame(width: 62, height: 62)
+                        )
                 }
             }
-            .frame(width: 84, height: 84)
+            .frame(width: 96, height: 96)
         }
         .buttonStyle(.plain)
         .contentShape(Circle())
@@ -852,7 +897,7 @@ struct CameraScreen: View {
     private var modeSelector: some View {
         let modes = CameraMode.allCases
 
-        return HStack(spacing: 0) {
+        return HStack(spacing: 4) {
             ForEach(modes) { mode in
                 let isActive = settings.cameraMode == mode
                 Button {
@@ -864,21 +909,47 @@ struct CameraScreen: View {
                     recorder.updateCaptureFormat()
                 } label: {
                     Text(mode.label)
-                        .font(.system(size: 13, weight: isActive ? .bold : .medium))
-                        .foregroundColor(isActive
-                            ? settings.accentColor.bright
-                            : .white.opacity(0.6))
+                        .font(.system(size: 13, weight: isActive ? .bold : .semibold, design: .rounded))
+                        .foregroundColor(isActive ? Palette.slateDeep : .white.opacity(0.7))
                         .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
+                        .padding(.vertical, 9)
+                        .background(
+                            Group {
+                                if isActive {
+                                    Capsule()
+                                        .fill(
+                                            LinearGradient(
+                                                colors: [settings.accentColor.bright, settings.accentColor.color],
+                                                startPoint: .topLeading,
+                                                endPoint: .bottomTrailing
+                                            )
+                                        )
+                                        .shadow(color: settings.accentColor.color.opacity(0.4), radius: 6, y: 2)
+                                }
+                            }
+                        )
                 }
                 .buttonStyle(.plain)
             }
         }
-        .background(Palette.panel.opacity(0.85))
-        .environment(\.colorScheme, .dark)
-        .clipShape(Capsule())
-        .overlay(Capsule().stroke(Palette.slateLight.opacity(0.35), lineWidth: 0.8))
-        .shadow(color: .black.opacity(0.2), radius: 6, x: 0, y: 3)
+        .padding(4)
+        .background(
+            Capsule()
+                .fill(Palette.panel.opacity(0.88))
+                .background(Capsule().fill(.ultraThinMaterial).environment(\.colorScheme, .dark))
+        )
+        .overlay(
+            Capsule()
+                .stroke(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.16), Color.white.opacity(0.04)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1
+                )
+        )
+        .shadow(color: .black.opacity(0.35), radius: 12, x: 0, y: 6)
     }
 
     private func facetButton(system: String,
@@ -887,17 +958,30 @@ struct CameraScreen: View {
                              action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: system)
-                .font(.system(size: size * 0.38, weight: .medium))
+                .font(.system(size: size * 0.36, weight: .semibold))
                 .foregroundColor(tint)
                 .frame(width: size, height: size)
-                .background(Palette.panel.opacity(0.85))
-                .environment(\.colorScheme, .dark)
-                .clipShape(Facet(sides: 6, rotation: .pi / 6))
+                .background(
+                    Facet(sides: 6, rotation: .pi / 6)
+                        .fill(Palette.panel.opacity(0.88))
+                        .background(
+                            Facet(sides: 6, rotation: .pi / 6)
+                                .fill(.ultraThinMaterial)
+                                .environment(\.colorScheme, .dark)
+                        )
+                )
                 .overlay(
                     Facet(sides: 6, rotation: .pi / 6)
-                        .stroke(Palette.slateLight.opacity(0.35), lineWidth: 0.8)
+                        .stroke(
+                            LinearGradient(
+                                colors: [Color.white.opacity(0.22), Color.white.opacity(0.06)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 1
+                        )
                 )
-                .shadow(color: .black.opacity(0.2), radius: 6, x: 0, y: 3)
+                .shadow(color: .black.opacity(0.4), radius: 10, x: 0, y: 5)
         }
         .buttonStyle(.plain)
         // Negative inset grows the TAPPABLE area by 8pt on every side without
@@ -991,25 +1075,27 @@ struct CameraScreen: View {
     }
 
     private func noticeBar(_ text: String) -> some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 8) {
             Image(systemName: "info.circle.fill")
-                .font(.system(size: 11, weight: .bold))
+                .font(.system(size: 12, weight: .bold))
                 .foregroundColor(settings.accentColor.bright)
 
             Text(text)
                 .font(.system(size: 12, weight: .bold, design: .rounded))
                 .foregroundColor(.white.opacity(0.95))
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 7)
-        .background(Palette.panel.opacity(0.92))
-        .environment(\.colorScheme, .dark)
-        .clipShape(Capsule())
+        .padding(.horizontal, 16)
+        .padding(.vertical, 9)
+        .background(
+            Capsule()
+                .fill(Palette.panel.opacity(0.9))
+                .background(Capsule().fill(.ultraThinMaterial).environment(\.colorScheme, .dark))
+        )
         .overlay(
             Capsule()
-                .stroke(settings.accentColor.bright.opacity(0.4), lineWidth: 0.8)
+                .stroke(settings.accentColor.bright.opacity(0.45), lineWidth: 1)
         )
-        .shadow(color: .black.opacity(0.35), radius: 8, x: 0, y: 4)
+        .shadow(color: .black.opacity(0.4), radius: 12, x: 0, y: 5)
         .onTapGesture {
             withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                 recorder.notice = nil
@@ -1018,31 +1104,60 @@ struct CameraScreen: View {
     }
 
     private var permissionMessage: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "camera.fill")
-                .font(.system(size: 44))
-                .foregroundColor(settings.accentColor.bright)
-                .shadow(color: settings.accentColor.color.opacity(0.5), radius: 10)
+        VStack(spacing: 18) {
+            ZStack {
+                Facet(sides: 6, rotation: .pi / 6)
+                    .fill(settings.accentColor.color.opacity(0.2))
+                    .frame(width: 80, height: 80)
+                Image(systemName: "camera.fill")
+                    .font(.system(size: 32, weight: .semibold))
+                    .foregroundColor(settings.accentColor.bright)
+            }
+            .shadow(color: settings.accentColor.color.opacity(0.4), radius: 16)
+
             Text("Camera access is off")
-                .font(.system(size: 20, weight: .bold))
+                .font(.system(size: 20, weight: .bold, design: .rounded))
             Text("Turn it on in Settings › LowPolyCam.")
-                .font(.system(size: 15))
-                .foregroundColor(.white.opacity(0.7))
+                .font(.system(size: 15, weight: .medium))
+                .foregroundColor(.white.opacity(0.65))
             Button("Open Settings") {
                 if let url = URL(string: UIApplication.openSettingsURLString) {
                     UIApplication.shared.open(url)
                 }
             }
-            .font(.system(size: 16, weight: .bold))
-            .foregroundColor(settings.accentColor.bright)
-            .padding(.top, 8)
+            .font(.system(size: 15, weight: .bold, design: .rounded))
+            .foregroundColor(Palette.slateDeep)
+            .padding(.horizontal, 22)
+            .padding(.vertical, 12)
+            .background(
+                Capsule()
+                    .fill(
+                        LinearGradient(
+                            colors: [settings.accentColor.bright, settings.accentColor.color],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+            )
+            .shadow(color: settings.accentColor.color.opacity(0.4), radius: 8, y: 3)
+            .padding(.top, 6)
         }
         .foregroundColor(.white)
-        .padding(32)
-        .background(Palette.panel.opacity(0.95))
-        .environment(\.colorScheme, .dark)
-        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .shadow(color: .black.opacity(0.3), radius: 20, x: 0, y: 10)
+        .padding(36)
+        .background(
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .fill(Palette.panel.opacity(0.92))
+                .background(
+                    RoundedRectangle(cornerRadius: 28, style: .continuous)
+                        .fill(.ultraThinMaterial)
+                        .environment(\.colorScheme, .dark)
+                )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .stroke(Color.white.opacity(0.1), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.45), radius: 28, x: 0, y: 14)
     }
 
     // MARK: Zoom & Focus
@@ -1083,7 +1198,7 @@ struct CameraScreen: View {
     }
 
     private var zoomPresetRow: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             ForEach(zoomPresets, id: \.self) { preset in
                 let isSelected = abs(recorder.zoomFactor - preset) < 0.05
                 Button(action: {
@@ -1097,14 +1212,33 @@ struct CameraScreen: View {
                     scheduleHideZoomLabel()
                 }) {
                     Text(zoomLabel(for: preset))
-                        .font(.system(size: isSelected ? 12 : 10, weight: .bold))
+                        .font(.system(size: isSelected ? 12 : 11, weight: .bold, design: .rounded))
                         .lineLimit(1)
                         .minimumScaleFactor(0.7)
-                        .foregroundColor(isSelected ? Palette.slateDeep : .white)
-                        .frame(width: isSelected ? 36 : 30, height: isSelected ? 36 : 30)
-                        .background(isSelected ? settings.accentColor.bright : Palette.panel.opacity(0.85))
-                        .clipShape(Circle())
-                        .overlay(Circle().stroke(isSelected ? settings.accentColor.bright : Palette.slateLight.opacity(0.35), lineWidth: 0.8))
+                        .foregroundColor(isSelected ? Palette.slateDeep : .white.opacity(0.85))
+                        .frame(width: isSelected ? 38 : 32, height: isSelected ? 38 : 32)
+                        .background(
+                            Group {
+                                if isSelected {
+                                    Circle()
+                                        .fill(
+                                            LinearGradient(
+                                                colors: [settings.accentColor.bright, settings.accentColor.color],
+                                                startPoint: .topLeading,
+                                                endPoint: .bottomTrailing
+                                            )
+                                        )
+                                        .shadow(color: settings.accentColor.color.opacity(0.45), radius: 6)
+                                } else {
+                                    Circle()
+                                        .fill(Palette.slateMid.opacity(0.65))
+                                }
+                            }
+                        )
+                        .overlay(
+                            Circle()
+                                .stroke(isSelected ? Color.clear : Color.white.opacity(0.12), lineWidth: 1)
+                        )
                 }
                 .buttonStyle(.plain)
                 .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isSelected)
@@ -1112,10 +1246,16 @@ struct CameraScreen: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .background(Palette.panel.opacity(0.85))
-        .environment(\.colorScheme, .dark)
-        .clipShape(Capsule())
-        .overlay(Capsule().stroke(Palette.slateLight.opacity(0.35), lineWidth: 0.8))
+        .background(
+            Capsule()
+                .fill(Palette.panel.opacity(0.88))
+                .background(Capsule().fill(.ultraThinMaterial).environment(\.colorScheme, .dark))
+        )
+        .overlay(
+            Capsule()
+                .stroke(Color.white.opacity(0.12), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.3), radius: 10, y: 4)
         .frame(maxWidth: .infinity)
     }
 
@@ -1125,11 +1265,16 @@ struct CameraScreen: View {
             .foregroundColor(.white)
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
-            .background(Palette.panel.opacity(0.9))
-            .environment(\.colorScheme, .dark)
-            .clipShape(Capsule())
-            .overlay(Capsule().stroke(Palette.slateLight.opacity(0.35), lineWidth: 0.8))
-            .shadow(color: .black.opacity(0.2), radius: 6, x: 0, y: 3)
+            .background(
+                Capsule()
+                    .fill(Palette.panel.opacity(0.9))
+                    .background(Capsule().fill(.ultraThinMaterial).environment(\.colorScheme, .dark))
+            )
+            .overlay(
+                Capsule()
+                    .stroke(settings.accentColor.bright.opacity(0.35), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.35), radius: 10, x: 0, y: 4)
     }
 
     private func scheduleHideZoomLabel() {
