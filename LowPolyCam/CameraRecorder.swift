@@ -118,6 +118,15 @@ final class CameraRecorder: NSObject, ObservableObject {
         set { stopLock.lock(); _stopRequested = newValue; stopLock.unlock() }
     }
 
+    // Bumped every time startRecording() runs. A stopRecording() call
+    // captures the token of the session it's stopping; if by the time it
+    // actually executes on ioQueue the token no longer matches the current
+    // session, that stop is stale and must be ignored — otherwise a
+    // leftover/delayed stop from a previous tap can tear down a *newer*
+    // recording that started in the meantime (start -> stop -> start fast
+    // = the newer recording gets killed by the old stop).
+    private var recordingSessionToken: Int = 0
+
     // Guards writer/videoIn/audioIn/segmentStart/lastVideoPTS/recordStartPTS,
     // which are now touched from both videoQueue and audioQueue concurrently
     // (previously safe because both ran serially on one shared queue).
@@ -1467,6 +1476,8 @@ final class CameraRecorder: NSObject, ObservableObject {
         let transform = Self.transform(width: newPlan.width, height: newPlan.height, isFront: isFrontCamera)
 
         stopRequested = false
+        recordingSessionToken += 1
+        let myToken = recordingSessionToken
 
         ioQueue.async {
             self.plan = newPlan
@@ -1488,25 +1499,22 @@ final class CameraRecorder: NSObject, ObservableObject {
         isRecording = true
         UIApplication.shared.isIdleTimerDisabled = true
         if settings.shutterSoundEnabled { SoundPlayer.play(.start) }
+        _ = myToken // captured for symmetry; stopRecording reads the live token itself
     }
 
     func stopRecording(notice message: String?) {
         guard isRecording else { return }
 
-        // Guard against a stop landing in the same fraction of a second as
-        // the start (e.g. a double-fired button tap). Recording needs a
-        // moment to actually spin up its first segment on ioQueue; stopping
-        // before that produces a writer with ~0 frames, which still
-        // "succeeds" and shows a save confirmation for an empty clip.
-        writerLock.lock()
-        let hasStartedSegment = recordStartPTS.isValid
-        writerLock.unlock()
-        if !hasStartedSegment {
-            ioQueue.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-                self?.stopRecording(notice: message)
-            }
-            return
-        }
+        // Snapshot which recording session this stop belongs to. If a
+        // *newer* recording has started by the time this actually runs on
+        // ioQueue (possible if stop/start are tapped in quick succession,
+        // or a prior stop was still finishing up), bail out instead of
+        // tearing down the newer session. Without this, a fast
+        // stop -> start could let the old stop's async work land after the
+        // new recording began, instantly killing it — matching the
+        // "start, stop, start again -> instantly errors/instantly saves a
+        // blank clip" pattern.
+        let myToken = recordingSessionToken
 
         if settings.shutterSoundEnabled { SoundPlayer.play(.stop) }
         stopRequested = true
@@ -1526,6 +1534,16 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
 
         ioQueue.async {
+            guard myToken == self.recordingSessionToken else {
+                // A newer recording has already started; this stop is
+                // stale, do not touch its writer/state.
+                DispatchQueue.main.async { self.isSaving = false }
+                if task != .invalid {
+                    UIApplication.shared.endBackgroundTask(task)
+                    task = .invalid
+                }
+                return
+            }
             self.wantsRecording = false
             self.finishSegment {
                 DispatchQueue.main.async { self.isSaving = false }
