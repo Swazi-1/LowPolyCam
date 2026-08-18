@@ -787,18 +787,11 @@ struct CameraScreen: View {
             }
         } label: {
             ZStack {
-                Facet(sides: 12, rotation: .pi / 12)
-                    .stroke(settings.accentColor.deep.opacity(0.35), lineWidth: 1)
-                    .frame(width: 84, height: 84)
-
+                // Outer ring (no thin artifact line)
                 Facet(sides: 12)
                     .stroke(LinearGradient(colors: [settings.accentColor.bright, settings.accentColor.deep], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 4)
-                    .frame(width: 78, height: 78)
+                    .frame(width: 84, height: 84)
                     .shadow(color: settings.accentColor.color.opacity(0.4), radius: 8)
-
-                Facet(sides: 12)
-                    .stroke(settings.accentColor.deep.opacity(0.3), lineWidth: 1.5)
-                    .frame(width: 66, height: 66)
 
                 if recorder.isSaving || recorder.isCapturingPhoto {
                     ProgressView().tint(settings.accentColor.bright).scaleEffect(1.2)
@@ -819,7 +812,6 @@ struct CameraScreen: View {
                 }
             }
             .frame(width: 84, height: 84)
-            .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .disabled(recorder.isSaving || recorder.isSwitchingCamera || recorder.isCapturingPhoto)
@@ -876,9 +868,11 @@ struct CameraScreen: View {
                         .stroke(Palette.slateLight.opacity(0.35), lineWidth: 0.8)
                 )
                 .shadow(color: .black.opacity(0.2), radius: 6, x: 0, y: 3)
-                .contentShape(Circle())
         }
         .buttonStyle(.plain)
+        // Use a larger square hitbox to ensure taps register reliably
+        .contentShape(Rectangle())
+        .frame(width: size + 12, height: size + 12)
     }
 
     // MARK: Overlays (Level Meter & Countdown)
