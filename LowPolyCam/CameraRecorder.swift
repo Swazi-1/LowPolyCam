@@ -1549,14 +1549,6 @@ final class CameraRecorder: NSObject, ObservableObject {
                                        outputSettings: Encoder.videoSettings(for: plan, writer: w))
             v.expectsMediaDataInRealTime = true
             v.transform = clipTransform
-            // Give the video input more breathing room than the default
-            // heuristic. AVAssetWriterInput's internal readiness signal is
-            // conservative; without this hint it can report "not ready" for
-            // a frame that would have fit fine, which is what was causing
-            // real frames to be dropped (and 4K30 clips reading back as
-            // ~29 fps or lower in Photos) even though the hardware encoder
-            // itself had headroom.
-            v.performsMultiPassEncodingIfSupported = false
             guard w.canAdd(v) else { throw RecorderError.cannotAddInput }
             w.add(v)
 
