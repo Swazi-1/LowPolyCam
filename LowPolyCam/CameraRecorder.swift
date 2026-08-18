@@ -376,7 +376,11 @@ final class CameraRecorder: NSObject, ObservableObject {
             cameraInput = input
         }
 
-        videoOutput.alwaysDiscardsLateVideoFrames = false
+        // On weaker/older hardware (e.g. iPhone 7's A10) the encoder can
+        // fall behind under thermal load. Discarding late frames instead of
+        // queueing them keeps memory bounded and avoids a growing backlog —
+        // dropped frames are already tracked via didDrop/countDroppedFrame.
+        videoOutput.alwaysDiscardsLateVideoFrames = true
         videoOutput.videoSettings = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         ]
