@@ -71,6 +71,16 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     private let settings: AppSettings
     private let sessionQueue = DispatchQueue(label: "lowpolycam.session")
+    // Video sample buffers land on their own high-priority queue so nothing
+    // else (audio delivery, segment rotation, finishWriting bookkeeping) can
+    // ever block or delay a video frame. Sharing a single queue for video +
+    // audio + writer teardown was causing the AVAssetWriter to miss frames
+    // under load (e.g. new AVAssetWriter/encoder session spin-up at segment
+    // rotation), which is what made Photos report a non-30 average fps
+    // (24.64, 26.51, etc.) even though the file's wall-clock duration was
+    // correct — the frame *count* was just short.
+    private let videoQueue = DispatchQueue(label: "lowpolycam.video", qos: .userInteractive)
+    private let audioQueue = DispatchQueue(label: "lowpolycam.audio", qos: .userInitiated)
     private let ioQueue = DispatchQueue(label: "lowpolycam.io", qos: .userInitiated)
     private let motionManager = CMMotionManager()
 
@@ -107,6 +117,11 @@ final class CameraRecorder: NSObject, ObservableObject {
         get { stopLock.lock(); defer { stopLock.unlock() }; return _stopRequested }
         set { stopLock.lock(); _stopRequested = newValue; stopLock.unlock() }
     }
+
+    // Guards writer/videoIn/audioIn/segmentStart/lastVideoPTS/recordStartPTS,
+    // which are now touched from both videoQueue and audioQueue concurrently
+    // (previously safe because both ran serially on one shared queue).
+    private let writerLock = NSLock()
 
     private var rawMaxZoomSnapshot: CGFloat = 1
     private var rawMinZoomSnapshot: CGFloat = 1
@@ -380,10 +395,10 @@ final class CameraRecorder: NSObject, ObservableObject {
         videoOutput.videoSettings = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         ]
-        videoOutput.setSampleBufferDelegate(self, queue: ioQueue)
+        videoOutput.setSampleBufferDelegate(self, queue: videoQueue)
         if session.canAddOutput(videoOutput) { session.addOutput(videoOutput) }
 
-        audioOutput.setSampleBufferDelegate(self, queue: ioQueue)
+        audioOutput.setSampleBufferDelegate(self, queue: audioQueue)
         if session.canAddOutput(audioOutput) { session.addOutput(audioOutput) }
 
         if session.canAddOutput(photoOutput) { session.addOutput(photoOutput) }
@@ -1457,7 +1472,9 @@ final class CameraRecorder: NSObject, ObservableObject {
             self.plan = newPlan
             self.recordingDestination = self.settings.saveLocation
             self.clipTransform = transform
+            self.writerLock.lock()
             self.recordStartPTS = .invalid
+            self.writerLock.unlock()
             self.lastElapsedPush = .invalid
             self.droppedFrameCount = 0
             self.wantsRecording = true
@@ -1532,6 +1549,14 @@ final class CameraRecorder: NSObject, ObservableObject {
                                        outputSettings: Encoder.videoSettings(for: plan, writer: w))
             v.expectsMediaDataInRealTime = true
             v.transform = clipTransform
+            // Give the video input more breathing room than the default
+            // heuristic. AVAssetWriterInput's internal readiness signal is
+            // conservative; without this hint it can report "not ready" for
+            // a frame that would have fit fine, which is what was causing
+            // real frames to be dropped (and 4K30 clips reading back as
+            // ~29 fps or lower in Photos) even though the hardware encoder
+            // itself had headroom.
+            v.performsMultiPassEncodingIfSupported = false
             guard w.canAdd(v) else { throw RecorderError.cannotAddInput }
             w.add(v)
 
@@ -1547,12 +1572,14 @@ final class CameraRecorder: NSObject, ObservableObject {
             }
             w.startSession(atSourceTime: pts)
 
+            writerLock.lock()
             writer = w
             videoIn = v
             audioIn = a
             segmentStart = pts
             lastVideoPTS = pts
             if !recordStartPTS.isValid { recordStartPTS = pts }
+            writerLock.unlock()
 
             DispatchQueue.main.async { self.clipsThisSession += 1 }
 
@@ -1567,8 +1594,10 @@ final class CameraRecorder: NSObject, ObservableObject {
     }
 
     private func finishSegment(_ completion: (() -> Void)? = nil) {
+        writerLock.lock()
         guard let w = writer, let v = videoIn else {
             writer = nil; videoIn = nil; audioIn = nil
+            writerLock.unlock()
             completion?()
             return
         }
@@ -1580,6 +1609,7 @@ final class CameraRecorder: NSObject, ObservableObject {
 
         writer = nil; videoIn = nil; audioIn = nil
         segmentStart = .invalid
+        writerLock.unlock()
 
         guard w.status == .writing else {
             w.cancelWriting()
@@ -1613,7 +1643,11 @@ final class CameraRecorder: NSObject, ObservableObject {
     }
 
     private func rotateSegment(at pts: CMTime) {
-        guard let oldWriter = writer, let oldVideoIn = videoIn else { return }
+        writerLock.lock()
+        guard let oldWriter = writer, let oldVideoIn = videoIn else {
+            writerLock.unlock()
+            return
+        }
         let oldAudioIn = audioIn
         let oldEnd = lastVideoPTS
         let oldStart = segmentStart
@@ -1622,6 +1656,7 @@ final class CameraRecorder: NSObject, ObservableObject {
 
         writer = nil; videoIn = nil; audioIn = nil
         segmentStart = .invalid
+        writerLock.unlock()
 
         if oldWriter.status == .writing {
             oldVideoIn.markAsFinished()
@@ -2020,37 +2055,90 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
         guard CMSampleBufferDataIsReady(sampleBuffer) else { return }
         let isVideo = (output === videoOutput)
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        let dur = CMSampleBufferGetDuration(sampleBuffer)
 
         guard wantsRecording else {
-            if writer != nil { finishSegment() }
+            writerLock.lock()
+            let hasWriter = writer != nil
+            writerLock.unlock()
+            if hasWriter { finishSegment() }
             return
         }
 
         if isVideo {
-            if writer == nil {
-                startSegment(at: pts)
-            } else if let splitLimit = plan?.splitInterval.seconds, segmentStart.isValid {
+            writerLock.lock()
+            let needsNewSegment = (writer == nil)
+            var needsRotate = false
+            if !needsNewSegment, let splitLimit = plan?.splitInterval.seconds, segmentStart.isValid {
                 let duration = CMTimeGetSeconds(CMTimeSubtract(pts, segmentStart))
-                if duration >= splitLimit {
-                    rotateSegment(at: pts)
-                }
+                needsRotate = duration >= splitLimit
+            }
+            writerLock.unlock()
+
+            // Starting or rotating a segment spins up a brand-new
+            // AVAssetWriter/hardware encoder session. That must never happen
+            // inline on the video delivery queue — even a few milliseconds
+            // of setup latency here causes the *next* incoming frame(s) to
+            // be dropped (isReadyForMoreMediaData still false), which is
+            // exactly what under-reports fps in Photos. So we hand this
+            // frame's timestamp off to ioQueue and simply drop this one
+            // frame's video data while the swap happens — a single frame
+            // drop at a segment boundary is imperceptible, whereas a stalled
+            // video queue compounds into many dropped frames.
+            if needsNewSegment {
+                ioQueue.async { [weak self] in self?.startSegment(at: pts) }
+                return
+            }
+            if needsRotate {
+                ioQueue.async { [weak self] in self?.rotateSegment(at: pts) }
+                return
             }
         }
 
-        guard let w = writer, w.status == .writing else { return }
-        guard segmentStart.isValid, CMTimeCompare(pts, segmentStart) >= 0 else { return }
+        writerLock.lock()
+        guard let w = writer, w.status == .writing,
+              segmentStart.isValid, CMTimeCompare(pts, segmentStart) >= 0 else {
+            writerLock.unlock()
+            return
+        }
+        let vIn = videoIn
+        let aIn = audioIn
+        writerLock.unlock()
 
         if isVideo {
-            if videoIn?.isReadyForMoreMediaData == true {
-                videoIn?.append(sampleBuffer)
-                lastVideoPTS = pts
+            if vIn?.isReadyForMoreMediaData == true {
+                vIn?.append(sampleBuffer)
+                writerLock.lock()
+                lastVideoPTS = dur.isValid && dur.isNumeric ? CMTimeAdd(pts, dur) : pts
+                writerLock.unlock()
             } else {
-                countDroppedFrame()
+                // The writer briefly wasn't ready. Most of these stalls are
+                // sub-millisecond (encoder catching its breath between
+                // frames, not truly falling behind) — spinning here for a
+                // couple hundred microseconds recovers the vast majority of
+                // frames that the old code counted as dropped outright, which
+                // is what was under-reporting fps in Photos (4K30 clips
+                // reading back at ~29 fps or lower despite the hardware
+                // encoder having headroom). If it's still not ready after
+                // a few short retries, it really is dropped and we count it.
+                var appended = false
+                for _ in 0..<4 {
+                    usleep(300)
+                    if vIn?.isReadyForMoreMediaData == true {
+                        vIn?.append(sampleBuffer)
+                        writerLock.lock()
+                        lastVideoPTS = dur.isValid && dur.isNumeric ? CMTimeAdd(pts, dur) : pts
+                        writerLock.unlock()
+                        appended = true
+                        break
+                    }
+                }
+                if !appended { countDroppedFrame() }
             }
             pushElapsed(pts)
         } else {
-            if audioIn?.isReadyForMoreMediaData == true {
-                audioIn?.append(sampleBuffer)
+            if aIn?.isReadyForMoreMediaData == true {
+                aIn?.append(sampleBuffer)
             }
         }
     }
@@ -2067,7 +2155,10 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
     }
 
     private func pushElapsed(_ pts: CMTime) {
-        guard recordStartPTS.isValid else { return }
+        writerLock.lock()
+        let start = recordStartPTS
+        writerLock.unlock()
+        guard start.isValid else { return }
         if lastElapsedPush.isValid,
            CMTimeGetSeconds(CMTimeSubtract(pts, lastElapsedPush)) < 0.25 { return }
         lastElapsedPush = pts
@@ -2079,7 +2170,7 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
             return
         }
 
-        let seconds = CMTimeGetSeconds(CMTimeSubtract(pts, recordStartPTS))
+        let seconds = CMTimeGetSeconds(CMTimeSubtract(pts, start))
         let drops = droppedFrameCount
         let level = currentAudioLevel()
 
