@@ -667,15 +667,15 @@ struct EncodePlan {
 
 enum Encoder {
 
-    // Tuned for A10 (iPhone 7). Too-high 4K rates made the encoder drop frames
-    // so Photos reported ~24–26 fps instead of a solid 30.
+    // Conservative rates for A10 VideoDataOutput+AssetWriter path.
+    // Higher values caused systematic frame drops → Photos showed ~24–26 fps.
     private static let videoKbps: [Resolution: [Quality: Int]] = [
-        .p2160: [.high: 12000, .medium: 8000,  .low: 5000, .ultraLow: 3000],
-        .p1080: [.high: 7000,  .medium: 3500,  .low: 1800, .ultraLow: 400],
-        .p720:  [.high: 3500,  .medium: 1800,  .low: 900,  .ultraLow: 250],
-        .p480:  [.high: 1800,  .medium: 900,   .low: 450,  .ultraLow: 130],
-        .p320:  [.high: 900,   .medium: 450,   .low: 220,  .ultraLow: 80],
-        .p144:  [.high: 350,   .medium: 180,   .low: 90,   .ultraLow: 40]
+        .p2160: [.high: 8000,  .medium: 5500,  .low: 3500, .ultraLow: 2200],
+        .p1080: [.high: 6000,  .medium: 3000,  .low: 1500, .ultraLow: 400],
+        .p720:  [.high: 3000,  .medium: 1500,  .low: 800,  .ultraLow: 250],
+        .p480:  [.high: 1500,  .medium: 800,   .low: 400,  .ultraLow: 130],
+        .p320:  [.high: 800,   .medium: 400,   .low: 200,  .ultraLow: 80],
+        .p144:  [.high: 300,   .medium: 150,   .low: 80,   .ultraLow: 40]
     ]
 
     private static let audioKbps: [Quality: Int] = [
@@ -709,7 +709,9 @@ enum Encoder {
         }
 
         let kbps = Double(baseKbps) * codecMultiplier * fpsFactor
-        let gopSeconds = keyFrameSeconds[settings.quality] ?? 4
+        // Longer GOPs at 4K reduce I-frame spikes that backlog the A10 encoder.
+        var gopSeconds = keyFrameSeconds[settings.quality] ?? 4
+        if res == .p2160 { gopSeconds = max(gopSeconds, 5) }
         let aKbps = settings.recordAudio ? (audioKbps[settings.quality] ?? 32) : 0
 
         return EncodePlan(
@@ -730,11 +732,12 @@ enum Encoder {
     static func videoSettings(for plan: EncodePlan, writer: AVAssetWriter) -> [String: Any] {
 
         func build(_ codec: AVVideoCodecType) -> [String: Any] {
+            // Real-time path: no B-frame reordering (less backlog on A10).
             var compression: [String: Any] = [
                 AVVideoAverageBitRateKey: plan.videoBitrate,
                 AVVideoMaxKeyFrameIntervalKey: plan.keyFrameInterval,
                 AVVideoExpectedSourceFrameRateKey: plan.frameRate,
-                AVVideoAllowFrameReorderingKey: true
+                AVVideoAllowFrameReorderingKey: false
             ]
             if codec == .h264 {
                 compression[AVVideoProfileLevelKey] = AVVideoProfileLevelH264HighAutoLevel
@@ -743,7 +746,7 @@ enum Encoder {
                 AVVideoCodecKey: codec,
                 AVVideoWidthKey: plan.width,
                 AVVideoHeightKey: plan.height,
-                AVVideoScalingModeKey: AVVideoScalingModeResizeAspectFill,
+                AVVideoScalingModeKey: AVVideoScalingModeResizeAspect,
                 AVVideoCompressionPropertiesKey: compression
             ]
         }
