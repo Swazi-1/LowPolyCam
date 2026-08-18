@@ -132,8 +132,8 @@ struct CameraScreen: View {
 
                     bottomHUD
                 }
-                .padding(.horizontal, 18)
-                .padding(.vertical, 10)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
             }
         }
         .statusBar(hidden: true)
@@ -239,20 +239,21 @@ struct CameraScreen: View {
         HStack(alignment: .center, spacing: 10) {
             if recorder.hasTorch {
                 facetButton(system: recorder.torchOn ? "bolt.fill" : "bolt.slash.fill",
+                            size: 40,
                             tint: recorder.torchOn ? settings.accentColor.bright : .white) {
                     recorder.toggleTorch()
                 }
             } else {
-                Spacer().frame(width: 48, height: 48)
+                Spacer().frame(width: 40, height: 40)
             }
 
-            Spacer(minLength: 8)
+            Spacer(minLength: 6)
 
             compactInfoPill
 
-            Spacer(minLength: 8)
+            Spacer(minLength: 6)
 
-            facetButton(system: "gearshape.fill") { showSettings = true }
+            facetButton(system: "gearshape.fill", size: 40) { showSettings = true }
                 .disabled(recorder.isRecording || recorder.isSaving || recorder.isSwitchingCamera)
                 .opacity((recorder.isRecording || recorder.isSaving || recorder.isSwitchingCamera) ? 0.35 : 1)
                 // Bigger tap target just for settings — inset further than the other
@@ -386,19 +387,19 @@ struct CameraScreen: View {
                     .padding(.top, 2)
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
         .background(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(Palette.panel.opacity(0.82))
                 .background(
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .fill(.ultraThinMaterial)
                         .environment(\.colorScheme, .dark)
                 )
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(
                     LinearGradient(
                         colors: [
@@ -412,7 +413,7 @@ struct CameraScreen: View {
                     lineWidth: 1
                 )
         )
-        .shadow(color: .black.opacity(0.5), radius: 16, x: 0, y: 8)
+        .shadow(color: .black.opacity(0.45), radius: 10, x: 0, y: 5)
     }
 
     private var recordingStatusRow: some View {
@@ -736,18 +737,18 @@ struct CameraScreen: View {
                 .opacity(recorder.isRecording ? 0.45 : 1)
             }
         }
-        .padding(20)
+        .padding(14)
         .background(
-            RoundedRectangle(cornerRadius: 26, style: .continuous)
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .fill(Palette.panel.opacity(0.88))
                 .background(
-                    RoundedRectangle(cornerRadius: 26, style: .continuous)
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
                         .fill(.ultraThinMaterial)
                         .environment(\.colorScheme, .dark)
                 )
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 26, style: .continuous)
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(
                     LinearGradient(
                         colors: [
@@ -767,7 +768,7 @@ struct CameraScreen: View {
     // MARK: Bottom HUD Bar (Live Zoom Always Visible)
 
     private var bottomHUD: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 8) {
             // Zoom preset row stays visible & interactive during recording
             zoomPresetRow
                 .disabled(recorder.isSwitchingCamera || recorder.isSaving)
@@ -792,14 +793,14 @@ struct CameraScreen: View {
                             Image(uiImage: thumb)
                                 .resizable()
                                 .aspectRatio(contentMode: .fill)
-                                .frame(width: 50, height: 50)
+                                .frame(width: 44, height: 44)
                                 .clipShape(Facet(sides: 6, rotation: .pi / 6))
                                 .overlay(Facet(sides: 6, rotation: .pi / 6).stroke(settings.accentColor.color.opacity(0.7), lineWidth: 1.5))
                                 .shadow(color: .black.opacity(0.3), radius: 5)
                         }
                         .buttonStyle(.plain)
                     } else {
-                        facetButton(system: "square.stack.3d.up.fill", size: 50) { showGallery = true }
+                        facetButton(system: "square.stack.3d.up.fill", size: 44) { showGallery = true }
                             .disabled(recorder.isRecording || recorder.isSaving)
                             .opacity((recorder.isRecording || recorder.isSaving) ? 0.35 : 1)
                     }
@@ -829,16 +830,16 @@ struct CameraScreen: View {
                     }
 
                     if recorder.isRecording {
-                        facetButton(system: "moon.fill", size: 56) { enterDim() }
+                        facetButton(system: "moon.fill", size: 44) { enterDim() }
                     } else {
-                        facetButton(system: "arrow.triangle.2.circlepath.camera.fill", size: 56) {
+                        facetButton(system: "arrow.triangle.2.circlepath.camera.fill", size: 44) {
                             recorder.flipCamera()
                         }
                         .disabled(recorder.isSaving || recorder.isSwitchingCamera || recorder.isCapturingPhoto || countdownRemaining > 0)
                         .opacity((recorder.isSaving || recorder.isSwitchingCamera || recorder.isCapturingPhoto || countdownRemaining > 0) ? 0.35 : 1)
                     }
                 }
-                .padding(.horizontal, 8)
+                .padding(.horizontal, 4)
             }
         }
     }
@@ -883,8 +884,8 @@ struct CameraScreen: View {
                 // Soft outer glow
                 Facet(sides: 12)
                     .fill(settings.accentColor.color.opacity(0.18))
-                    .frame(width: 96, height: 96)
-                    .blur(radius: 10)
+                    .frame(width: 82, height: 82)
+                    .blur(radius: 8)
 
                 // Outer ring
                 Facet(sides: 12)
@@ -896,13 +897,13 @@ struct CameraScreen: View {
                         ),
                         lineWidth: 3.5
                     )
-                    .frame(width: 88, height: 88)
-                    .shadow(color: settings.accentColor.color.opacity(0.45), radius: 12)
+                    .frame(width: 76, height: 76)
+                    .shadow(color: settings.accentColor.color.opacity(0.45), radius: 10)
 
                 // Inner track
                 Facet(sides: 12)
                     .stroke(Color.white.opacity(0.12), lineWidth: 1.5)
-                    .frame(width: 76, height: 76)
+                    .frame(width: 66, height: 66)
 
                 if recorder.isSaving || recorder.isCapturingPhoto {
                     ProgressView().tint(settings.accentColor.bright).scaleEffect(1.25)
@@ -930,16 +931,16 @@ struct CameraScreen: View {
                                 endPoint: .bottomTrailing
                             )
                         )
-                        .frame(width: 62, height: 62)
-                        .shadow(color: Color.white.opacity(0.4), radius: 8, x: 0, y: 3)
+                        .frame(width: 54, height: 54)
+                        .shadow(color: Color.white.opacity(0.4), radius: 6, x: 0, y: 2)
                         .overlay(
                             Facet(sides: 12)
                                 .stroke(Color.black.opacity(0.06), lineWidth: 1)
-                                .frame(width: 62, height: 62)
+                                .frame(width: 54, height: 54)
                         )
                 }
             }
-            .frame(width: 96, height: 96)
+            .frame(width: 82, height: 82)
         }
         .buttonStyle(.plain)
         .contentShape(Circle())
@@ -964,8 +965,8 @@ struct CameraScreen: View {
                     Text(mode.label)
                         .font(.system(size: 13, weight: isActive ? .bold : .semibold, design: .rounded))
                         .foregroundColor(isActive ? Palette.slateDeep : .white.opacity(0.7))
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 9)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
                         .background(
                             Group {
                                 if isActive {
@@ -977,7 +978,7 @@ struct CameraScreen: View {
                                                 endPoint: .bottomTrailing
                                             )
                                         )
-                                        .shadow(color: settings.accentColor.color.opacity(0.4), radius: 6, y: 2)
+                                        .shadow(color: settings.accentColor.color.opacity(0.4), radius: 4, y: 2)
                                 }
                             }
                         )
@@ -1006,7 +1007,7 @@ struct CameraScreen: View {
     }
 
     private func facetButton(system: String,
-                             size: CGFloat = 48,
+                             size: CGFloat = 40,
                              tint: Color = .white,
                              action: @escaping () -> Void) -> some View {
         Button(action: action) {
