@@ -199,6 +199,21 @@ struct SettingsScreen: View {
                 Label("Shutter & dial sounds", systemImage: "speaker.wave.2.fill")
                     .labelStyle(SettingsLabelStyle(color: settings.accentColor.bright))
             }
+
+            Toggle(isOn: $settings.hapticFeedbackEnabled) {
+                Label("Haptic feedback", systemImage: "hand.tap.fill")
+                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
+            }
+
+            Toggle(isOn: $settings.captureFlashConfirmation) {
+                Label("Flash on capture", systemImage: "bolt.badge.a.fill")
+                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.bright))
+            }
+
+            Toggle(isOn: $settings.saveSelfiesUnmirrored) {
+                Label("Save selfies unmirrored", systemImage: "camera.filters")
+                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.deep))
+            }
         }
     }
 
