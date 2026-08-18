@@ -235,12 +235,18 @@ struct CameraScreen: View {
 
     // MARK: Top HUD Bar
 
+    // Extra tap-target padding for the two most-used top-HUD buttons (flash,
+    // settings). Kept as a shared constant so both stay in sync instead of
+    // drifting to different inset values.
+    private let topHUDHitSlop: CGFloat = 18
+
     private var topHUD: some View {
         HStack(alignment: .center, spacing: 8) {
             if recorder.hasTorch {
                 facetButton(system: recorder.torchOn ? "bolt.fill" : "bolt.slash.fill",
                             size: 40,
-                            tint: recorder.torchOn ? settings.accentColor.bright : .white) {
+                            tint: recorder.torchOn ? settings.accentColor.bright : .white,
+                            hitSlop: topHUDHitSlop) {
                     recorder.toggleTorch()
                 }
             } else {
@@ -259,12 +265,9 @@ struct CameraScreen: View {
 
             Spacer(minLength: 4)
 
-            facetButton(system: "gearshape.fill", size: 40) { showSettings = true }
+            facetButton(system: "gearshape.fill", size: 40, hitSlop: topHUDHitSlop) { showSettings = true }
                 .disabled(recorder.isRecording || recorder.isSaving || recorder.isSwitchingCamera)
                 .opacity((recorder.isRecording || recorder.isSaving || recorder.isSwitchingCamera) ? 0.35 : 1)
-                // Bigger tap target just for settings — inset further than the other
-                // facetButtons since this is the one you reach for most.
-                .contentShape(Rectangle().inset(by: -16))
         }
     }
 
@@ -409,14 +412,18 @@ struct CameraScreen: View {
         .padding(.vertical, 7)
         .frame(minHeight: 36)
         .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Palette.panel.opacity(0.84))
-                .background(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(.ultraThinMaterial)
-                        .environment(\.colorScheme, .dark)
-                )
+            ZStack {
+                // Single shared shape reused for both fills below so they can
+                // never drift apart by even a fraction of a point at the corners.
+                Palette.panel.opacity(0.84)
+                Rectangle().fill(.ultraThinMaterial).environment(\.colorScheme, .dark)
+            }
         )
+        // Clip to the ACTUAL rounded shape (not the bounding box) so the
+        // material/fill never bleeds past the curve into a squared-off
+        // sliver at the corners — this is what `.clipped()` was missing,
+        // since it only clips to the rectangular frame.
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(
@@ -433,8 +440,6 @@ struct CameraScreen: View {
                 )
         )
         .shadow(color: .black.opacity(0.4), radius: 10, x: 0, y: 4)
-        // Soft clip so long status text never draws past the rounded corners.
-        .clipped()
     }
 
     private var recordingStatusRow: some View {
@@ -1005,6 +1010,7 @@ struct CameraScreen: View {
     private func facetButton(system: String,
                              size: CGFloat = 40,
                              tint: Color = .white,
+                             hitSlop: CGFloat = 8,
                              action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: system)
@@ -1034,9 +1040,11 @@ struct CameraScreen: View {
                 .shadow(color: .black.opacity(0.4), radius: 10, x: 0, y: 5)
         }
         .buttonStyle(.plain)
-        // Negative inset grows the TAPPABLE area by 8pt on every side without
+        // Negative inset grows the TAPPABLE area on every side without
         // changing the button's actual layout size — neighboring buttons don't shift.
-        .contentShape(Rectangle().inset(by: -8))
+        // hitSlop is per-caller so the most-reached-for buttons (flash, settings)
+        // can get an even bigger invisible hit area than the default.
+        .contentShape(Rectangle().inset(by: -hitSlop))
     }
 
     // MARK: Overlays (Level Meter & Countdown)
