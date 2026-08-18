@@ -138,6 +138,13 @@ struct CameraScreen: View {
             startHaptic.prepare()
             stopHaptic.prepare()
             levelHaptic.prepare()
+            // Sync the screen-flash overlay to the moment the sensor actually
+            // captures the frame (not to button-tap), so it fires exactly once.
+            recorder.onWillCapturePhoto = {
+                guard settings.captureFlashConfirmation else { return }
+                showCaptureFlash = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { showCaptureFlash = false }
+            }
         }
         .onDisappear {
             if dimmed { leaveDim() }
@@ -178,7 +185,7 @@ struct CameraScreen: View {
                 recorder.stopMotionUpdates()
                 recorder.pauseVolumeMonitoring()
             } else {
-                if settings.showLevelGauge { recorder.startMotionUpdates() }
+                recorder.startMotionUpdates()
                 recorder.resumeVolumeMonitoring()
             }
         }
@@ -187,7 +194,7 @@ struct CameraScreen: View {
                 recorder.stopMotionUpdates()
                 recorder.pauseVolumeMonitoring()
             } else {
-                if settings.showLevelGauge { recorder.startMotionUpdates() }
+                recorder.startMotionUpdates()
                 recorder.resumeVolumeMonitoring()
             }
         }
@@ -196,7 +203,7 @@ struct CameraScreen: View {
                 recorder.stopMotionUpdates()
                 recorder.pauseVolumeMonitoring()
             } else {
-                if settings.showLevelGauge { recorder.startMotionUpdates() }
+                recorder.startMotionUpdates()
                 recorder.resumeVolumeMonitoring()
             }
         }
@@ -590,13 +597,11 @@ struct CameraScreen: View {
 
             HStack(spacing: 12) {
                 Button(action: {
+                    // Only toggles the on-screen gauge overlay — motion updates
+                    // themselves keep running regardless, since they also drive
+                    // the orientation used to save photos the right way up.
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
                         settings.showLevelGauge.toggle()
-                        if settings.showLevelGauge {
-                            recorder.startMotionUpdates()
-                        } else {
-                            recorder.stopMotionUpdates()
-                        }
                     }
                 }) {
                     HStack(spacing: 8) {
@@ -730,9 +735,11 @@ struct CameraScreen: View {
 
                     Spacer()
 
-                    // Reserve space equal to recordButton's full footprint (its 84pt
-                    // frame plus shadow bleed) so the "..." button doesn't clip into it.
-                    Spacer().frame(width: 84 + 28)
+                    // Reserve space equal to half the recordButton's footprint on
+                    // each side of the "..." button, so it sits centered in the
+                    // gap between the shutter and the flip-camera button instead
+                    // of hugging the shutter's shadow edge.
+                    Spacer().frame(width: (84 + 28) / 2)
 
                     if !recorder.isRecording && !recorder.isSaving {
                         Button(action: {
@@ -754,7 +761,7 @@ struct CameraScreen: View {
                         .disabled(recorder.isSwitchingCamera)
                         .opacity(recorder.isSwitchingCamera ? 0.35 : 1)
 
-                        Spacer(minLength: 16)
+                        Spacer().frame(width: (84 + 28) / 2)
                     }
 
                     if recorder.isRecording {
@@ -782,10 +789,6 @@ struct CameraScreen: View {
                 } else if settings.countdownTimer != .off {
                     startCountdown()
                 } else {
-                    if settings.captureFlashConfirmation {
-                        showCaptureFlash = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { showCaptureFlash = false }
-                    }
                     recorder.capturePhoto()
                 }
                 return
