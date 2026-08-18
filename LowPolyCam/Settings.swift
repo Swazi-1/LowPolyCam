@@ -363,6 +363,15 @@ final class AppSettings: ObservableObject {
     @Published var photoMegapixels: PhotoMegapixels {
         didSet { store.set(photoMegapixels.rawValue, forKey: "photoMegapixels") }
     }
+    @Published var saveSelfiesUnmirrored: Bool {
+        didSet { store.set(saveSelfiesUnmirrored, forKey: "saveSelfiesUnmirrored") }
+    }
+    @Published var captureFlashConfirmation: Bool {
+        didSet { store.set(captureFlashConfirmation, forKey: "captureFlashConfirmation") }
+    }
+    @Published var hapticFeedbackEnabled: Bool {
+        didSet { store.set(hapticFeedbackEnabled, forKey: "hapticFeedbackEnabled") }
+    }
 
     private init() {
         cameraMode       = CameraMode(rawValue: store.string(forKey: "cameraMode") ?? "") ?? .video
@@ -387,6 +396,9 @@ final class AppSettings: ObservableObject {
         accentColor      = AccentColor(rawValue: store.string(forKey: "accentColor") ?? "") ?? .mint
         shutterSoundEnabled = store.object(forKey: "shutterSoundEnabled") as? Bool ?? true
         photoMegapixels  = PhotoMegapixels(rawValue: store.object(forKey: "photoMegapixels") as? Double ?? 12.0) ?? .mp12
+        saveSelfiesUnmirrored    = store.object(forKey: "saveSelfiesUnmirrored") as? Bool ?? false
+        captureFlashConfirmation = store.object(forKey: "captureFlashConfirmation") as? Bool ?? true
+        hapticFeedbackEnabled    = store.object(forKey: "hapticFeedbackEnabled") as? Bool ?? true
     }
 }
 
