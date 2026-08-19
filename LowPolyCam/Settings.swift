@@ -675,19 +675,27 @@ enum Encoder {
     // incorrectly assumed A10 lacked hardware HEVC encode and forced H.264
     // for it — that assumption was wrong and has been removed.)
 
-    // Conservative rates for A10 VideoDataOutput+AssetWriter path.
-    // Higher values caused systematic frame drops → Photos showed ~24–26 fps.
+    // Bitrates. High quality now targets roughly what the stock iOS Camera
+    // app uses at each resolution (Apple ballparks: ~4K30≈40Mbps HEVC,
+    // ~1080p30≈16Mbps HEVC, ~720p30≈8Mbps HEVC). These used to be set much
+    // lower ("Conservative rates ... higher values caused systematic frame
+    // drops") to defensively work around a bug that made Photos report
+    // non-30fps clips — but that bug's real cause was a duplicate-writer
+    // race in startSegment (two AVAssetWriters fighting over the same file,
+    // see CameraRecorder.swift's segmentStartInFlight guard), NOT the
+    // bitrate. With that race fixed, bitrate can go back up to real
+    // quality levels without reintroducing the frame-drop symptom.
     private static let videoKbps: [Resolution: [Quality: Int]] = [
-        .p2160: [.high: 7000,  .medium: 5000,  .low: 3200, .ultraLow: 2000],
-        .p1080: [.high: 6000,  .medium: 3000,  .low: 1500, .ultraLow: 400],
-        .p720:  [.high: 3000,  .medium: 1500,  .low: 800,  .ultraLow: 250],
-        .p480:  [.high: 1500,  .medium: 800,   .low: 400,  .ultraLow: 130],
-        .p320:  [.high: 800,   .medium: 400,   .low: 200,  .ultraLow: 80],
-        .p144:  [.high: 300,   .medium: 150,   .low: 80,   .ultraLow: 40]
+        .p2160: [.high: 40000, .medium: 20000, .low: 10000, .ultraLow: 4000],
+        .p1080: [.high: 16000, .medium: 8000,  .low: 4000,  .ultraLow: 1500],
+        .p720:  [.high: 8000,  .medium: 4000,  .low: 2000,  .ultraLow: 800],
+        .p480:  [.high: 3000,  .medium: 1500,  .low: 800,   .ultraLow: 300],
+        .p320:  [.high: 1200,  .medium: 700,   .low: 350,   .ultraLow: 150],
+        .p144:  [.high: 400,   .medium: 250,   .low: 150,   .ultraLow: 80]
     ]
 
     private static let audioKbps: [Quality: Int] = [
-        .high: 128, .medium: 64, .low: 32, .ultraLow: 24
+        .high: 192, .medium: 128, .low: 64, .ultraLow: 32
     ]
 
     private static let keyFrameSeconds: [Quality: Int] = [
