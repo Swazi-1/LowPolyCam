@@ -58,6 +58,10 @@ final class CameraRecorder: NSObject, ObservableObject {
     @Published private(set) var freeBytes: Int64 = 0
     @Published private(set) var hasTorch = false
     @Published private(set) var torchOn = false
+    /// Front camera has no physical torch. This drives a screen-illumination
+    /// "flash" for selfies instead (see CameraScreen's performFrontFlashCapture),
+    /// same idea as the stock Camera app's selfie flash.
+    @Published var frontFlashEnabled = false
     @Published private(set) var isFrontCamera = false
     @Published private(set) var isSwitchingCamera = false
     @Published private(set) var stabilizationSupported = true
@@ -284,7 +288,13 @@ final class CameraRecorder: NSObject, ObservableObject {
     func startMotionUpdates() {
         guard motionManager.isDeviceMotionAvailable else { return }
         lastRawRollAngle = nil
-        motionManager.deviceMotionUpdateInterval = 1.0 / 20.0
+        // 20Hz was overkill for both the level gauge (a visual, not a
+        // precision instrument) and orientation tracking — it kept
+        // CoreMotion's gyro/accelerometer fusion running at full tilt the
+        // entire time the camera screen was open, contributing to the app
+        // feeling warm even while just idling on the preview. 10Hz is still
+        // plenty smooth for both uses and roughly halves that background load.
+        motionManager.deviceMotionUpdateInterval = 1.0 / 10.0
         motionManager.startDeviceMotionUpdates(using: .xArbitraryZVertical, to: .main) { [weak self] motion, _ in
             guard let self = self, let motion = motion else { return }
             let gx = motion.gravity.x
@@ -1038,7 +1048,7 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     // MARK: Torch
 
-    private func refreshTorchState() {
+    func refreshTorchState() {
         let device = cameraInput?.device
         let available = device?.hasTorch ?? false
         let on = (device?.torchMode == .on)
