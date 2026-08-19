@@ -724,7 +724,21 @@ enum Encoder {
             fpsFactor = fpsMultiplier[settings.frameRate] ?? 1.0
         }
 
-        let kbps = Double(baseKbps) * codecMultiplier * fpsFactor
+        var kbps = Double(baseKbps) * codecMultiplier * fpsFactor
+        // Slow-mo (120/240fps) asks the A10's real-time encoder to sustain
+        // 4-8x the throughput of normal 30fps recording. Scaling bitrate up
+        // by the same fpsFactor used for the base table (tuned for the
+        // *quality* table's much lower base values) compounds once that
+        // base table itself is raised for normal-speed quality — the
+        // encoder then can't keep up and frames get dropped, which is what
+        // was reading back as 217fps instead of 240fps. Slow-mo prioritizes
+        // catching every frame over per-frame bit density, so its ceiling
+        // is capped independently of the (now much higher) quality-preset
+        // base rate.
+        if isSlow {
+            let slowMoCeilingKbps: Double = fps >= 240 ? 30000 : 20000
+            kbps = min(kbps, slowMoCeilingKbps)
+        }
         // Longer GOPs at 4K reduce I-frame spikes that backlog the A10 encoder.
         var gopSeconds = keyFrameSeconds[settings.quality] ?? 4
         if res == .p2160 { gopSeconds = max(gopSeconds, 5) }
