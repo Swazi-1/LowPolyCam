@@ -55,7 +55,7 @@ struct SettingsScreen: View {
                     slowMoResolutionSection
                     qualitySection
                 } else if settings.cameraMode == .photo {
-                    // Photo uses full sensor — keep UI light
+                    photoMegapixelsSection
                     qualitySection
                 } else {
                     if isFrontSnapshot { frontCameraBanner }
@@ -502,6 +502,20 @@ struct SettingsScreen: View {
             aboutRow(icon: "sparkles",
                      title: "Horizon Edition",
                      body: "Built with imagination for the devices that keep going.")
+        }
+    }
+
+    // MARK: - Photo
+
+    private var photoMegapixelsSection: some View {
+        Section(header: sectionHeader("Photo Size", icon: "camera.fill"),
+                footer: Text("Captured at full sensor resolution, then saved at the size you pick. Lower MP uses less storage.")) {
+            chipRow(PhotoMegapixels.allCases.map { mp in
+                ChipItem(id: "mp-\(mp.id)", label: mp.label,
+                         selected: settings.photoMegapixels == mp) {
+                    settings.photoMegapixels = mp
+                }
+            })
         }
     }
 
