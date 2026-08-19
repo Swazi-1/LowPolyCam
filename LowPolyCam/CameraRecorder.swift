@@ -225,29 +225,18 @@ final class CameraRecorder: NSObject, ObservableObject {
     /// Frames that arrived during stop while the writer input was not ready.
     private var pendingStopBuffers: [CMSampleBuffer] = []
     private static let pendingStopBufferLimit = 20
-    /// Frames that arrive mid-recording during a brief encoder stall (the
-    /// HEVC/H.264 real-time session on A10 can fall behind for a few ms at
-    /// high fps / high bitrate). Previously these were dropped outright the
-    /// instant `isReadyForMoreMediaData` was false, which is what made
-    /// Photos report an average fps below the target (e.g. 56.7 instead of
-    /// 60, 230 instead of 240) even though every frame was captured — the
-    /// frame count in the file was lower than the real-time span. Buffering
-    /// a handful of frames and flushing them the moment the encoder catches
-    /// up recovers most of that shortfall without adding noticeable latency.
+    /// Frames that arrive mid-recording during a brief encoder stall.
+    /// Previously these were dropped outright the instant
+    /// `isReadyForMoreMediaData` was false, which is what made Photos
+    /// report an average fps below the target (e.g. 56.7 instead of 60)
+    /// even though every frame was captured — frame count in the file was
+    /// lower than the real-time span. Buffering a couple of frames and
+    /// flushing them the moment the encoder catches up recovers most of
+    /// that shortfall. Kept small and capped per-callback on purpose: at
+    /// high fps a callback only has a few ms, so this only absorbs brief
+    /// hiccups, not a sustained overload.
     private var pendingMidBuffers: [CMSampleBuffer] = []
     private static let pendingMidBufferLimit = 4
-    /// Host time of the most recent `device.activeFormat` / frame-duration
-    /// change (see applyUnifiedHardwareConfiguration). Switching to a
-    /// demanding Slow-Mo format (120/240 fps) right as recording starts can
-    /// make iOS post a spurious AVAudioSession "interruption began"
-    /// notification (a side effect of the shared hardware renegotiating,
-    /// not a real phone call / Siri / other-app interruption). That was
-    /// being treated as real and immediately stopping the recording —
-    /// producing a clip under a second long. Interruptions that fire in
-    /// the brief window right after our own format switch are treated as
-    /// this false-positive case and ignored instead of stopping the clip.
-    private var lastFormatReconfigureHostTime: CFTimeInterval = 0
-    private static let formatReconfigureGraceSeconds: CFTimeInterval = 1.5
     // Number of video frames to silently discard right after a *fresh*
     // record start (not segment rotation). Deterministic fallback for the
     // AE/AGC brightness ramp after a format switch. Touched under writerLock.
@@ -341,56 +330,6 @@ final class CameraRecorder: NSObject, ObservableObject {
             self, selector: #selector(handleThermalStateChanged),
             name: ProcessInfo.thermalStateDidChangeNotification, object: nil)
         thermalState = ProcessInfo.processInfo.thermalState
-
-        // Previously unhandled: if the capture session itself is
-        // interrupted (e.g. system resource pressure — a real risk at
-        // Slow-Mo 240fps on A10) or hits a runtime error, frames silently
-        // stopped arriving with no user-visible feedback and no clean
-        // stop of the in-progress clip. Handle both explicitly.
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(handleSessionWasInterrupted(_:)),
-            name: .AVCaptureSessionWasInterrupted, object: session)
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(handleSessionInterruptionEnded),
-            name: .AVCaptureSessionInterruptionEnded, object: session)
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(handleSessionRuntimeError(_:)),
-            name: .AVCaptureSessionRuntimeError, object: session)
-    }
-
-    @objc private func handleSessionWasInterrupted(_ notification: Notification) {
-        var reasonText = "unknown"
-        if let value = notification.userInfo?[AVCaptureSessionInterruptionReasonKey] as? Int,
-           let reason = AVCaptureSession.InterruptionReason(rawValue: value) {
-            reasonText = "\(reason.rawValue)"
-        }
-        DebugLog.write("⚠️ AVCaptureSessionWasInterrupted reason=\(reasonText)")
-        DispatchQueue.main.async {
-            self.audioLevel = 0
-            if self.isRecording {
-                self.stopRecording(notice: "Recording stopped (camera interrupted)")
-            }
-        }
-    }
-
-    @objc private func handleSessionInterruptionEnded() {
-        DebugLog.write("session interruption ended")
-    }
-
-    @objc private func handleSessionRuntimeError(_ notification: Notification) {
-        let error = notification.userInfo?[AVCaptureSessionErrorKey] as? NSError
-        DebugLog.write("❌ AVCaptureSessionRuntimeError: \(error?.localizedDescription ?? "nil")")
-        DispatchQueue.main.async {
-            self.audioLevel = 0
-            if self.isRecording {
-                self.stopRecording(notice: "Recording stopped (camera error)")
-            }
-        }
-        // Try to recover the session so the next record attempt isn't dead.
-        sessionQueue.async { [weak self] in
-            guard let self = self, !self.session.isRunning else { return }
-            self.session.startRunning()
-        }
     }
 
     // MARK: Thermal State Monitor
@@ -491,19 +430,6 @@ final class CameraRecorder: NSObject, ObservableObject {
               let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
 
         if type == .began {
-            // Switching to a demanding capture format (Slow-Mo 120/240fps,
-            // right as recording starts) can make iOS post a spurious
-            // "interruption began" here as the shared audio hardware
-            // renegotiates — not a real call/Siri/other-app interruption.
-            // Treating that as real was cutting Slow-Mo clips off almost
-            // immediately. Ignore interruptions that land in the brief
-            // window right after our own format switch.
-            let sinceReconfigure = CACurrentMediaTime() - lastFormatReconfigureHostTime
-            if sinceReconfigure < Self.formatReconfigureGraceSeconds {
-                DebugLog.write("⚠️ audio interruption began \(sinceReconfigure)s after format switch — treating as false positive, not stopping")
-                return
-            }
-
             // Stop a clean segment rather than leaving a truncated/corrupt file
             // when a call, Siri, or another audio client interrupts.
             DispatchQueue.main.async {
@@ -969,8 +895,7 @@ final class CameraRecorder: NSObject, ObservableObject {
     private func applyUnifiedHardwareConfiguration(to device: AVCaptureDevice, format: AVCaptureDevice.Format, targetFPS: Double) {
         do {
             try device.lockForConfiguration()
-            lastFormatReconfigureHostTime = CACurrentMediaTime()
-
+            
             // 1. Format & Frame Rate — lock min AND max to the same duration so
             // the sensor runs at a fixed rate (prevents VFR / under-target fps files).
             device.activeFormat = format
@@ -1976,7 +1901,7 @@ final class CameraRecorder: NSObject, ObservableObject {
                     self.recordStartPTS = .invalid
                     self.segmentStartInFlight = false
                     self.pendingStartBuffers.removeAll(keepingCapacity: true)
-                    self.pendingMidBuffers.removeAll(keepingCapacity: true)
+                    self.pendingMidBuffers.removeAll(keepingCapacity: false)
                     self.pendingWarmupFrames = warmup
                     self.wantsRecording = true
                     self.writerLock.unlock()
@@ -2201,7 +2126,7 @@ final class CameraRecorder: NSObject, ObservableObject {
             writerLock.lock()
             let buffered = pendingStartBuffers
             pendingStartBuffers.removeAll(keepingCapacity: true)
-            pendingMidBuffers.removeAll(keepingCapacity: true)
+            pendingMidBuffers.removeAll(keepingCapacity: false)
             writer = w
             videoIn = v
             audioIn = a
@@ -2825,78 +2750,64 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
         }
 
         if isVideo {
-            if draining {
-                if vIn?.isReadyForMoreMediaData == true {
-                    vIn?.append(sampleBuffer)
-                    writerLock.lock()
-                    lastVideoPTS = Self.endPTS(for: pts, duration: dur, fps: plan?.frameRate ?? 30)
-                    let drainDone = shouldFinalizeAfterAppend
-                    writerLock.unlock()
-                    if drainDone {
-                        completeStopDrainIfNeeded(force: false)
-                    }
-                } else {
-                    // Never drop the stop tail — buffer until finalize flushes.
-                    writerLock.lock()
-                    if pendingStopBuffers.count < Self.pendingStopBufferLimit {
-                        pendingStopBuffers.append(sampleBuffer)
-                    }
-                    let drainDone = shouldFinalizeAfterAppend
-                    writerLock.unlock()
-                    if drainDone {
-                        completeStopDrainIfNeeded(force: false)
-                    }
-                }
-            } else if let vIn = vIn {
-                // Steady-state recording: flush a couple of frames queued
-                // from a recent millisecond-scale stall, then this frame.
-                // Capped to a small number of attempts per callback — at
-                // 240fps a callback only has ~4ms, and looping through a
-                // large backlog synchronously here was itself starving the
-                // video queue and causing more frames to be dropped by
-                // AVFoundation before they ever reached this code (seen as
-                // fps getting *worse*, not better, at 240fps). This is only
-                // meant to absorb brief hiccups, not to buffer a sustained
-                // overload — a sustained overload needs a lower bitrate/fps,
-                // not more buffering.
+            if vIn?.isReadyForMoreMediaData == true {
+                vIn?.append(sampleBuffer)
                 writerLock.lock()
-                var backlog = pendingMidBuffers
-                pendingMidBuffers.removeAll(keepingCapacity: true)
+                lastVideoPTS = Self.endPTS(for: pts, duration: dur, fps: plan?.frameRate ?? 30)
+                let drainDone = shouldFinalizeAfterAppend
                 writerLock.unlock()
-
-                backlog.append(sampleBuffer)
-                var newestAppendedEndPTS: CMTime?
-                var remaining: [CMSampleBuffer] = []
-                let maxAttemptsThisCallback = 3
-                for (index, buf) in backlog.enumerated() {
-                    if index < maxAttemptsThisCallback, vIn.isReadyForMoreMediaData, vIn.append(buf) {
-                        let bPTS = CMSampleBufferGetPresentationTimeStamp(buf)
-                        let bDur = CMSampleBufferGetDuration(buf)
-                        newestAppendedEndPTS = Self.endPTS(for: bPTS, duration: bDur, fps: plan?.frameRate ?? 30)
-                    } else {
-                        remaining.append(contentsOf: backlog[index...])
-                        break
+                if drainDone {
+                    completeStopDrainIfNeeded(force: false)
+                }
+                // Encoder is caught up — opportunistically flush a couple
+                // of frames buffered from a recent brief stall, if any.
+                if !draining {
+                    writerLock.lock()
+                    let backlog = pendingMidBuffers
+                    pendingMidBuffers.removeAll(keepingCapacity: true)
+                    writerLock.unlock()
+                    if !backlog.isEmpty, let vIn = vIn {
+                        var leftover: [CMSampleBuffer] = []
+                        for buf in backlog {
+                            if vIn.isReadyForMoreMediaData, vIn.append(buf) {
+                                let bPTS = CMSampleBufferGetPresentationTimeStamp(buf)
+                                let bDur = CMSampleBufferGetDuration(buf)
+                                writerLock.lock()
+                                lastVideoPTS = Self.endPTS(for: bPTS, duration: bDur, fps: plan?.frameRate ?? 30)
+                                writerLock.unlock()
+                            } else {
+                                leftover.append(buf)
+                            }
+                        }
+                        writerLock.lock()
+                        pendingMidBuffers = leftover
+                        writerLock.unlock()
                     }
                 }
-
+            } else if draining {
+                // Never drop the stop tail — buffer until finalize flushes.
                 writerLock.lock()
-                if let end = newestAppendedEndPTS { lastVideoPTS = end }
-                if remaining.count > Self.pendingMidBufferLimit {
-                    // Sustained overrun — keep only the most recent frames
-                    // so latency can't grow unbounded, and count the rest
-                    // as genuinely dropped.
-                    let overflow = remaining.count - Self.pendingMidBufferLimit
-                    remaining.removeFirst(overflow)
-                    writerLock.unlock()
-                    for _ in 0..<overflow { countDroppedFrame() }
-                } else {
-                    writerLock.unlock()
+                if pendingStopBuffers.count < Self.pendingStopBufferLimit {
+                    pendingStopBuffers.append(sampleBuffer)
                 }
-                writerLock.lock()
-                pendingMidBuffers = remaining
+                let drainDone = shouldFinalizeAfterAppend
                 writerLock.unlock()
+                if drainDone {
+                    completeStopDrainIfNeeded(force: false)
+                }
             } else {
-                countDroppedFrame()
+                // Encoder momentarily busy. Rather than dropping the frame
+                // outright, hold it in a small capped buffer to be flushed
+                // on a later frame once the encoder catches up. Only a real
+                // sustained overload (buffer full) counts as a genuine drop.
+                writerLock.lock()
+                if pendingMidBuffers.count < Self.pendingMidBufferLimit {
+                    pendingMidBuffers.append(sampleBuffer)
+                    writerLock.unlock()
+                } else {
+                    writerLock.unlock()
+                    countDroppedFrame()
+                }
             }
             if !draining {
                 pushElapsed(pts)
