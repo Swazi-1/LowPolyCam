@@ -443,7 +443,8 @@ struct CameraScreen: View {
                 // Single shared shape reused for both fills below so they can
                 // never drift apart by even a fraction of a point at the corners.
                 Palette.panel.opacity(0.84)
-                Rectangle().fill(.ultraThinMaterial).environment(\.colorScheme, .dark)
+                // Flat fill on A10 — ultraThinMaterial is a live GPU blur.
+                Palette.slateDeep.opacity(usesLightweightMaterial ? 0.55 : 0.25)
             }
         )
         // Clip to the ACTUAL rounded shape (not the bounding box) so the
@@ -725,6 +726,8 @@ struct CameraScreen: View {
                         withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
                             settings.showLevelGauge = newValue
                         }
+                        // Match CoreMotion sample rate to gauge visibility (6 Hz vs 2 Hz).
+                        recorder.refreshMotionUpdateRate()
                     }
                 ))
                 .labelsHidden()
@@ -1002,7 +1005,7 @@ struct CameraScreen: View {
         .background(
             Capsule()
                 .fill(Palette.panel.opacity(0.88))
-                .background(Capsule().fill(.ultraThinMaterial).environment(\.colorScheme, .dark))
+                .background(Capsule().fill(Palette.slateDeep.opacity(usesLightweightMaterial ? 0.55 : 0.3)))
         )
         .overlay(
             Capsule()
@@ -1035,8 +1038,7 @@ struct CameraScreen: View {
                         .fill(Palette.panel.opacity(0.88))
                         .background(
                             Facet(sides: 6, rotation: .pi / 6)
-                                .fill(.ultraThinMaterial)
-                                .environment(\.colorScheme, .dark)
+                                .fill(Palette.slateDeep.opacity(usesLightweightMaterial ? 0.55 : 0.3))
                         )
                 )
                 .overlay(
@@ -1189,7 +1191,7 @@ struct CameraScreen: View {
         .background(
             Capsule()
                 .fill(Palette.panel.opacity(0.9))
-                .background(Capsule().fill(.ultraThinMaterial).environment(\.colorScheme, .dark))
+                .background(Capsule().fill(Palette.slateDeep.opacity(usesLightweightMaterial ? 0.55 : 0.3)))
         )
         .overlay(
             Capsule()
@@ -1249,8 +1251,7 @@ struct CameraScreen: View {
                 .fill(Palette.panel.opacity(0.92))
                 .background(
                     RoundedRectangle(cornerRadius: 28, style: .continuous)
-                        .fill(.ultraThinMaterial)
-                        .environment(\.colorScheme, .dark)
+                        .fill(Palette.slateDeep.opacity(usesLightweightMaterial ? 0.55 : 0.3))
                 )
         )
         .overlay(
@@ -1369,7 +1370,7 @@ struct CameraScreen: View {
         .background(
             Capsule()
                 .fill(Palette.panel.opacity(0.88))
-                .background(Capsule().fill(.ultraThinMaterial).environment(\.colorScheme, .dark))
+                .background(Capsule().fill(Palette.slateDeep.opacity(usesLightweightMaterial ? 0.55 : 0.3)))
         )
         .overlay(
             Capsule()
@@ -1390,7 +1391,7 @@ struct CameraScreen: View {
             .background(
                 Capsule()
                     .fill(Palette.panel.opacity(0.9))
-                    .background(Capsule().fill(.ultraThinMaterial).environment(\.colorScheme, .dark))
+                    .background(Capsule().fill(Palette.slateDeep.opacity(usesLightweightMaterial ? 0.55 : 0.3)))
             )
             .overlay(
                 Capsule()
