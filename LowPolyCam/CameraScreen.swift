@@ -628,18 +628,23 @@ struct CameraScreen: View {
 
     private var proToolsDrawer: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Grab handle, like a real bottom sheet
+            // Grab handle
             Capsule()
                 .fill(Color.white.opacity(0.18))
                 .frame(width: 36, height: 4)
                 .frame(maxWidth: .infinity)
                 .padding(.top, 8)
-                .padding(.bottom, 14)
+                .padding(.bottom, 12)
 
             HStack {
-                Text("Pro Tools")
-                    .font(.system(size: 20, weight: .bold, design: .rounded))
-                    .foregroundColor(.white)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Shoot")
+                        .font(.system(size: 20, weight: .bold, design: .rounded))
+                        .foregroundColor(.white)
+                    Text("Quick controls while framing")
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundColor(.white.opacity(0.4))
+                }
 
                 Spacer()
 
@@ -655,9 +660,25 @@ struct CameraScreen: View {
                 }
                 .buttonStyle(.plain)
             }
-            .padding(.bottom, 18)
+            .padding(.bottom, 16)
 
-            // Exposure
+            // 1. Self-timer first — set before you hit the shutter
+            VStack(alignment: .leading, spacing: 10) {
+                proToolsSectionHeader("Self-Timer", icon: "timer")
+                HStack(spacing: 8) {
+                    ForEach(CountdownTimer.allCases) { timer in
+                        proToolsChip(label: timer.label, selected: settings.countdownTimer == timer) {
+                            settings.countdownTimer = timer
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+            .padding(.bottom, 16)
+
+            Divider().overlay(Color.white.opacity(0.08)).padding(.bottom, 16)
+
+            // 2. Exposure — most-used while framing
             VStack(alignment: .leading, spacing: 10) {
                 proToolsSectionHeader("Exposure", icon: "sun.max.fill")
 
@@ -693,14 +714,13 @@ struct CameraScreen: View {
                         recorder.setExposureBias(val)
                     }
             }
-            .padding(.bottom, 18)
+            .padding(.bottom, 16)
 
-            Divider().overlay(Color.white.opacity(0.08)).padding(.bottom, 18)
+            Divider().overlay(Color.white.opacity(0.08)).padding(.bottom, 16)
 
-            // White balance
+            // 3. White balance
             VStack(alignment: .leading, spacing: 10) {
-                proToolsSectionHeader("White Balance", icon: "paintpalette.fill")
-
+                proToolsSectionHeader("White Balance", icon: "circle.lefthalf.filled")
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(WhiteBalancePreset.allCases) { preset in
@@ -714,41 +734,23 @@ struct CameraScreen: View {
                     .padding(.trailing, 2)
                 }
             }
-            .padding(.bottom, 18)
+            .padding(.bottom, 16)
 
-            Divider().overlay(Color.white.opacity(0.08)).padding(.bottom, 6)
+            Divider().overlay(Color.white.opacity(0.08)).padding(.bottom, 10)
 
-            // Level meter — full-width row with a real switch, own line
-            proToolsRow(icon: "gyroscope", title: "Level Meter", subtitle: "Show tilt guide while shooting") {
+            // 4. Assist — level only (grid lives in Settings)
+            proToolsRow(icon: "gyroscope", title: "Level Meter", subtitle: "Horizon guide on the viewfinder") {
                 Toggle("", isOn: Binding(
                     get: { settings.showLevelGauge },
                     set: { newValue in
                         withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
                             settings.showLevelGauge = newValue
                         }
-                        // Match CoreMotion sample rate to gauge visibility (6 Hz vs 2 Hz).
                         recorder.refreshMotionUpdateRate()
                     }
                 ))
                 .labelsHidden()
                 .tint(settings.accentColor.color)
-            }
-
-            Divider().overlay(Color.white.opacity(0.08)).padding(.vertical, 6)
-
-            // Timer — its own full-width row, chips never share space with
-            // anything else so "Off" always has room to sit on one line.
-            VStack(alignment: .leading, spacing: 10) {
-                proToolsSectionHeader("Self-Timer", icon: "timer")
-
-                HStack(spacing: 8) {
-                    ForEach(CountdownTimer.allCases) { timer in
-                        proToolsChip(label: timer.label, selected: settings.countdownTimer == timer) {
-                            settings.countdownTimer = timer
-                        }
-                    }
-                    Spacer(minLength: 0)
-                }
             }
         }
         .padding(.horizontal, 18)
@@ -761,15 +763,6 @@ struct CameraScreen: View {
             RoundedRectangle(cornerRadius: 22, style: .continuous)
                 .stroke(Color.white.opacity(0.07), lineWidth: 1)
         )
-        // compositingGroup flattens everything above (background, overlay,
-        // all the rows/chips/slider/toggle) into a single layer *before* the
-        // shadow is computed. Without it, SwiftUI has to re-derive the shadow
-        // from the live alpha of that whole interactive subtree on every
-        // frame of the move/scale/opacity transition, which is what was
-        // making the sheet stutter coming up and down on A10. A flattened
-        // layer's silhouette barely changes frame to frame, so the shadow is
-        // effectively free during the animation. The lighter radius (12 vs
-        // the old 24) also roughly halves the blur cost on the weaker GPU.
         .compositingGroup()
         .shadow(color: .black.opacity(0.45), radius: 12, x: 0, y: 6)
     }
