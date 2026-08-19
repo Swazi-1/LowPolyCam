@@ -292,14 +292,11 @@ final class CameraRecorder: NSObject, ObservableObject {
     func startMotionUpdates() {
         guard motionManager.isDeviceMotionAvailable else { return }
         lastRawRollAngle = nil
-        // 20Hz was overkill for both the level gauge (a visual, not a
-        // precision instrument) and orientation tracking — it kept
-        // CoreMotion's gyro/accelerometer fusion running at full tilt the
-        // entire time the camera screen was open, contributing to the app
-        // feeling warm even while just idling on the preview. 6Hz is still
-        // smooth enough for the gauge and orientation, and cuts the
-        // background CoreMotion load further on A10.
-        motionManager.deviceMotionUpdateInterval = 1.0 / 6.0
+        // Adaptive rate: 6 Hz only when the level-gauge UI is visible.
+        // Otherwise 2 Hz is enough for orientation (photo upright + UI rotation)
+        // and cuts CoreMotion power noticeably on A10 while idle.
+        let hz: Double = settings.showLevelGauge ? 6.0 : 2.0
+        motionManager.deviceMotionUpdateInterval = 1.0 / hz
         motionManager.startDeviceMotionUpdates(using: .xArbitraryZVertical, to: .main) { [weak self] motion, _ in
             guard let self = self, let motion = motion else { return }
             let gx = motion.gravity.x
@@ -391,7 +388,9 @@ final class CameraRecorder: NSObject, ObservableObject {
         startMotionUpdates()
 
         spaceTimer?.invalidate()
-        spaceTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+        // 20s while idle is plenty; tighten to 5s only while recording
+        // (see startRecording / stopRecording).
+        spaceTimer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in
             self?.refreshFreeSpace()
         }
 
@@ -427,6 +426,42 @@ final class CameraRecorder: NSObject, ObservableObject {
         sessionQueue.async {
             if self.session.isRunning { self.session.stopRunning() }
             DispatchQueue.main.async { self.isSessionRunning = false }
+        }
+    }
+
+    /// Fully pause the capture pipeline (sensor + ISP). Call when a sheet
+    /// covers the preview so the phone can cool like the stock Camera app
+    /// does when you leave the viewfinder.
+    func pausePreviewSession() {
+        guard !isRecording else { return }
+        pauseVolumeMonitoring()
+        stopMotionUpdates()
+        setTorch(on: false)
+        sessionQueue.async {
+            if self.session.isRunning { self.session.stopRunning() }
+            DispatchQueue.main.async { self.isSessionRunning = false }
+        }
+    }
+
+    /// Resume after pausePreviewSession().
+    func resumePreviewSession() {
+        sessionQueue.async {
+            if !self.session.isRunning { self.session.startRunning() }
+            self.applyActiveFormat(forRecording: false)
+            self.applyStabilization()
+            DispatchQueue.main.async { self.isSessionRunning = self.session.isRunning }
+        }
+        startMotionUpdates()
+        resumeVolumeMonitoring()
+        refreshTorchState()
+    }
+
+    /// Re-apply the low-power idle format (e.g. after toggling Longevity Mode).
+    func refreshIdleFormatIfNeeded() {
+        guard !isRecording else { return }
+        sessionQueue.async {
+            self.applyActiveFormat(forRecording: false)
+            self.applyStabilization()
         }
     }
 
@@ -529,9 +564,12 @@ final class CameraRecorder: NSObject, ObservableObject {
         guard let c = connection ?? videoOutput.connection(with: .video) else { return }
         let supported = c.isVideoStabilizationSupported
         if supported {
-            // Stabilisation + 4K + VideoDataOutput overloads A10 and drops frames
-            // (~26 fps). Force off at 4K so the file stays a true 30 fps.
-            let wantStab = settings.stabilization && settings.resolution != .p2160
+            // Stabilisation burns ISP power even on the live preview. Only
+            // enable it while actually recording. Also force off at 4K so the
+            // A10 encoder can keep a true 30 fps without frame drops.
+            let wantStab = isRecording
+                && settings.stabilization
+                && settings.resolution != .p2160
             c.preferredVideoStabilizationMode = wantStab ? .auto : .off
         }
         DispatchQueue.main.async { self.stabilizationSupported = supported }
@@ -561,16 +599,16 @@ final class CameraRecorder: NSObject, ObservableObject {
     }
 
     /// Applies the active camera format + frame rate.
-    /// - Parameter forRecording: when false (idle preview), force a low power
-    ///   30 fps sensor rate so the phone stays cool like the stock Camera app.
-    ///   High rates (60 / 120 / 240) are only engaged while actually recording.
+    /// - Parameter forRecording: when false (idle preview), force a low-power
+    ///   sensor path so the phone stays cool like the stock Camera app.
+    ///   High rates / high res are only engaged while actually recording.
     private func applyActiveFormat(forRecording: Bool = false) {
         DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
         ensureCorrectCameraDevice(for: settings.cameraMode)
         guard let device = cameraInput?.device else { return }
 
         let isSlow = settings.cameraMode == .slowMo && isSlowMoSupportedOnCurrentLens
-        let dims: (w: Int, h: Int)
+        var dims: (w: Int, h: Int)
         let fullFPS: Double
 
         if isSlow {
@@ -593,14 +631,21 @@ final class CameraRecorder: NSObject, ObservableObject {
             fullFPS = Double((settings.resolution.lockedFrameRate ?? settings.frameRate).value)
         }
 
-        // Idle preview always runs at 30 fps (or the locked rate if lower).
-        // This is the single biggest heat reduction vs. leaving the sensor
-        // at 60/120/240 the entire time the camera screen is open.
+        // Idle preview: force a low-power sensor path. Biggest idle heat on A10
+        // came from staying at the *recording* resolution (e.g. 4K) and >30 fps.
+        // Cap both while not recording. Longevity Mode is stricter still.
         let targetFPS: Double
         if forRecording {
             targetFPS = fullFPS
         } else {
-            targetFPS = min(fullFPS, 30.0)
+            let idleCapH = settings.longevityMode ? 720 : 1080
+            if dims.h > idleCapH {
+                dims = idleCapH >= 1080
+                    ? Resolution.p1080.captureDimensions
+                    : Resolution.p720.captureDimensions
+            }
+            let idleFPSCap: Double = settings.longevityMode ? 24.0 : 30.0
+            targetFPS = min(fullFPS, idleFPSCap)
         }
 
         var format = isSlow
@@ -1601,8 +1646,19 @@ final class CameraRecorder: NSObject, ObservableObject {
         // wantsRecording. Otherwise early frames can land at the idle 30 fps
         // (or during the format transition) and pull the average down in
         // Photos (especially on short clips).
+        // Mark recording before the session work so applyStabilization sees it.
+        isRecording = true
+        UIApplication.shared.isIdleTimerDisabled = true
+
+        // Check free space more often while recording.
+        spaceTimer?.invalidate()
+        spaceTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            self?.refreshFreeSpace()
+        }
+
         sessionQueue.async {
             self.applyActiveFormat(forRecording: true)
+            self.applyStabilization()
             self.videoOutput.setSampleBufferDelegate(self, queue: self.videoQueue)
             self.audioOutput.setSampleBufferDelegate(self, queue: self.audioQueue)
 
@@ -1625,8 +1681,6 @@ final class CameraRecorder: NSObject, ObservableObject {
         clipsThisSession = 0
         droppedFrames = 0
         audioLevel = 0
-        isRecording = true
-        UIApplication.shared.isIdleTimerDisabled = true
         if settings.shutterSoundEnabled { SoundPlayer.play(.start) }
         _ = myToken // captured for symmetry; stopRecording reads the live token itself
     }
@@ -1654,14 +1708,19 @@ final class CameraRecorder: NSObject, ObservableObject {
         notice = message
         refreshFreeSpace()
 
-        // Immediately drop back to low-power 30 fps preview and stop delivering
-        // sample buffers to the app. This is the main reason the stock Camera
-        // app stays cool while sitting on the viewfinder — the sensor and the
-        // process aren't chewing high-rate frames when nothing is being saved.
+        // Immediately drop back to low-power idle preview and stop delivering
+        // sample buffers. Also turn stabilisation off so the ISP cools down.
         sessionQueue.async {
             self.videoOutput.setSampleBufferDelegate(nil, queue: nil)
             self.audioOutput.setSampleBufferDelegate(nil, queue: nil)
             self.applyActiveFormat(forRecording: false)
+            self.applyStabilization()
+        }
+
+        // Relax free-space polling while idle again.
+        spaceTimer?.invalidate()
+        spaceTimer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in
+            self?.refreshFreeSpace()
         }
 
         var task: UIBackgroundTaskIdentifier = .invalid
