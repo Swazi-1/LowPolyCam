@@ -120,7 +120,8 @@ struct CameraScreen: View {
             }
             .ignoresSafeArea()
 
-            // Safe area HUD
+            // Safe area HUD — layout is fixed; Pro sheet overlays so opening it
+            // never expands the VStack or clips edge icons.
             if recorder.permissionDenied {
                 permissionMessage
             } else {
@@ -133,27 +134,33 @@ struct CameraScreen: View {
                             .padding(.top, 8)
                     }
 
-                    Spacer()
-                    
-                    if showProMenu && !recorder.isRecording && !recorder.isSaving {
-                        proToolsDrawer
-                            // Scale was the expensive part of this transition:
-                            // animating scale forces SwiftUI to re-rasterize the
-                            // whole drawer (ScrollView, Slider, Toggle, all the
-                            // chips) at a changing size every frame, which is
-                            // what was still stuttering on open even after the
-                            // shadow fix. Move + opacity are just layer
-                            // translation/alpha — both effectively free, no
-                            // re-rasterization needed — and read as the same
-                            // "slide up" motion.
-                            .transition(.move(edge: .bottom).combined(with: .opacity))
-                            .padding(.bottom, 10)
-                    }
+                    Spacer(minLength: 0)
 
                     bottomHUD
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
+
+                // Overlay Pro panel above the HUD so bottom controls stay put.
+                if showProMenu && !recorder.isRecording && !recorder.isSaving {
+                    Color.black.opacity(0.35)
+                        .ignoresSafeArea()
+                        .onTapGesture {
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
+                                showProMenu = false
+                            }
+                        }
+                        .transition(.opacity)
+
+                    VStack {
+                        Spacer(minLength: 0)
+                        proToolsDrawer
+                            .padding(.horizontal, 12)
+                            .padding(.bottom, 8)
+                    }
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .zIndex(20)
+                }
             }
         }
         .statusBar(hidden: true)
@@ -576,12 +583,12 @@ struct CameraScreen: View {
             action()
         }) {
             Text(label)
-                .font(.system(size: 13, weight: selected ? .semibold : .medium, design: .rounded))
+                .font(.system(size: 12, weight: selected ? .semibold : .medium, design: .rounded))
                 .foregroundColor(selected ? Palette.slateDeep : .white.opacity(0.85))
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 9)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
                 .background(
                     Capsule()
                         .fill(selected ? settings.accentColor.color : Palette.slateMid.opacity(0.6))
@@ -627,144 +634,99 @@ struct CameraScreen: View {
     }
 
     private var proToolsDrawer: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Grab handle
-            Capsule()
-                .fill(Color.white.opacity(0.18))
-                .frame(width: 36, height: 4)
-                .frame(maxWidth: .infinity)
-                .padding(.top, 8)
-                .padding(.bottom, 12)
-
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Shoot")
-                        .font(.system(size: 20, weight: .bold, design: .rounded))
-                        .foregroundColor(.white)
-                    Text("Quick controls while framing")
-                        .font(.system(size: 12, weight: .medium, design: .rounded))
-                        .foregroundColor(.white.opacity(0.4))
-                }
-
-                Spacer()
-
+        VStack(alignment: .leading, spacing: 10) {
+            // Compact header row
+            HStack(spacing: 8) {
+                Text("Shoot")
+                    .font(.system(size: 15, weight: .bold, design: .rounded))
+                    .foregroundColor(.white)
+                Spacer(minLength: 0)
                 Button(action: {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { showProMenu = false }
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) { showProMenu = false }
                 }) {
                     Image(systemName: "xmark")
-                        .font(.system(size: 12, weight: .bold))
+                        .font(.system(size: 11, weight: .bold))
                         .foregroundColor(.white.opacity(0.7))
-                        .frame(width: 28, height: 28)
+                        .frame(width: 26, height: 26)
                         .background(Palette.slateMid)
                         .clipShape(Circle())
                 }
                 .buttonStyle(.plain)
             }
-            .padding(.bottom, 16)
 
-            // 1. Self-timer first — set before you hit the shutter
-            VStack(alignment: .leading, spacing: 10) {
-                proToolsSectionHeader("Self-Timer", icon: "timer")
-                HStack(spacing: 8) {
-                    ForEach(CountdownTimer.allCases) { timer in
-                        proToolsChip(label: timer.label, selected: settings.countdownTimer == timer) {
-                            settings.countdownTimer = timer
-                        }
+            // Timer chips + Level toggle on one dense row
+            HStack(spacing: 8) {
+                ForEach(CountdownTimer.allCases) { timer in
+                    proToolsChip(label: timer.label, selected: settings.countdownTimer == timer) {
+                        settings.countdownTimer = timer
                     }
-                    Spacer(minLength: 0)
                 }
+                Spacer(minLength: 6)
+                Text("Level")
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .foregroundColor(.white.opacity(0.55))
+                Toggle("", isOn: Binding(
+                    get: { settings.showLevelGauge },
+                    set: { newValue in
+                        settings.showLevelGauge = newValue
+                        recorder.refreshMotionUpdateRate()
+                    }
+                ))
+                .labelsHidden()
+                .toggleStyle(SwitchToggleStyle(tint: settings.accentColor.color))
+                .scaleEffect(0.85)
             }
-            .padding(.bottom, 16)
 
-            Divider().overlay(Color.white.opacity(0.08)).padding(.bottom, 16)
-
-            // 2. Exposure — most-used while framing
-            VStack(alignment: .leading, spacing: 10) {
-                proToolsSectionHeader("Exposure", icon: "sun.max.fill")
-
-                HStack {
-                    Text(String(format: "%@%.1f EV", settings.exposureBias > 0 ? "+" : "", settings.exposureBias))
-                        .font(.system(size: 22, weight: .semibold, design: .rounded))
-                        .foregroundColor(settings.exposureBias == 0 ? .white.opacity(0.5) : .white)
-
-                    Spacer()
-
-                    if abs(settings.exposureBias) > 0.01 {
-                        Button(action: {
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                settings.exposureBias = 0.0
-                                recorder.setExposureBias(0.0)
-                            }
-                        }) {
-                            Text("Reset")
-                                .font(.system(size: 13, weight: .semibold, design: .rounded))
-                                .foregroundColor(.white.opacity(0.8))
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 6)
-                                .background(Palette.slateMid)
-                                .clipShape(Capsule())
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-
+            // Exposure compact
+            HStack(spacing: 10) {
+                Text(String(format: "%@%.1f", settings.exposureBias > 0 ? "+" : "", settings.exposureBias))
+                    .font(.system(size: 14, weight: .bold, design: .rounded))
+                    .foregroundColor(settings.exposureBias == 0 ? .white.opacity(0.45) : .white)
+                    .frame(width: 42, alignment: .leading)
                 Slider(value: $settings.exposureBias, in: -2.0...2.0, step: 0.1)
                     .tint(settings.accentColor.color)
                     .onChange(of: settings.exposureBias) { val in
                         recorder.setExposureBias(val)
                     }
-            }
-            .padding(.bottom, 16)
-
-            Divider().overlay(Color.white.opacity(0.08)).padding(.bottom, 16)
-
-            // 3. White balance
-            VStack(alignment: .leading, spacing: 10) {
-                proToolsSectionHeader("White Balance", icon: "circle.lefthalf.filled")
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(WhiteBalancePreset.allCases) { preset in
-                            proToolsChip(label: preset.label, selected: settings.whiteBalance == preset) {
-                                settings.whiteBalance = preset
-                                recorder.setWhiteBalance(preset)
-                            }
-                        }
+                if abs(settings.exposureBias) > 0.01 {
+                    Button("0") {
+                        settings.exposureBias = 0
+                        recorder.setExposureBias(0)
                     }
-                    .padding(.vertical, 2)
-                    .padding(.trailing, 2)
+                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                    .foregroundColor(.white.opacity(0.8))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Palette.slateMid)
+                    .clipShape(Capsule())
+                    .buttonStyle(.plain)
                 }
             }
-            .padding(.bottom, 16)
 
-            Divider().overlay(Color.white.opacity(0.08)).padding(.bottom, 10)
-
-            // 4. Assist — level only (grid lives in Settings)
-            proToolsRow(icon: "gyroscope", title: "Level Meter", subtitle: "Horizon guide on the viewfinder") {
-                Toggle("", isOn: Binding(
-                    get: { settings.showLevelGauge },
-                    set: { newValue in
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
-                            settings.showLevelGauge = newValue
+            // White balance chips — single tight row
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(WhiteBalancePreset.allCases) { preset in
+                        proToolsChip(label: preset.label, selected: settings.whiteBalance == preset) {
+                            settings.whiteBalance = preset
+                            recorder.setWhiteBalance(preset)
                         }
-                        recorder.refreshMotionUpdateRate()
                     }
-                ))
-                .labelsHidden()
-                .tint(settings.accentColor.color)
+                }
             }
         }
-        .padding(.horizontal, 18)
-        .padding(.bottom, 18)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
         .background(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(Palette.slateDeep.opacity(0.97))
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Palette.slateDeep.opacity(0.96))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .stroke(Color.white.opacity(0.07), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
         )
         .compositingGroup()
-        .shadow(color: .black.opacity(0.45), radius: 12, x: 0, y: 6)
+        .shadow(color: .black.opacity(0.4), radius: 10, x: 0, y: 4)
     }
 
     // MARK: Bottom HUD Bar (Live Zoom Always Visible)
