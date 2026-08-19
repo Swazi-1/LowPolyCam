@@ -48,11 +48,16 @@ enum Palette {
     static let iceBright   = Color(hex: 0xA8ECFF)
     static let iceDeep     = Color(hex: 0x1A8FB8)
 
-    // Aurora — sixth accent, inspired by northern lights & cosmic curiosity
-    static let aurora      = Color(hex: 0xA78BFA)   // Soft cosmic violet
+    // Aurora — cosmic violet
+    static let aurora      = Color(hex: 0xA78BFA)
     static let auroraBright = Color(hex: 0xC4B5FD)
     static let auroraDeep  = Color(hex: 0x7C3AED)
-    static let auroraTeal  = Color(hex: 0x2DD4BF)   // Companion teal for gradients
+    static let auroraTeal  = Color(hex: 0x2DD4BF)
+
+    // Coral Bloom — warm rose-coral accent
+    static let coral       = Color(hex: 0xFF6B6B)
+    static let coralBright = Color(hex: 0xFF9A9A)
+    static let coralDeep   = Color(hex: 0xE04545)
 
     // Semantic
     static let success     = Color(hex: 0x4ADE80)
@@ -181,7 +186,7 @@ struct FacetIconButton: View {
     var size: CGFloat = Design.controlSize
     var tint: Color = .white
     var filled: Bool = false
-    var accent: Color = Palette.mint
+    var accent: Color = Palette.violet
     let action: () -> Void
 
     var body: some View {
@@ -216,9 +221,9 @@ struct FacetIconButton: View {
 
 struct InfoPill: View {
     let content: AnyView
-    var accent: Color = Palette.mint
+    var accent: Color = Palette.violet
 
-    init<Content: View>(accent: Color = Palette.mint, @ViewBuilder content: () -> Content) {
+    init<Content: View>(accent: Color = Palette.violet, @ViewBuilder content: () -> Content) {
         self.accent = accent
         self.content = AnyView(content())
     }
