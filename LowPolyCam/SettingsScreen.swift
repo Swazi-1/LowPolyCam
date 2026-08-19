@@ -45,9 +45,13 @@ struct SettingsScreen: View {
     var body: some View {
         NavigationView {
             List {
-                // 1. Capture first — what you're about to shoot
+                // Active setup summary
+                summarySection
+
+                if isFrontSnapshot { frontCameraBanner }
+
+                // Capture — mode-specific, fewer separate sections
                 if settings.cameraMode == .slowMo {
-                    if isFrontSnapshot { frontCameraBanner }
                     slowMoFrameRateSection
                     slowMoResolutionSection
                     qualitySection
@@ -55,34 +59,22 @@ struct SettingsScreen: View {
                     photoMegapixelsSection
                     qualitySection
                 } else {
-                    if isFrontSnapshot { frontCameraBanner }
                     presetsSection
-                    resolutionSection
-                    frameRateSection
-                    qualitySection
+                    videoCaptureSection
                 }
 
-                // 2. Where clips go + length limits
-                saveSection
-                if settings.cameraMode != .photo {
-                    splitSection
-                    maxDurationSection
-                }
+                // Output
+                outputSection
 
-                // 3. Capture assist (stab, grid, longevity…)
+                // Assist + feedback side by side in spirit (separate list groups)
                 captureAssistSection
-
-                // 4. Feedback (sounds / haptics / flash)
                 feedbackSection
 
-                // 5. Codec + storage estimate
+                // Codec
                 advancedSection
-                estimateSection
 
-                // 6. Theme (less critical — near the bottom)
+                // Theme + about
                 appearanceSection
-
-                // 7. About
                 aboutSection
             }
             .listStyle(InsetGroupedListStyle())
@@ -120,6 +112,143 @@ struct SettingsScreen: View {
             availableSlowMoResolutions = recorder.availableSlowMoResolutions
             isSlowMoSupported = recorder.isSlowMoSupportedOnCurrentLens
             stabilizationSupported = recorder.stabilizationSupported
+        }
+    }
+
+    // MARK: - Summary card
+
+    private var summarySection: some View {
+        Section {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text(settings.cameraMode.label.uppercased())
+                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                        .foregroundColor(settings.accentColor.bright)
+                        .tracking(0.8)
+                    Spacer()
+                    Text(plan.sizeLabel)
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundColor(.white.opacity(0.85))
+                }
+                HStack(spacing: 16) {
+                    summaryStat(title: "Quality", value: shortQualityLabel(settings.quality))
+                    summaryStat(title: "Save", value: settings.saveLocation.label)
+                    if settings.cameraMode != .photo {
+                        summaryStat(title: "Split", value: shortSplitLabel(settings.splitInterval))
+                    }
+                }
+                if settings.cameraMode != .photo {
+                    Text("~\(Int(plan.megabytesPerHour.rounded())) MB/hr · \(Fmt.size(freeBytesSnapshot)) free")
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundColor(.secondary)
+                }
+            }
+            .padding(.vertical, 4)
+        }
+    }
+
+    private func summaryStat(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .foregroundColor(.secondary)
+            Text(value)
+                .font(.system(size: 14, weight: .semibold, design: .rounded))
+                .foregroundColor(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: - Video capture (res + fps + quality in one place)
+
+    private var videoCaptureSection: some View {
+        Section(header: sectionHeader("Video", icon: "video.fill"),
+                footer: Text("Recording at \(plan.sizeLabel).")) {
+            Text("Resolution")
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .foregroundColor(.secondary)
+            chipRow(Resolution.allCases
+                .filter { $0 != .p144 || availableResolutions.contains(.p144) }
+                .map { r in
+                    ChipItem(id: r.id, label: r.label,
+                             enabled: availableResolutions.contains(r),
+                             selected: settings.resolution == r) {
+                        settings.resolution = r
+                        if let locked = r.lockedFrameRate {
+                            settings.frameRate = locked
+                        }
+                        recorder.updateCaptureFormat()
+                    }
+                })
+
+            Text("Frame rate")
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .foregroundColor(.secondary)
+                .padding(.top, 6)
+            chipRow(FrameRate.allCases.map { f in
+                let enabled = availableFrameRates.contains(f)
+                    && !(settings.resolution == .p2160 && f == .fps60)
+                return ChipItem(id: "fr-\(f.id)", label: f.label,
+                                 enabled: enabled,
+                                 selected: settings.frameRate == f) {
+                    settings.frameRate = f
+                    recorder.updateCaptureFormat()
+                }
+            })
+
+            Text("Quality")
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .foregroundColor(.secondary)
+                .padding(.top, 6)
+            chipRow(Quality.allCases.map { q in
+                ChipItem(id: q.id, label: shortQualityLabel(q),
+                          selected: settings.quality == q) {
+                    settings.quality = q
+                }
+            })
+        }
+    }
+
+    // MARK: - Output (save + split + auto-stop + storage)
+
+    private var outputSection: some View {
+        Section(header: sectionHeader("Output", icon: "tray.and.arrow.down.fill")) {
+            Text("Save to")
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .foregroundColor(.secondary)
+            chipRow(SaveLocation.allCases.map { s in
+                ChipItem(id: s.id, label: s.label, selected: settings.saveLocation == s) {
+                    settings.saveLocation = s
+                }
+            })
+
+            if settings.cameraMode != .photo {
+                Text("Split clips")
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .foregroundColor(.secondary)
+                    .padding(.top, 6)
+                chipRow(SplitInterval.allCases.map { interval in
+                    ChipItem(id: interval.id, label: shortSplitLabel(interval),
+                              selected: settings.splitInterval == interval) {
+                        settings.splitInterval = interval
+                    }
+                })
+
+                Picker(selection: $settings.maxDuration) {
+                    ForEach(MaxDuration.allCases) { d in
+                        Text(d.label).tag(d)
+                    }
+                } label: {
+                    Label("Auto-stop", systemImage: "timer")
+                        .labelStyle(SettingsLabelStyle(color: settings.accentColor.deep))
+                }
+                .padding(.top, 4)
+
+                infoRow("Space / hour", "\(Int(plan.megabytesPerHour.rounded())) MB")
+                infoRow("Room left", Fmt.hours(hoursLeft))
+            }
         }
     }
 
@@ -404,18 +533,18 @@ struct SettingsScreen: View {
     // MARK: - Appearance
 
     private var appearanceSection: some View {
-        Section(header: sectionHeader("Appearance", icon: "paintpalette.fill"),
-                footer: Text("Accent colour for shutter, highlights and controls.")) {
-            HStack(spacing: 0) {
-                ForEach(AccentColor.allCases) { color in
-                    let isSelected = settings.accentColor == color
-                    Button(action: {
-                        settings.accentColor = color
-                        presetHaptic.selectionChanged()
-                    }) {
-                        VStack(spacing: 5) {
-                            ZStack {
-                                Facet(sides: 6, rotation: .pi / 6)
+        Section(header: sectionHeader("Theme", icon: "paintpalette.fill"),
+                footer: Text("Accent for shutter, highlights and controls.")) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
+                    ForEach(AccentColor.allCases) { color in
+                        let isSelected = settings.accentColor == color
+                        Button(action: {
+                            settings.accentColor = color
+                            presetHaptic.selectionChanged()
+                        }) {
+                            VStack(spacing: 6) {
+                                Circle()
                                     .fill(
                                         LinearGradient(
                                             colors: [color.bright, color.color],
@@ -423,34 +552,24 @@ struct SettingsScreen: View {
                                             endPoint: .bottomTrailing
                                         )
                                     )
-                                    .frame(width: 34, height: 34)
-                                    .shadow(color: color.color.opacity(isSelected ? 0.45 : 0.15),
+                                    .frame(width: 36, height: 36)
+                                    .overlay(
+                                        Circle()
+                                            .stroke(Color.white, lineWidth: isSelected ? 2.5 : 0)
+                                    )
+                                    .shadow(color: color.color.opacity(isSelected ? 0.45 : 0.12),
                                             radius: isSelected ? 6 : 2)
-
-                                if isSelected {
-                                    Facet(sides: 6, rotation: .pi / 6)
-                                        .stroke(Color.white, lineWidth: 2.2)
-                                        .frame(width: 40, height: 40)
-                                    Image(systemName: "checkmark")
-                                        .font(.system(size: 11, weight: .bold))
-                                        .foregroundColor(Palette.slateDeep)
-                                }
+                                Text(shortAccentName(color))
+                                    .font(.system(size: 11, weight: isSelected ? .bold : .medium, design: .rounded))
+                                    .foregroundColor(isSelected ? color.bright : .secondary)
                             }
-                            .frame(width: 42, height: 42)
-
-                            Text(shortAccentName(color))
-                                .font(.system(size: 9, weight: isSelected ? .bold : .medium, design: .rounded))
-                                .foregroundColor(isSelected ? color.bright : .secondary)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.8)
                         }
-                        .frame(maxWidth: .infinity)
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(color.label)
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(color.label)
                 }
+                .padding(.vertical, 6)
             }
-            .padding(.vertical, 6)
         }
     }
 
