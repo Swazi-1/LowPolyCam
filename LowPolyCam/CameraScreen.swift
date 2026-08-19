@@ -1517,7 +1517,7 @@ struct ClipPlayerView: View {
                     }
                     .padding()
                 } else {
-                    ProgressView().tint(Palette.mintBright).scaleEffect(1.2)
+                    ProgressView().tint(Palette.violet.opacity(0.95)).scaleEffect(1.2)
                 }
             }
             .navigationBarTitle("Preview", displayMode: .inline)
@@ -1527,7 +1527,7 @@ struct ClipPlayerView: View {
             })
         }
         .navigationViewStyle(StackNavigationViewStyle())
-        .accentColor(Palette.mint)
+        .accentColor(Palette.violet)
         .onAppear {
             guard FileManager.default.fileExists(atPath: url.path) else {
                 loadFailed = true
