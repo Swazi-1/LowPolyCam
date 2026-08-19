@@ -534,6 +534,12 @@ final class AppSettings: ObservableObject {
     @Published var hapticFeedbackEnabled: Bool {
         didSet { store.set(hapticFeedbackEnabled, forKey: "hapticFeedbackEnabled") }
     }
+    /// Longevity Mode prioritises battery life, lower heat, and smaller files
+    /// on older devices (especially iPhone 7 / A10). When enabled it gently
+    /// steers the encoder toward safer settings and strengthens auto-dim.
+    @Published var longevityMode: Bool {
+        didSet { store.set(longevityMode, forKey: "longevityMode") }
+    }
 
     /// Applies a capture preset. Forces video mode for recording-oriented presets.
     func applyPreset(_ preset: CapturePreset) {
@@ -583,13 +589,14 @@ final class AppSettings: ObservableObject {
         saveSelfiesUnmirrored    = store.object(forKey: "saveSelfiesUnmirrored") as? Bool ?? false
         captureFlashConfirmation = store.object(forKey: "captureFlashConfirmation") as? Bool ?? true
         hapticFeedbackEnabled    = store.object(forKey: "hapticFeedbackEnabled") as? Bool ?? true
+        longevityMode            = store.object(forKey: "longevityMode") as? Bool ?? false
     }
 }
 
 // MARK: - Accent Colour
 
 enum AccentColor: String, CaseIterable, Identifiable {
-    case mint, violet, amber, red, ice
+    case mint, violet, amber, red, ice, aurora
 
     var id: String { rawValue }
 
@@ -600,6 +607,7 @@ enum AccentColor: String, CaseIterable, Identifiable {
         case .amber: return "Button Gold"
         case .red: return "Record Red"
         case .ice: return "Ice Cyan"
+        case .aurora: return "Aurora"
         }
     }
 
@@ -610,6 +618,7 @@ enum AccentColor: String, CaseIterable, Identifiable {
         case .amber: return Palette.amber
         case .red: return Palette.record
         case .ice: return Palette.ice
+        case .aurora: return Palette.aurora
         }
     }
 
@@ -620,6 +629,7 @@ enum AccentColor: String, CaseIterable, Identifiable {
         case .amber: return Palette.amberBright
         case .red: return Color(hex: 0xFF7A70)
         case .ice: return Palette.iceBright
+        case .aurora: return Palette.auroraBright
         }
     }
 
@@ -630,6 +640,7 @@ enum AccentColor: String, CaseIterable, Identifiable {
         case .amber: return Palette.amberDeep
         case .red: return Palette.record
         case .ice: return Palette.iceDeep
+        case .aurora: return Palette.auroraDeep
         }
     }
 }
@@ -763,9 +774,21 @@ enum Encoder {
             }
             kbps = min(kbps, slowMoCeilingKbps)
         }
+
+        // Longevity Mode (great on iPhone 7 / A10): gently reduces bitrate
+        // and lengthens GOP so the encoder, battery, and thermal headroom
+        // last longer during marathon sessions.
+        if settings.longevityMode {
+            kbps *= 0.78
+            // Will also stretch GOP below.
+        }
+
         // Longer GOPs at 4K reduce I-frame spikes that backlog the A10 encoder.
         var gopSeconds = keyFrameSeconds[settings.quality] ?? 4
         if res == .p2160 { gopSeconds = max(gopSeconds, 5) }
+        if settings.longevityMode {
+            gopSeconds = max(gopSeconds, 6)
+        }
         let aKbps = settings.recordAudio ? (audioKbps[settings.quality] ?? 32) : 0
 
         return EncodePlan(
