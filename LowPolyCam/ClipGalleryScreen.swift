@@ -63,15 +63,16 @@ struct ClipGalleryScreen: View {
             }
             .navigationBarTitle("Recorded Clips", displayMode: .inline)
             .navigationBarItems(
-                leading: Button(isEditing ? "Cancel" : "Done") {
+                // Select on the leading side; Done dismisses on the trailing
+                // side (matches Settings and other sheets).
+                leading: leadingBar,
+                trailing: Button("Done") {
                     if isEditing {
                         isEditing = false
                         selection.removeAll()
-                    } else {
-                        presentation.wrappedValue.dismiss()
                     }
-                },
-                trailing: trailingBar
+                    presentation.wrappedValue.dismiss()
+                }
             )
             .toolbar {
                 ToolbarItemGroup(placement: .bottomBar) {
@@ -240,22 +241,17 @@ struct ClipGalleryScreen: View {
 
     // MARK: Bars
 
-    private var trailingBar: some View {
+    private var leadingBar: some View {
         Group {
-            if !clips.isEmpty {
-                if isEditing {
-                    Button(selection.count == clips.count ? "Deselect All" : "Select All") {
-                        if selection.count == clips.count {
-                            selection.removeAll()
-                        } else {
-                            selection = Set(clips.map { $0.url })
-                        }
-                    }
-                    .foregroundColor(Palette.violet.opacity(0.95))
-                } else {
-                    Button("Select") { isEditing = true }
-                        .foregroundColor(Palette.violet.opacity(0.95))
+            if isEditing {
+                Button("Cancel") {
+                    isEditing = false
+                    selection.removeAll()
                 }
+                .foregroundColor(Palette.violet.opacity(0.95))
+            } else if !clips.isEmpty {
+                Button("Select") { isEditing = true }
+                    .foregroundColor(Palette.violet.opacity(0.95))
             }
         }
     }
