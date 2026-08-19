@@ -735,8 +735,24 @@ enum Encoder {
         // catching every frame over per-frame bit density, so its ceiling
         // is capped independently of the (now much higher) quality-preset
         // base rate.
+        //
+        // The previous flat 30/20 Mbps ceilings were still too high for the
+        // A10's real-time HEVC encoder at 720p240 — frames kept backing up
+        // and getting discarded (alwaysDiscardsLateVideoFrames), reading
+        // back as ~210 fps in Photos instead of the ~239.9 fps the stock
+        // Camera app achieves. Apple's own stock Camera app targets roughly
+        // these bitrates for slow-mo (from Apple's published storage specs:
+        // 720p@240≈170MB/min, 1080p@120≈130MB/min, 720p@120≈65MB/min) —
+        // matching them keeps the encoder comfortably real-time on A10.
         if isSlow {
-            let slowMoCeilingKbps: Double = fps >= 240 ? 30000 : 20000
+            let slowMoCeilingKbps: Double
+            if fps >= 240 {
+                slowMoCeilingKbps = 20000          // ~170MB/min @ 720p240
+            } else if res == .p1080 {
+                slowMoCeilingKbps = 17000          // ~130MB/min @ 1080p120
+            } else {
+                slowMoCeilingKbps = 8500            // ~65MB/min @ 720p120
+            }
             kbps = min(kbps, slowMoCeilingKbps)
         }
         // Longer GOPs at 4K reduce I-frame spikes that backlog the A10 encoder.
