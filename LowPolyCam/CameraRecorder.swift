@@ -1104,14 +1104,15 @@ final class CameraRecorder: NSObject, ObservableObject {
 
         // Publish capability lists on main without blocking the session queue
         // (main.sync here previously risked deadlocks / hitches on A10).
-        let rates = supportedRates.isEmpty ? [FrameRate.fps30] : supportedRates
+        // Named finalRates to avoid shadowing `var rates = Set<FrameRate>()` above.
+        let finalRates = supportedRates.isEmpty ? [FrameRate.fps30] : supportedRates
         let resolutions = supportedResolutions.isEmpty ? [Resolution.p720] : supportedResolutions
         let slowRatesOut = supportedSlowRates
         let slowResOut = supportedSlowRes.isEmpty ? [Resolution.p720] : supportedSlowRes
         let slowSupported = !supportedSlowRates.isEmpty
 
         DispatchQueue.main.async {
-            self.availableFrameRates = rates
+            self.availableFrameRates = finalRates
             self.availableResolutions = resolutions
             self.availableSlowMoRates = slowRatesOut
             self.availableSlowMoResolutions = slowResOut
