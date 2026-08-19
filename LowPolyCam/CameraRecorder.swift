@@ -722,13 +722,37 @@ final class CameraRecorder: NSObject, ObservableObject {
 
             // Prefer formats whose max rate is close to the target (more stable
             // fixed-rate capture on older silicon than a wide 1–60 range).
-            let maxRateSlack = Int((matchingRange.maxFrameRate - fps).rounded())
-            let rateScore = max(0, maxRateSlack) * 50_000
+            //
+            // Formats whose maxFrameRate falls even slightly short of the
+            // target (e.g. 59.5 when asking for 60) used to score identically
+            // to an exact 60fps format here, because slack was clamped to 0 in
+            // both directions. That let a shortfall format win purely on
+            // resolution/binning and get picked — the actual cause of clips
+            // landing at 59.44/58fps etc. instead of a true 60. A shortfall
+            // format can never actually deliver the requested rate, so it must
+            // always lose to any format that can, regardless of other scoring.
+            let rateDelta = matchingRange.maxFrameRate - fps
+            let rateScore: Int
+            if rateDelta < -0.05 {
+                // Genuinely can't hit the target fps — heavily disqualify.
+                rateScore = 100_000_000 + Int((-rateDelta * 1_000).rounded())
+            } else {
+                let maxRateSlack = Int(rateDelta.rounded())
+                rateScore = max(0, maxRateSlack) * 50_000
+            }
 
-            // Prefer non-binned / non-HDR for predictable encode on A10.
+            // Prefer non-binned for predictable encode on weaker/older silicon.
             let binnedScore = format.isVideoBinned ? 1_000_000 : 0
+            // NOTE: this used to disqualify HDR-capable formats almost entirely
+            // (colorScore = 10_000_000, dwarfing every other factor), which meant
+            // the app never actually captured through the HDR/tone-mapped pipeline
+            // stock Camera uses by default. That's why footage looked warmer/flatter
+            // than the stock Camera app even in identical light — not a white-balance
+            // bug, but the format picker steering away from HDR outright. Now it's
+            // only a small tiebreaker, so a resolution/rate match that happens to be
+            // HDR-capable is preferred instead of excluded.
             let isHDR = format.supportedColorSpaces.contains(.HLG_BT2020)
-            let colorScore = isHDR ? 10_000_000 : 0
+            let colorScore = isHDR ? 0 : 500
 
             let score = areaDelta + rateScore + binnedScore + colorScore
             scored.append((format, score))
@@ -1611,7 +1635,7 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     // MARK: Segments & Rolling Split
 
-    private func startSegment(at pts: CMTime) {
+    private func startSegment(at pts: CMTime, firstSampleBuffer: CMSampleBuffer? = nil) {
         DebugLog.write("[0] startSegment called at pts=\(CMTimeGetSeconds(pts)) plan=\(plan != nil) freeBytesSnapshot=\(freeBytesSnapshot)")
         guard let plan = plan else {
             DebugLog.write("❌ no plan, bailing")
@@ -1672,12 +1696,29 @@ final class CameraRecorder: NSObject, ObservableObject {
             w.startSession(atSourceTime: pts)
             DebugLog.write("[9] startSession OK at pts=\(CMTimeGetSeconds(pts))")
 
+            // Append the actual frame that triggered this segment right now,
+            // synchronously, before anything else can touch the writer. Without
+            // this the session's declared start time (pts) has no matching
+            // encoded sample, which is what produced the black first frame.
+            var appendedFirstPTS = pts
+            if let first = firstSampleBuffer, v.isReadyForMoreMediaData {
+                if v.append(first) {
+                    let dur = CMSampleBufferGetDuration(first)
+                    appendedFirstPTS = dur.isValid && dur.isNumeric ? CMTimeAdd(pts, dur) : pts
+                    DebugLog.write("[9b] first frame appended at segment start ✅")
+                } else {
+                    DebugLog.write("⚠️ first frame append failed, status=\(w.status.rawValue) error=\(w.error?.localizedDescription ?? "nil")")
+                }
+            } else {
+                DebugLog.write("⚠️ no first sample buffer / input not ready yet, black-frame gap possible")
+            }
+
             writerLock.lock()
             writer = w
             videoIn = v
             audioIn = a
             segmentStart = pts
-            lastVideoPTS = pts
+            lastVideoPTS = appendedFirstPTS
             if !recordStartPTS.isValid { recordStartPTS = pts }
             segmentStartInFlight = false
             writerLock.unlock()
@@ -1749,7 +1790,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
     }
 
-    private func rotateSegment(at pts: CMTime) {
+    private func rotateSegment(at pts: CMTime, firstSampleBuffer: CMSampleBuffer? = nil) {
         writerLock.lock()
         guard let oldWriter = writer, let oldVideoIn = videoIn else {
             writerLock.unlock()
@@ -1779,7 +1820,7 @@ final class CameraRecorder: NSObject, ObservableObject {
             }
         }
 
-        startSegment(at: pts)
+        startSegment(at: pts, firstSampleBuffer: firstSampleBuffer)
     }
 
     private func audioSettings(for plan: EncodePlan, writer w: AVAssetWriter) -> [String: Any]? {
@@ -2208,11 +2249,21 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
             // video queue compounds into many dropped frames.
             if needsNewSegment {
                 DebugLog.write("first video frame arrived, dispatching startSegment to ioQueue")
-                ioQueue.async { [weak self] in self?.startSegment(at: pts) }
+                // Hand the actual sample buffer along (not just its timestamp) so
+                // startSegment can append this exact frame right after starting the
+                // AVAssetWriter session. Previously only the timestamp was passed and
+                // this frame's pixel data was thrown away, so startSession(atSourceTime:)
+                // pointed at a moment with no encoded frame — that gap is what made
+                // Photos/the gallery render a black poster/first frame. CMSampleBuffer
+                // is a CF object; retaining it here across queues is cheap (no image
+                // processing), so this doesn't reintroduce the video-queue stall the
+                // original comment was avoiding — only the AVAssetWriter setup itself
+                // still happens off the video queue, on ioQueue.
+                ioQueue.async { [weak self] in self?.startSegment(at: pts, firstSampleBuffer: sampleBuffer) }
                 return
             }
             if needsRotate {
-                ioQueue.async { [weak self] in self?.rotateSegment(at: pts) }
+                ioQueue.async { [weak self] in self?.rotateSegment(at: pts, firstSampleBuffer: sampleBuffer) }
                 return
             }
         }
