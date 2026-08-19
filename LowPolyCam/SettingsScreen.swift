@@ -449,12 +449,12 @@ struct SettingsScreen: View {
 
     private func shortAccentName(_ color: AccentColor) -> String {
         switch color {
-        case .mint: return "Mint"
         case .violet: return "Lavender"
         case .amber: return "Gold"
         case .red: return "Red"
         case .ice: return "Ice"
         case .aurora: return "Aurora"
+        case .coral: return "Coral"
         }
     }
 
