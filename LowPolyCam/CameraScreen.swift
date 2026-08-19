@@ -562,7 +562,7 @@ struct CameraScreen: View {
             : settings.accentColor.color
     }
 
-    // MARK: Pro Tools Menu (redesigned to match Settings' clean list style)
+    // MARK: Pro Tools Menu
 
     private func proToolsSectionHeader(_ title: String, icon: String) -> some View {
         HStack(spacing: 6) {
@@ -571,7 +571,7 @@ struct CameraScreen: View {
                 .foregroundColor(settings.accentColor.color)
             Text(title.uppercased())
                 .font(.system(size: 12, weight: .semibold, design: .rounded))
-                .foregroundColor(.white.opacity(0.55))
+                .foregroundColor(.white.opacity(0.5))
                 .tracking(0.6)
         }
     }
@@ -583,32 +583,69 @@ struct CameraScreen: View {
         }) {
             Text(label)
                 .font(.system(size: 13, weight: selected ? .semibold : .medium, design: .rounded))
-                .foregroundColor(selected ? .white : .white.opacity(0.85))
+                .foregroundColor(selected ? Palette.slateDeep : .white.opacity(0.85))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
                 .padding(.horizontal, 14)
-                .padding(.vertical, 8)
+                .padding(.vertical, 9)
                 .background(
                     Capsule()
-                        .fill(selected ? settings.accentColor.color : Color.white.opacity(0.08))
+                        .fill(selected ? settings.accentColor.color : Palette.slateMid.opacity(0.6))
                 )
         }
         .buttonStyle(.plain)
     }
 
-    private var proToolsDrawer: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack {
-                HStack(spacing: 10) {
-                    Image(systemName: "slider.horizontal.3")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(.white)
-                        .frame(width: 28, height: 28)
-                        .background(settings.accentColor.color)
-                        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+    /// A single full-width settings-style row: icon, title, optional subtitle,
+    /// and a trailing control. Rows sit inside one continuous card separated
+    /// by hairline dividers, closer to how Settings itself lays things out
+    /// rather than everything crammed into loose floating chips.
+    private func proToolsRow<Trailing: View>(
+        icon: String,
+        title: String,
+        subtitle: String? = nil,
+        @ViewBuilder trailing: () -> Trailing
+    ) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(.white)
+                .frame(width: 30, height: 30)
+                .background(Palette.slateMid)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
-                    Text("Pro Tools")
-                        .font(.system(size: 17, weight: .bold, design: .rounded))
-                        .foregroundColor(.white)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.system(size: 15, weight: .medium, design: .rounded))
+                    .foregroundColor(.white)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.system(size: 12, weight: .regular))
+                        .foregroundColor(.white.opacity(0.45))
                 }
+            }
+
+            Spacer(minLength: 8)
+
+            trailing()
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var proToolsDrawer: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Grab handle, like a real bottom sheet
+            Capsule()
+                .fill(Color.white.opacity(0.18))
+                .frame(width: 36, height: 4)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 8)
+                .padding(.bottom, 14)
+
+            HStack {
+                Text("Pro Tools")
+                    .font(.system(size: 20, weight: .bold, design: .rounded))
+                    .foregroundColor(.white)
 
                 Spacer()
 
@@ -616,14 +653,15 @@ struct CameraScreen: View {
                     withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { showProMenu = false }
                 }) {
                     Image(systemName: "xmark")
-                        .font(.system(size: 11, weight: .bold))
+                        .font(.system(size: 12, weight: .bold))
                         .foregroundColor(.white.opacity(0.7))
-                        .frame(width: 26, height: 26)
-                        .background(Color.white.opacity(0.08))
+                        .frame(width: 28, height: 28)
+                        .background(Palette.slateMid)
                         .clipShape(Circle())
                 }
                 .buttonStyle(.plain)
             }
+            .padding(.bottom, 18)
 
             // Exposure
             VStack(alignment: .leading, spacing: 10) {
@@ -631,20 +669,27 @@ struct CameraScreen: View {
 
                 HStack {
                     Text(String(format: "%@%.1f EV", settings.exposureBias > 0 ? "+" : "", settings.exposureBias))
-                        .font(.system(size: 15, weight: .medium, design: .rounded))
-                        .foregroundColor(settings.exposureBias == 0 ? .white.opacity(0.6) : .white)
+                        .font(.system(size: 22, weight: .semibold, design: .rounded))
+                        .foregroundColor(settings.exposureBias == 0 ? .white.opacity(0.5) : .white)
 
                     Spacer()
 
                     if abs(settings.exposureBias) > 0.01 {
-                        Button("Reset") {
+                        Button(action: {
                             withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                                 settings.exposureBias = 0.0
                                 recorder.setExposureBias(0.0)
                             }
+                        }) {
+                            Text("Reset")
+                                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                                .foregroundColor(.white.opacity(0.8))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(Palette.slateMid)
+                                .clipShape(Capsule())
                         }
-                        .font(.system(size: 13, weight: .semibold, design: .rounded))
-                        .foregroundColor(settings.accentColor.color)
+                        .buttonStyle(.plain)
                     }
                 }
 
@@ -654,8 +699,9 @@ struct CameraScreen: View {
                         recorder.setExposureBias(val)
                     }
             }
+            .padding(.bottom, 18)
 
-            Divider().overlay(Color.white.opacity(0.08))
+            Divider().overlay(Color.white.opacity(0.08)).padding(.bottom, 18)
 
             // White balance
             VStack(alignment: .leading, spacing: 10) {
@@ -671,53 +717,55 @@ struct CameraScreen: View {
                         }
                     }
                     .padding(.vertical, 2)
+                    .padding(.trailing, 2)
                 }
             }
+            .padding(.bottom, 18)
 
-            Divider().overlay(Color.white.opacity(0.08))
+            Divider().overlay(Color.white.opacity(0.08)).padding(.bottom, 6)
 
-            // Level meter + countdown
+            // Level meter — full-width row with a real switch, own line
+            proToolsRow(icon: "gyroscope", title: "Level Meter", subtitle: "Show tilt guide while shooting") {
+                Toggle("", isOn: Binding(
+                    get: { settings.showLevelGauge },
+                    set: { newValue in
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                            settings.showLevelGauge = newValue
+                        }
+                    }
+                ))
+                .labelsHidden()
+                .tint(settings.accentColor.color)
+            }
+
+            Divider().overlay(Color.white.opacity(0.08)).padding(.vertical, 6)
+
+            // Timer — its own full-width row, chips never share space with
+            // anything else so "Off" always has room to sit on one line.
             VStack(alignment: .leading, spacing: 10) {
-                proToolsSectionHeader("Tools", icon: "wrench.and.screwdriver.fill")
+                proToolsSectionHeader("Self-Timer", icon: "timer")
 
                 HStack(spacing: 8) {
-                    proToolsChip(label: "Level Meter", selected: settings.showLevelGauge) {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
-                            settings.showLevelGauge.toggle()
+                    ForEach(CountdownTimer.allCases) { timer in
+                        proToolsChip(label: timer.label, selected: settings.countdownTimer == timer) {
+                            settings.countdownTimer = timer
                         }
                     }
-
-                    Spacer(minLength: 4)
-
-                    HStack(spacing: 6) {
-                        Text("Timer")
-                            .font(.system(size: 12, weight: .medium, design: .rounded))
-                            .foregroundColor(.white.opacity(0.5))
-
-                        ForEach(CountdownTimer.allCases) { timer in
-                            proToolsChip(label: timer.label, selected: settings.countdownTimer == timer) {
-                                settings.countdownTimer = timer
-                            }
-                        }
-                    }
+                    Spacer(minLength: 0)
                 }
             }
         }
-        .padding(16)
+        .padding(.horizontal, 18)
+        .padding(.bottom, 18)
         .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Palette.panel.opacity(0.92))
-                .background(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(.ultraThinMaterial)
-                        .environment(\.colorScheme, .dark)
-                )
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(Palette.slateDeep.opacity(0.97))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(Color.white.opacity(0.07), lineWidth: 1)
         )
-        .shadow(color: .black.opacity(0.4), radius: 20, x: 0, y: 10)
+        .shadow(color: .black.opacity(0.5), radius: 24, x: 0, y: 12)
     }
 
     // MARK: Bottom HUD Bar (Live Zoom Always Visible)
