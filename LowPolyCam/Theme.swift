@@ -48,6 +48,12 @@ enum Palette {
     static let iceBright   = Color(hex: 0xA8ECFF)
     static let iceDeep     = Color(hex: 0x1A8FB8)
 
+    // Aurora — sixth accent, inspired by northern lights & cosmic curiosity
+    static let aurora      = Color(hex: 0xA78BFA)   // Soft cosmic violet
+    static let auroraBright = Color(hex: 0xC4B5FD)
+    static let auroraDeep  = Color(hex: 0x7C3AED)
+    static let auroraTeal  = Color(hex: 0x2DD4BF)   // Companion teal for gradients
+
     // Semantic
     static let success     = Color(hex: 0x4ADE80)
     static let warning     = Color(hex: 0xFBBF24)
