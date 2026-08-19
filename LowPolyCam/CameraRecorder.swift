@@ -143,6 +143,37 @@ final class CameraRecorder: NSObject, ObservableObject {
     private static func formatKey(device: AVCaptureDevice, format: AVCaptureDevice.Format, fps: Double) -> String {
         "\(device.uniqueID)|\(ObjectIdentifier(format))|\(fps.rounded())"
     }
+
+    /// Waits for the sensor's auto-exposure to re-converge after a format
+    /// switch (e.g. idle preview format -> full recording format). Changing
+    /// `activeFormat`/frame duration makes the sensor briefly re-negotiate
+    /// exposure/gain; if we start writing frames immediately, the first
+    /// handful come out dark and visibly ramp up to normal brightness over
+    /// 3-4 frames. Waiting for `isAdjustingExposure` to clear (same signal
+    /// AVCapturePhotoOutput effectively waits on internally) fixes this.
+    /// Bounded by `timeout` so a device that never reports settled (or is
+    /// already locked/manual) can't hang recording start indefinitely.
+    private func waitForExposureSettled(device: AVCaptureDevice, timeout: TimeInterval = 0.35, completion: @escaping () -> Void) {
+        guard device.isAdjustingExposure else {
+            completion()
+            return
+        }
+        var didComplete = false
+        var observation: NSKeyValueObservation?
+        let lock = NSLock()
+        let finish = { [weak self] in
+            lock.lock()
+            guard !didComplete else { lock.unlock(); return }
+            didComplete = true
+            lock.unlock()
+            observation?.invalidate()
+            self?.sessionQueue.async { completion() }
+        }
+        observation = device.observe(\.isAdjustingExposure, options: [.new]) { dev, _ in
+            if !dev.isAdjustingExposure { finish() }
+        }
+        sessionQueue.asyncAfter(deadline: .now() + timeout) { finish() }
+    }
     private var micInput: AVCaptureDeviceInput?
     private var position: AVCaptureDevice.Position = .back
     private var isConfigured = false
@@ -1707,20 +1738,38 @@ final class CameraRecorder: NSObject, ObservableObject {
         sessionQueue.async {
             self.applyActiveFormat(forRecording: true)
             self.applyStabilization()
-            self.videoOutput.setSampleBufferDelegate(self, queue: self.videoQueue)
-            self.audioOutput.setSampleBufferDelegate(self, queue: self.audioQueue)
 
-            self.ioQueue.async {
-                self.plan = newPlan
-                self.recordingDestination = self.settings.saveLocation
-                self.clipTransform = transform
-                self.writerLock.lock()
-                self.recordStartPTS = .invalid
-                self.segmentStartInFlight = false
-                self.writerLock.unlock()
-                self.lastElapsedPush = .invalid
-                self.droppedFrameCount = 0
-                self.wantsRecording = true
+            let beginCapture: () -> Void = {
+                // Bail if a newer start/stop already superseded this one while
+                // we were waiting for exposure to settle.
+                guard self.recordingSessionToken == myToken, self.isRecording, !self.stopRequested else { return }
+                self.videoOutput.setSampleBufferDelegate(self, queue: self.videoQueue)
+                self.audioOutput.setSampleBufferDelegate(self, queue: self.audioQueue)
+
+                self.ioQueue.async {
+                    self.plan = newPlan
+                    self.recordingDestination = self.settings.saveLocation
+                    self.clipTransform = transform
+                    self.writerLock.lock()
+                    self.recordStartPTS = .invalid
+                    self.segmentStartInFlight = false
+                    self.writerLock.unlock()
+                    self.lastElapsedPush = .invalid
+                    self.droppedFrameCount = 0
+                    self.wantsRecording = true
+                }
+            }
+
+            if let device = self.cameraInput?.device {
+                // Cap the wait itself: the sensor was already running (idle
+                // preview) before this call, so this only covers the tail
+                // end of AE re-converging to the new record format/exposure
+                // target — not a cold start. 0.35s keeps worst-case record
+                // start latency imperceptible while still catching the
+                // common 2-4 frame dark ramp.
+                self.waitForExposureSettled(device: device, timeout: 0.35, completion: beginCapture)
+            } else {
+                beginCapture()
             }
         }
 
@@ -1730,7 +1779,6 @@ final class CameraRecorder: NSObject, ObservableObject {
         droppedFrames = 0
         audioLevel = 0
         if settings.shutterSoundEnabled { SoundPlayer.play(.start) }
-        _ = myToken // captured for symmetry; stopRecording reads the live token itself
     }
 
     func stopRecording(notice message: String?) {
