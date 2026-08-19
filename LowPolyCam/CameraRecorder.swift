@@ -19,19 +19,28 @@ final class CameraRecorder: NSObject, ObservableObject {
             return dir.appendingPathComponent("recording_debug_log.txt")
         }()
 
+        private static let dateFormatter: ISO8601DateFormatter = {
+            let f = ISO8601DateFormatter()
+            return f
+        }()
+
         static func write(_ message: String) {
-            let stamp = ISO8601DateFormatter().string(from: Date())
+            // Reuse formatter; append on a utility queue so the hot path
+            // (segment start/stop) never blocks on disk open/seek/close.
+            let stamp = dateFormatter.string(from: Date())
             let line = "[\(stamp)] \(message)\n"
             print(line, terminator: "")
             guard let data = line.data(using: .utf8) else { return }
-            if FileManager.default.fileExists(atPath: url.path) {
-                if let handle = try? FileHandle(forWritingTo: url) {
-                    handle.seekToEndOfFile()
-                    handle.write(data)
-                    try? handle.close()
+            DispatchQueue.global(qos: .utility).async {
+                if FileManager.default.fileExists(atPath: url.path) {
+                    if let handle = try? FileHandle(forWritingTo: url) {
+                        handle.seekToEndOfFile()
+                        handle.write(data)
+                        try? handle.close()
+                    }
+                } else {
+                    try? data.write(to: url)
                 }
-            } else {
-                try? data.write(to: url)
             }
         }
 
@@ -400,7 +409,14 @@ final class CameraRecorder: NSObject, ObservableObject {
               let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
 
         if type == .began {
-            DispatchQueue.main.async { self.audioLevel = 0 }
+            // Stop a clean segment rather than leaving a truncated/corrupt file
+            // when a call, Siri, or another audio client interrupts.
+            DispatchQueue.main.async {
+                self.audioLevel = 0
+                if self.isRecording {
+                    self.stopRecording(notice: "Recording stopped (audio interrupted)")
+                }
+            }
         }
     }
 
@@ -448,13 +464,28 @@ final class CameraRecorder: NSObject, ObservableObject {
             }
             self.lastRawRollAngle = angle
 
-            self.rollAngle = self.unwrappedRollAngle
+            // Throttle @Published rollAngle updates to avoid rebuilding the
+            // entire camera UI at 6 Hz on A10. Publish when the gauge is on
+            // and the angle moved enough to matter visually.
+            let newUnwrapped = self.unwrappedRollAngle
+            if self.settings.showLevelGauge {
+                if abs(newUnwrapped - self.rollAngle) >= 0.5 {
+                    self.rollAngle = newUnwrapped
+                }
+            }
             let remainder = abs(angle.truncatingRemainder(dividingBy: 90))
             let isLevelNow = remainder < 1.2 || remainder > 88.8
             if self.isLevel != isLevelNow {
                 self.isLevel = isLevelNow
             }
         }
+    }
+
+    /// Call when the level-gauge toggle changes so CoreMotion rate tracks UI.
+    func refreshMotionUpdateRate() {
+        guard motionManager.isDeviceMotionAvailable else { return }
+        let hz: Double = settings.showLevelGauge ? 6.0 : 2.0
+        motionManager.deviceMotionUpdateInterval = 1.0 / hz
     }
 
     func stopMotionUpdates() {
@@ -1052,12 +1083,20 @@ final class CameraRecorder: NSObject, ObservableObject {
             $0 != .p2160 && slowResolutions.contains($0)
         }
 
-        DispatchQueue.main.sync {
-            self.availableFrameRates = supportedRates.isEmpty ? [.fps30] : supportedRates
-            self.availableResolutions = supportedResolutions.isEmpty ? [.p720] : supportedResolutions
-            self.availableSlowMoRates = supportedSlowRates
-            self.availableSlowMoResolutions = supportedSlowRes.isEmpty ? [.p720] : supportedSlowRes
-            self.isSlowMoSupportedOnCurrentLens = !supportedSlowRates.isEmpty
+        // Publish capability lists on main without blocking the session queue
+        // (main.sync here previously risked deadlocks / hitches on A10).
+        let rates = supportedRates.isEmpty ? [FrameRate.fps30] : supportedRates
+        let resolutions = supportedResolutions.isEmpty ? [Resolution.p720] : supportedResolutions
+        let slowRatesOut = supportedSlowRates
+        let slowResOut = supportedSlowRes.isEmpty ? [Resolution.p720] : supportedSlowRes
+        let slowSupported = !supportedSlowRates.isEmpty
+
+        DispatchQueue.main.async {
+            self.availableFrameRates = rates
+            self.availableResolutions = resolutions
+            self.availableSlowMoRates = slowRatesOut
+            self.availableSlowMoResolutions = slowResOut
+            self.isSlowMoSupportedOnCurrentLens = slowSupported
 
             if !self.availableFrameRates.contains(self.settings.frameRate) {
                 let fallback: FrameRate = self.availableFrameRates.contains(.fps30)
@@ -1125,6 +1164,8 @@ final class CameraRecorder: NSObject, ObservableObject {
     }
 
     func flipCamera() {
+        // Flipping mid-record is not supported (would tear down the writer
+        // session). Guard is the single source of truth — no dead branches.
         guard !isRecording, !isSwitchingCamera else { return }
 
         DispatchQueue.main.async {
@@ -1153,11 +1194,6 @@ final class CameraRecorder: NSObject, ObservableObject {
 
             self.configureVideoConnection()
             self.refreshCapabilitiesThenApplyFormat()
-            // If we switched while a recording is active, re-apply the full
-            // recording rate (refreshCapabilities defaults to preview rate).
-            if self.isRecording {
-                self.applyActiveFormat(forRecording: true)
-            }
             self.refreshTorchState()
             self.resetFocusAndExposureToAuto()
 
@@ -1326,9 +1362,10 @@ final class CameraRecorder: NSObject, ObservableObject {
                     }
                 } else {
                     device.torchMode = .off
+                    // Keep the user's preferred torch level so the next
+                    // torch-on restores it instead of jumping to full/zero.
                     DispatchQueue.main.async {
                         self.torchOn = false
-                        self.settings.torchBrightness = 0
                     }
                 }
                 device.unlockForConfiguration()
@@ -2652,7 +2689,9 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
     }
 
     private func countDroppedFrame() {
+        writerLock.lock()
         droppedFrameCount += 1
+        writerLock.unlock()
     }
 
     /// End timestamp for a written frame. Prefer the buffer's own duration;
@@ -2685,7 +2724,9 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
         }
 
         let seconds = CMTimeGetSeconds(CMTimeSubtract(pts, start))
+        writerLock.lock()
         let drops = droppedFrameCount
+        writerLock.unlock()
         let level = currentAudioLevel()
 
         // Auto-stop when max duration is reached
