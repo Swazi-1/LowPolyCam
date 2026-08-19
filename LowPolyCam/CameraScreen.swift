@@ -765,7 +765,17 @@ struct CameraScreen: View {
             RoundedRectangle(cornerRadius: 22, style: .continuous)
                 .stroke(Color.white.opacity(0.07), lineWidth: 1)
         )
-        .shadow(color: .black.opacity(0.5), radius: 24, x: 0, y: 12)
+        // compositingGroup flattens everything above (background, overlay,
+        // all the rows/chips/slider/toggle) into a single layer *before* the
+        // shadow is computed. Without it, SwiftUI has to re-derive the shadow
+        // from the live alpha of that whole interactive subtree on every
+        // frame of the move/scale/opacity transition, which is what was
+        // making the sheet stutter coming up and down on A10. A flattened
+        // layer's silhouette barely changes frame to frame, so the shadow is
+        // effectively free during the animation. The lighter radius (12 vs
+        // the old 24) also roughly halves the blur cost on the weaker GPU.
+        .compositingGroup()
+        .shadow(color: .black.opacity(0.45), radius: 12, x: 0, y: 6)
     }
 
     // MARK: Bottom HUD Bar (Live Zoom Always Visible)
