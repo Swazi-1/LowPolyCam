@@ -366,6 +366,11 @@ struct SettingsScreen: View {
                     .labelStyle(SettingsLabelStyle(color: settings.accentColor.deep))
             }
 
+            Toggle(isOn: $settings.longevityMode) {
+                Label("Longevity Mode", systemImage: "leaf.fill")
+                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
+            }
+
             Toggle(isOn: $settings.shutterSoundEnabled) {
                 Label("Shutter & dial sounds", systemImage: "speaker.wave.2.fill")
                     .labelStyle(SettingsLabelStyle(color: settings.accentColor.bright))
@@ -443,6 +448,7 @@ struct SettingsScreen: View {
         case .amber: return "Gold"
         case .red: return "Red"
         case .ice: return "Ice"
+        case .aurora: return "Aurora"
         }
     }
 
@@ -484,6 +490,12 @@ struct SettingsScreen: View {
             aboutRow(icon: "hand.tap.fill",
                      title: "Shortcuts",
                      body: "Double-tap preview to flip cameras. Volume keys = shutter.")
+            aboutRow(icon: "leaf.fill",
+                     title: "Longevity Mode",
+                     body: "Tuned for iPhone 7 & older chips — cooler, longer, smaller files.")
+            aboutRow(icon: "sparkles",
+                     title: "Horizon Edition",
+                     body: "Built with imagination for the devices that keep going.")
         }
     }
 
