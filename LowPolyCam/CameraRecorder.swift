@@ -237,14 +237,18 @@ final class CameraRecorder: NSObject, ObservableObject {
             appliedThermalMitigation = true
 
             // Auto-Cooling: dim the screen to cut display power draw.
-            // Frame rate stays at 30 fps (only rate available for normal video).
-            if UIScreen.main.brightness > 0.35 {
-                UIScreen.main.brightness = 0.35
+            // Preview is already locked to 30 fps while idle; recording will
+            // still use the selected rate but the dim helps overall.
+            if UIScreen.main.brightness > 0.30 {
+                UIScreen.main.brightness = 0.30
             }
             notice = "Phone is hot · Cooling down"
 
         case .serious:
             if !appliedThermalMitigation {
+                if UIScreen.main.brightness > 0.45 {
+                    UIScreen.main.brightness = 0.45
+                }
                 notice = "Phone is warm"
             }
 
@@ -292,9 +296,10 @@ final class CameraRecorder: NSObject, ObservableObject {
         // precision instrument) and orientation tracking — it kept
         // CoreMotion's gyro/accelerometer fusion running at full tilt the
         // entire time the camera screen was open, contributing to the app
-        // feeling warm even while just idling on the preview. 10Hz is still
-        // plenty smooth for both uses and roughly halves that background load.
-        motionManager.deviceMotionUpdateInterval = 1.0 / 10.0
+        // feeling warm even while just idling on the preview. 6Hz is still
+        // smooth enough for the gauge and orientation, and cuts the
+        // background CoreMotion load further on A10.
+        motionManager.deviceMotionUpdateInterval = 1.0 / 6.0
         motionManager.startDeviceMotionUpdates(using: .xArbitraryZVertical, to: .main) { [weak self] motion, _ in
             guard let self = self, let motion = motion else { return }
             let gx = motion.gravity.x
@@ -454,10 +459,12 @@ final class CameraRecorder: NSObject, ObservableObject {
         videoOutput.videoSettings = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         ]
-        videoOutput.setSampleBufferDelegate(self, queue: videoQueue)
+        // Delegates stay nil while idle. They are attached only for the
+        // duration of a recording (see startRecording / stopRecording) so
+        // the system does not deliver every preview frame into the process
+        // when nothing is being written — major idle-heat reduction.
         if session.canAddOutput(videoOutput) { session.addOutput(videoOutput) }
 
-        audioOutput.setSampleBufferDelegate(self, queue: audioQueue)
         if session.canAddOutput(audioOutput) { session.addOutput(audioOutput) }
 
         if session.canAddOutput(photoOutput) { session.addOutput(photoOutput) }
@@ -553,14 +560,18 @@ final class CameraRecorder: NSObject, ObservableObject {
         configureVideoConnection()
     }
 
-    private func applyActiveFormat() {
+    /// Applies the active camera format + frame rate.
+    /// - Parameter forRecording: when false (idle preview), force a low power
+    ///   30 fps sensor rate so the phone stays cool like the stock Camera app.
+    ///   High rates (60 / 120 / 240) are only engaged while actually recording.
+    private func applyActiveFormat(forRecording: Bool = false) {
         DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
         ensureCorrectCameraDevice(for: settings.cameraMode)
         guard let device = cameraInput?.device else { return }
 
         let isSlow = settings.cameraMode == .slowMo && isSlowMoSupportedOnCurrentLens
         let dims: (w: Int, h: Int)
-        let fps: Double
+        let fullFPS: Double
 
         if isSlow {
             if !availableSlowMoRates.contains(settings.slowMoFrameRate) {
@@ -569,7 +580,7 @@ final class CameraRecorder: NSObject, ObservableObject {
                     self.settings.slowMoFrameRate = fallback
                 }
             }
-            fps = Double(settings.slowMoFrameRate.value)
+            fullFPS = Double(settings.slowMoFrameRate.value)
             dims = settings.slowMoResolution.captureDimensions
         } else {
             dims = settings.resolution.captureDimensions
@@ -579,17 +590,25 @@ final class CameraRecorder: NSObject, ObservableObject {
                     self.notice = "\(self.settings.resolution.label) locked to \(locked.label)"
                 }
             }
-            fps = Double((settings.resolution.lockedFrameRate ?? settings.frameRate).value)
+            fullFPS = Double((settings.resolution.lockedFrameRate ?? settings.frameRate).value)
         }
 
-        var targetFPS = fps
+        // Idle preview always runs at 30 fps (or the locked rate if lower).
+        // This is the single biggest heat reduction vs. leaving the sensor
+        // at 60/120/240 the entire time the camera screen is open.
+        let targetFPS: Double
+        if forRecording {
+            targetFPS = fullFPS
+        } else {
+            targetFPS = min(fullFPS, 30.0)
+        }
+
         var format = isSlow
             ? Self.bestSlowMoAwareFormat(for: device, width: dims.w, height: dims.h, fps: targetFPS)
             : Self.bestFormat(for: device, width: dims.w, height: dims.h, fps: targetFPS)
 
         if format == nil && targetFPS == 60 {
-            targetFPS = 30
-            format = Self.bestFormat(for: device, width: dims.w, height: dims.h, fps: targetFPS)
+            format = Self.bestFormat(for: device, width: dims.w, height: dims.h, fps: 30)
             if format != nil {
                 DispatchQueue.main.async {
                     self.settings.frameRate = .fps30
@@ -599,8 +618,9 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
 
         guard let finalFormat = format else {
-            if isSlow, let fallbackFormat = Self.bestSlowMoFormat(for: device, fps: fps) {
-                applyUnifiedHardwareConfiguration(to: device, format: fallbackFormat, targetFPS: fps)
+            if isSlow, let fallbackFormat = Self.bestSlowMoFormat(for: device, fps: fullFPS) {
+                let applyFPS = forRecording ? fullFPS : min(fullFPS, 30.0)
+                applyUnifiedHardwareConfiguration(to: device, format: fallbackFormat, targetFPS: applyFPS)
                 DispatchQueue.main.async {
                     let dDims = CMVideoFormatDescriptionGetDimensions(fallbackFormat.formatDescription)
                     let closestRes: Resolution = dDims.height >= 1080 ? .p1080 : .p720
@@ -630,12 +650,16 @@ final class CameraRecorder: NSObject, ObservableObject {
             try device.lockForConfiguration()
             
             // 1. Format & Frame Rate — lock min AND max to the same duration so
-            // the sensor runs at a fixed rate (prevents VFR / under-30 fps files).
+            // the sensor runs at a fixed rate (prevents VFR / under-target fps files).
             device.activeFormat = format
 
             let desiredFPS = max(1.0, targetFPS.rounded())
-            // Clamp to a range the active format actually supports.
-            var minDur = CMTimeMake(value: 1, timescale: CMTimeScale(desiredFPS))
+            // Use a high timescale so 60 / 120 / 240 land on exact rational
+            // durations (1/60, 1/120, 1/240) rather than approximate floats.
+            // This is what makes Photos report a clean 60.00 / 240.00 instead
+            // of 59.94 / 197 etc. when no frames are dropped.
+            let timescale = CMTimeScale(desiredFPS * 1000.0)
+            var minDur = CMTime(value: 1000, timescale: timescale)
             var maxDur = minDur
             if let range = format.videoSupportedFrameRateRanges.first(where: {
                 $0.minFrameRate - 0.5 <= desiredFPS && desiredFPS <= $0.maxFrameRate + 0.5
@@ -737,8 +761,15 @@ final class CameraRecorder: NSObject, ObservableObject {
                 // Genuinely can't hit the target fps — heavily disqualify.
                 rateScore = 100_000_000 + Int((-rateDelta * 1_000).rounded())
             } else {
-                let maxRateSlack = Int(rateDelta.rounded())
-                rateScore = max(0, maxRateSlack) * 50_000
+                // Tight match (exact or within ~0.1) scores best. Large slack
+                // (e.g. a 1-240 range when we want 60) is still usable but
+                // less preferred because the sensor may not lock as cleanly.
+                let slack = abs(rateDelta)
+                if slack < 0.15 {
+                    rateScore = 0
+                } else {
+                    rateScore = Int((slack * 10_000).rounded())
+                }
             }
 
             // Prefer non-binned / non-HDR for predictable encode on A10.
@@ -746,7 +777,13 @@ final class CameraRecorder: NSObject, ObservableObject {
             let isHDR = format.supportedColorSpaces.contains(.HLG_BT2020)
             let colorScore = isHDR ? 10_000_000 : 0
 
-            let score = areaDelta + rateScore + binnedScore + colorScore
+            // Slight preference for formats whose minFrameDuration is already
+            // very close to 1/target — these lock more cleanly to a fixed rate.
+            let idealDur = CMTime(value: 1, timescale: CMTimeScale(max(1, Int(fps.rounded()))))
+            let minDurDelta = abs(CMTimeGetSeconds(matchingRange.minFrameDuration) - CMTimeGetSeconds(idealDur))
+            let durScore = Int((minDurDelta * 50_000).rounded())
+
+            let score = areaDelta + rateScore + binnedScore + colorScore + durScore
             scored.append((format, score))
         }
         return scored.sorted { $0.score < $1.score }.map { $0.format }
@@ -877,7 +914,9 @@ final class CameraRecorder: NSObject, ObservableObject {
             }
         }
 
-        applyActiveFormat()
+        // Default to preview (low-power) rate. Recording path will re-apply
+        // the full target rate just before frames start flowing.
+        applyActiveFormat(forRecording: false)
     }
 
     func syncMicInput() {
@@ -945,6 +984,11 @@ final class CameraRecorder: NSObject, ObservableObject {
 
             self.configureVideoConnection()
             self.refreshCapabilitiesThenApplyFormat()
+            // If we switched while a recording is active, re-apply the full
+            // recording rate (refreshCapabilities defaults to preview rate).
+            if self.isRecording {
+                self.applyActiveFormat(forRecording: true)
+            }
             self.refreshTorchState()
             self.resetFocusAndExposureToAuto()
 
@@ -1548,17 +1592,32 @@ final class CameraRecorder: NSObject, ObservableObject {
         recordingSessionToken += 1
         let myToken = recordingSessionToken
 
-        ioQueue.async {
-            self.plan = newPlan
-            self.recordingDestination = self.settings.saveLocation
-            self.clipTransform = transform
-            self.writerLock.lock()
-            self.recordStartPTS = .invalid
-            self.segmentStartInFlight = false
-            self.writerLock.unlock()
-            self.lastElapsedPush = .invalid
-            self.droppedFrameCount = 0
-            self.wantsRecording = true
+        // Switch sensor to the full target rate (60 / 120 / 240) and attach
+        // the sample-buffer delegates only while recording. This keeps idle
+        // preview cool and ensures every delivered frame is at the exact
+        // rate the encode plan expects.
+        //
+        // Order matters: apply format + attach delegates *first*, then set
+        // wantsRecording. Otherwise early frames can land at the idle 30 fps
+        // (or during the format transition) and pull the average down in
+        // Photos (especially on short clips).
+        sessionQueue.async {
+            self.applyActiveFormat(forRecording: true)
+            self.videoOutput.setSampleBufferDelegate(self, queue: self.videoQueue)
+            self.audioOutput.setSampleBufferDelegate(self, queue: self.audioQueue)
+
+            self.ioQueue.async {
+                self.plan = newPlan
+                self.recordingDestination = self.settings.saveLocation
+                self.clipTransform = transform
+                self.writerLock.lock()
+                self.recordStartPTS = .invalid
+                self.segmentStartInFlight = false
+                self.writerLock.unlock()
+                self.lastElapsedPush = .invalid
+                self.droppedFrameCount = 0
+                self.wantsRecording = true
+            }
         }
 
         notice = nil
@@ -1594,6 +1653,16 @@ final class CameraRecorder: NSObject, ObservableObject {
         UIApplication.shared.isIdleTimerDisabled = false
         notice = message
         refreshFreeSpace()
+
+        // Immediately drop back to low-power 30 fps preview and stop delivering
+        // sample buffers to the app. This is the main reason the stock Camera
+        // app stays cool while sitting on the viewfinder — the sensor and the
+        // process aren't chewing high-rate frames when nothing is being saved.
+        sessionQueue.async {
+            self.videoOutput.setSampleBufferDelegate(nil, queue: nil)
+            self.audioOutput.setSampleBufferDelegate(nil, queue: nil)
+            self.applyActiveFormat(forRecording: false)
+        }
 
         var task: UIBackgroundTaskIdentifier = .invalid
         task = UIApplication.shared.beginBackgroundTask(withName: "finishClip") {
@@ -2286,13 +2355,15 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
                 // 240fps a frame only has ~4.2ms before the next one is
                 // due, so spinning too long here just delays and backs up
                 // subsequent frames instead of helping. Scale the number of
-                // retries down at high frame rates so this stays a genuine
-                // recovery step rather than becoming part of the backlog.
+                // retries and the sleep down at high frame rates so this
+                // stays a genuine recovery step rather than becoming part
+                // of the backlog.
                 let fps = plan?.frameRate ?? 30
-                let maxRetries = fps >= 200 ? 2 : (fps >= 100 ? 3 : 4)
+                let maxRetries = fps >= 200 ? 1 : (fps >= 100 ? 2 : 3)
+                let sleepUs: useconds_t = fps >= 200 ? 150 : 250
                 var appended = false
                 for _ in 0..<maxRetries {
-                    usleep(300)
+                    usleep(sleepUs)
                     if vIn?.isReadyForMoreMediaData == true {
                         vIn?.append(sampleBuffer)
                         writerLock.lock()
