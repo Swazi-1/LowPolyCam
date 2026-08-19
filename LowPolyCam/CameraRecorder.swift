@@ -842,9 +842,18 @@ final class CameraRecorder: NSObject, ObservableObject {
             targetFPS = min(fullFPS, idleFPSCap)
         }
 
-        var format = isSlow
-            ? Self.bestSlowMoAwareFormat(for: device, width: dims.w, height: dims.h, fps: targetFPS)
-            : Self.bestFormat(for: device, width: dims.w, height: dims.h, fps: targetFPS)
+        // Photo mode needs a format whose highResolutionStillImageDimensions
+        // are full 4:3 sensor size (4032×3024 ≈ 12MP on iPhone 7). The usual
+        // 16:9 1080p video formats only deliver ~9MP stills because high-res
+        // stills inherit the active format's aspect ratio / FOV.
+        var format: AVCaptureDevice.Format?
+        if settings.cameraMode == .photo && !forRecording {
+            format = Self.bestPhotoStillFormat(for: device, maxPreviewHeight: dims.h, fps: targetFPS)
+        } else if isSlow {
+            format = Self.bestSlowMoAwareFormat(for: device, width: dims.w, height: dims.h, fps: targetFPS)
+        } else {
+            format = Self.bestFormat(for: device, width: dims.w, height: dims.h, fps: targetFPS)
+        }
 
         if format == nil && targetFPS == 60 {
             format = Self.bestFormat(for: device, width: dims.w, height: dims.h, fps: 30)
@@ -1046,6 +1055,60 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     private static func bestFormat(for device: AVCaptureDevice, width: Int, height: Int, fps: Double) -> AVCaptureDevice.Format? {
         scoredCandidates(in: device.formats, width: width, height: height, fps: fps).first
+    }
+
+    /// Picks a format optimised for full-resolution stills on iOS 15 / iPhone 7.
+    /// High-res stills inherit the active format's aspect ratio / FOV, so a 16:9
+    /// 1080p video format only yields ~9MP (4032×2268). Prefer formats whose
+    /// highResolutionStillImageDimensions are the full 4:3 sensor
+    /// (4032×3024 ≈ 12MP), while keeping the live preview near maxPreviewHeight
+    /// so the viewfinder stays smooth and low-power on A10.
+    private static func bestPhotoStillFormat(for device: AVCaptureDevice, maxPreviewHeight: Int, fps: Double) -> AVCaptureDevice.Format? {
+        struct Candidate {
+            let format: AVCaptureDevice.Format
+            let stillArea: Int
+            let previewH: Int
+            let previewArea: Int
+            let isBinned: Bool
+        }
+        var candidates: [Candidate] = []
+        for format in device.formats {
+            let supportsFPS = format.videoSupportedFrameRateRanges.contains {
+                $0.minFrameRate - 0.5 <= fps && fps <= $0.maxFrameRate + 0.5
+            }
+            guard supportsFPS else { continue }
+
+            let still = format.highResolutionStillImageDimensions
+            let stillArea = Int(still.width) * Int(still.height)
+            guard stillArea > 0 else { continue }
+
+            let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+            candidates.append(Candidate(
+                format: format,
+                stillArea: stillArea,
+                previewH: Int(dims.height),
+                previewArea: Int(dims.width) * Int(dims.height),
+                isBinned: format.isVideoBinned
+            ))
+        }
+        guard !candidates.isEmpty else {
+            return bestFormat(for: device, width: 1280, height: min(maxPreviewHeight, 720), fps: fps)
+        }
+
+        // 1) Max still megapixels
+        // 2) Prefer preview height ≤ maxPreviewHeight (idle heat)
+        // 3) Prefer smaller preview area among those
+        // 4) Prefer non-binned
+        candidates.sort { a, b in
+            if a.stillArea != b.stillArea { return a.stillArea > b.stillArea }
+            let aOver = a.previewH > maxPreviewHeight
+            let bOver = b.previewH > maxPreviewHeight
+            if aOver != bOver { return !aOver && bOver }
+            if a.previewArea != b.previewArea { return a.previewArea < b.previewArea }
+            if a.isBinned != b.isBinned { return !a.isBinned && b.isBinned }
+            return false
+        }
+        return candidates.first?.format
     }
 
     private static func bestSlowMoAwareFormat(for device: AVCaptureDevice, width: Int, height: Int, fps: Double) -> AVCaptureDevice.Format? {
@@ -1630,8 +1693,13 @@ final class CameraRecorder: NSObject, ObservableObject {
             }
 
             if #available(iOS 16.0, *) {
-                // Don't constrain maxPhotoDimensions - capture full sensor resolution
-                // Let AVCapturePhotoSettings default to maximum available
+                // AVCapturePhotoSettings.maxPhotoDimensions defaults to the
+                // *smallest* supported size, not the max. Explicitly request
+                // the full-sensor dimensions that configurePhotoOutput() set
+                // on the output, so we capture at true max resolution (e.g.
+                // 12MP). PhotoCaptureProcessor then downsamples to the user's
+                // chosen photoMegapixels target when encoding.
+                photoSettings.maxPhotoDimensions = self.photoOutput.maxPhotoDimensions
             } else {
                 photoSettings.isHighResolutionPhotoEnabled = self.photoOutput.isHighResolutionCaptureEnabled
             }
