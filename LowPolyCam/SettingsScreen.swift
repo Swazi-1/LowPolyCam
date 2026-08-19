@@ -91,6 +91,12 @@ struct SettingsScreen: View {
             .animation(nil, value: settings.accentColor)
             .animation(nil, value: appliedPresetId)
             .transaction { $0.animation = nil }
+            // Drop the pull-down "search over the list" gesture recognizer
+            // some iOS 15 List/NavigationView combos install even with no
+            // .searchable() attached — it can compete with normal scroll's
+            // gesture recognizer on older hardware, showing up as random
+            // stutter that isn't tied to any one row's content.
+            .navigationViewStyle(StackNavigationViewStyle())
             .navigationBarTitle("Settings", displayMode: .inline)
             .navigationBarItems(trailing: Button(action: {
                 presentation.wrappedValue.dismiss()
