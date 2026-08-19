@@ -855,7 +855,7 @@ struct CameraScreen: View {
 
     private var recordButton: some View {
         Button {
-            guard !recorder.isSwitchingCamera, !isPinching, !recorder.isCapturingPhoto else { return }
+            guard !recorder.isSwitchingCamera, !isPinching, !recorder.isCapturingPhoto, !recorder.isSaving else { return }
             let now = Date()
             guard now.timeIntervalSince(lastRecordButtonTap) > 0.4 else { return }
             lastRecordButtonTap = now
@@ -1131,16 +1131,28 @@ struct CameraScreen: View {
         UIScreen.main.brightness = 1.0
         screenFlashIlluminating = true
 
-        // Give the sensor a beat to re-expose for the much brighter,
-        // screen-lit subject before actually grabbing the frame — firing
-        // instantly would just capture mid-adjustment, half-exposed.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
-            recorder.capturePhoto()
-            // Hold the bright screen a moment after the shutter too (avoids
-            // an abrupt cut back to a dark screen), then fade and restore.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+        // Restore brightness only after the sensor actually fires
+        // (onWillCapturePhoto), not on a fixed timer after capturePhoto() —
+        // on A10 the capture can land later than 0.12s and underexpose.
+        let previousHook = recorder.onWillCapturePhoto
+        recorder.onWillCapturePhoto = {
+            previousHook?()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
                 screenFlashIlluminating = false
                 UIScreen.main.brightness = frontFlashSavedBrightness
+                recorder.onWillCapturePhoto = previousHook
+            }
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+            recorder.capturePhoto()
+            // Safety: if willCapture never fires, still restore after 2s.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                if screenFlashIlluminating {
+                    screenFlashIlluminating = false
+                    UIScreen.main.brightness = frontFlashSavedBrightness
+                    recorder.onWillCapturePhoto = previousHook
+                }
             }
         }
     }
@@ -1151,7 +1163,7 @@ struct CameraScreen: View {
         haptic.prepare()
 
         countdownTimer?.invalidate()
-        countdownTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+        let timer = Timer(timeInterval: 1.0, repeats: true) { _ in
             haptic.impactOccurred()
             if countdownRemaining > 1 {
                 countdownRemaining -= 1
@@ -1159,7 +1171,7 @@ struct CameraScreen: View {
                 countdownTimer?.invalidate()
                 countdownTimer = nil
                 countdownRemaining = 0
-                guard !recorder.isSwitchingCamera else { return }
+                guard !recorder.isSwitchingCamera, !recorder.isSaving else { return }
                 if settings.cameraMode == .photo {
                     triggerPhotoCapture()
                 } else {
@@ -1168,6 +1180,9 @@ struct CameraScreen: View {
                 }
             }
         }
+        // Common modes so the countdown keeps ticking during scroll/drag.
+        RunLoop.main.add(timer, forMode: .common)
+        countdownTimer = timer
     }
 
     private func cancelCountdown() {
