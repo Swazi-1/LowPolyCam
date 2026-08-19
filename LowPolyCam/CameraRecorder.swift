@@ -1190,7 +1190,7 @@ final class CameraRecorder: NSObject, ObservableObject {
 
         DispatchQueue.main.async {
             self.isSwitchingCamera = true
-            self.volumeObserver?.ignoreTemporarily(duration: 3.0)
+            self.volumeObserver?.ignoreTemporarily(duration: 0.6)
         }
         setTorch(on: false)
         sessionQueue.async {
@@ -1201,27 +1201,33 @@ final class CameraRecorder: NSObject, ObservableObject {
                 return
             }
 
+            // Minimal swap — same pattern as stock Camera. Avoid full capability
+            // scan on the critical path (that was costing multi-second flips).
             self.session.beginConfiguration()
             if let old = self.cameraInput { self.session.removeInput(old) }
             if self.session.canAddInput(input) {
                 self.session.addInput(input)
                 self.cameraInput = input
                 self.position = next
-            } else {
-                if let old = self.cameraInput { self.session.addInput(old) }
+            } else if let old = self.cameraInput {
+                self.session.addInput(old)
             }
             self.session.commitConfiguration()
 
             self.configureVideoConnection()
-            self.refreshCapabilitiesThenApplyFormat()
+            // Light format apply only (no full device.formats walk).
+            self.applyActiveFormat(forRecording: false)
             self.refreshTorchState()
-            self.resetFocusAndExposureToAuto()
 
             DispatchQueue.main.async {
                 self.isFrontCamera = (next == .front)
                 self.isSwitchingCamera = false
-                self.volumeObserver?.ignoreTemporarily(duration: 1.0)
+                self.volumeObserver?.ignoreTemporarily(duration: 0.4)
             }
+
+            // Capabilities (front may lack 60 fps / slo-mo) update after UI unlocks.
+            self.refreshCapabilitiesThenApplyFormat()
+            self.resetFocusAndExposureToAuto()
         }
     }
 
@@ -1575,31 +1581,11 @@ final class CameraRecorder: NSObject, ObservableObject {
         let rotationAngle = physicalOrientation.videoRotationAngle
 
         sessionQueue.async {
-            // On iOS <16, still-photo resolution is tied to activeFormat, which is
-            // also what drives the live preview. To get a true 12MP photo without
-            // permanently degrading the preview, briefly switch to the highest-res
-            // format just for this one capture, then switch back immediately after.
-            var restoreFormat: AVCaptureDevice.Format?
-            if #unavailable(iOS 16.0), let device = self.cameraInput?.device {
-                let bestFormat = device.formats.max { a, b in
-                    let aDims = a.highResolutionStillImageDimensions
-                    let bDims = b.highResolutionStillImageDimensions
-                    return Int(aDims.width) * Int(aDims.height) < Int(bDims.width) * Int(bDims.height)
-                }
-                if let bestFormat = bestFormat,
-                   (device.activeFormat.highResolutionStillImageDimensions.width != bestFormat.highResolutionStillImageDimensions.width ||
-                    device.activeFormat.highResolutionStillImageDimensions.height != bestFormat.highResolutionStillImageDimensions.height) {
-                    restoreFormat = device.activeFormat
-                    do {
-                        try device.lockForConfiguration()
-                        device.activeFormat = bestFormat
-                        device.unlockForConfiguration()
-                    } catch {
-                        restoreFormat = nil
-                    }
-                }
-            }
-
+            // Do NOT swap activeFormat for stills on iOS 15 — that made the
+            // live preview go pixelated and flicker while the high-res format
+            // was active. High-resolution stills come from
+            // isHighResolutionPhotoEnabled + the photo output; the preview
+            // format stays put so the viewfinder stays smooth.
             var photoSettings: AVCapturePhotoSettings
             if self.photoOutput.availablePhotoCodecTypes.contains(.hevc) {
                 photoSettings = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.hevc])
@@ -1662,19 +1648,6 @@ final class CameraRecorder: NSObject, ObservableObject {
                 guard let self = self else { return }
                 DispatchQueue.main.async { self.isCapturingPhoto = false }
                 self.activePhotoProcessors.removeValue(forKey: photoSettings.uniqueID)
-
-                // Restore the smooth-preview format now that capture is done.
-                if let restoreFormat = restoreFormat, let device = self.cameraInput?.device {
-                    self.sessionQueue.async {
-                        do {
-                            try device.lockForConfiguration()
-                            device.activeFormat = restoreFormat
-                            device.unlockForConfiguration()
-                        } catch {
-                            // Preview may stay at capture resolution until next mode change — not ideal but not broken.
-                        }
-                    }
-                }
 
                 guard let image = image else {
                     DispatchQueue.main.async { self.notice = errorMessage ?? "Photo capture failed" }
