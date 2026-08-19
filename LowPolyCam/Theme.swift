@@ -99,6 +99,12 @@ enum Design {
     static let spring = Animation.spring(response: 0.38, dampingFraction: 0.82)
 }
 
+// MARK: - Device check (shared with Settings.swift's DeviceTier)
+
+private var usesLightweightMaterial: Bool {
+    ProcessInfo.processInfo.physicalMemory <= 2_500_000_000
+}
+
 // MARK: - Glass / Material helpers
 
 struct GlassBackground: View {
@@ -110,9 +116,19 @@ struct GlassBackground: View {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
             .fill(Palette.panel.opacity(opacity))
             .background(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(.ultraThinMaterial)
-                    .environment(\.colorScheme, .dark)
+                Group {
+                    // ultraThinMaterial is a live GPU blur — costly on the A10.
+                    // A flat, slightly darker fill looks close enough and is
+                    // essentially free to render on iPhone 7.
+                    if usesLightweightMaterial {
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .fill(Palette.slateDeep.opacity(0.55))
+                    } else {
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .fill(.ultraThinMaterial)
+                            .environment(\.colorScheme, .dark)
+                    }
+                }
             )
             .overlay(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
@@ -140,9 +156,16 @@ struct FacetGlassBackground: View {
         Facet(sides: sides, rotation: rotation)
             .fill(Palette.panel.opacity(opacity))
             .background(
-                Facet(sides: sides, rotation: rotation)
-                    .fill(.ultraThinMaterial)
-                    .environment(\.colorScheme, .dark)
+                Group {
+                    if usesLightweightMaterial {
+                        Facet(sides: sides, rotation: rotation)
+                            .fill(Palette.slateDeep.opacity(0.6))
+                    } else {
+                        Facet(sides: sides, rotation: rotation)
+                            .fill(.ultraThinMaterial)
+                            .environment(\.colorScheme, .dark)
+                    }
+                }
             )
             .overlay(
                 Facet(sides: sides, rotation: rotation)
@@ -207,7 +230,15 @@ struct InfoPill: View {
             .background(
                 Capsule(style: .continuous)
                     .fill(Palette.panel.opacity(0.78))
-                    .background(Capsule().fill(.ultraThinMaterial).environment(\.colorScheme, .dark))
+                    .background(
+                        Group {
+                            if usesLightweightMaterial {
+                                Capsule().fill(Palette.slateDeep.opacity(0.55))
+                            } else {
+                                Capsule().fill(.ultraThinMaterial).environment(\.colorScheme, .dark)
+                            }
+                        }
+                    )
             )
             .overlay(
                 Capsule(style: .continuous)
