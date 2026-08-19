@@ -370,6 +370,12 @@ struct SettingsScreen: View {
                 Label("Longevity Mode", systemImage: "leaf.fill")
                     .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
             }
+            .onChange(of: settings.longevityMode) { _ in
+                // Session is paused while this sheet is open; format will be
+                // re-applied on resume. Still refresh so the next idle path
+                // is correct if the user dismisses without other changes.
+                recorder.refreshIdleFormatIfNeeded()
+            }
 
             Toggle(isOn: $settings.shutterSoundEnabled) {
                 Label("Shutter & dial sounds", systemImage: "speaker.wave.2.fill")
