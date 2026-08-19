@@ -924,11 +924,19 @@ final class CameraRecorder: NSObject, ObservableObject {
             device.activeVideoMinFrameDuration = minDur
             device.activeVideoMaxFrameDuration = maxDur
             
-            // 2. Autofocus
+            // 2. Autofocus — format switches can leave focus/exposure locked or
+            // idle; re-enable continuous AF/AE so the viewfinder keeps tracking.
             if device.isSmoothAutoFocusSupported {
                 device.isSmoothAutoFocusEnabled = true
             }
-            
+            if device.isFocusModeSupported(.continuousAutoFocus) {
+                device.focusMode = .continuousAutoFocus
+            }
+            if device.isExposureModeSupported(.continuousAutoExposure) {
+                device.exposureMode = .continuousAutoExposure
+            }
+            device.isSubjectAreaChangeMonitoringEnabled = false
+
             // 3. Pro Settings (Exposure & White Balance)
             let minBias = device.minExposureTargetBias
             let maxBias = device.maxExposureTargetBias
@@ -1592,10 +1600,19 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     // MARK: Focus and exposure
 
+    /// Tap-to-focus: one-shot AF + AE on the tapped point.
+    /// continuousAutoFocus for taps often does nothing on older silicon
+    /// (iPhone 7) when the mode is already continuous — the lens never
+    /// re-racks. autoFocus forces a focus cycle; subject-area monitoring then
+    /// returns to continuous AF once the scene changes.
     func focusAndExpose(at point: CGPoint) {
-        applyFocusAndExposure(at: point,
-                              focus: .continuousAutoFocus,
-                              exposure: .continuousAutoExposure,
+        let clamped = CGPoint(
+            x: min(max(point.x, 0), 1),
+            y: min(max(point.y, 0), 1)
+        )
+        applyFocusAndExposure(at: clamped,
+                              focus: .autoFocus,
+                              exposure: .autoExpose,
                               monitorSubjectArea: true)
     }
 
@@ -1614,14 +1631,43 @@ final class CameraRecorder: NSObject, ObservableObject {
             guard let device = self.cameraInput?.device else { return }
             do {
                 try device.lockForConfiguration()
-                if device.isFocusPointOfInterestSupported, device.isFocusModeSupported(focus) {
+
+                // Focus: set POI first, then mode. If already in the requested
+                // mode, briefly leave it so the hardware re-triggers a cycle
+                // (otherwise a second tap is a no-op on many devices).
+                if device.isFocusPointOfInterestSupported {
                     device.focusPointOfInterest = point
+                }
+                if device.isFocusModeSupported(focus) {
+                    if device.focusMode == focus {
+                        if focus == .autoFocus, device.isFocusModeSupported(.continuousAutoFocus) {
+                            device.focusMode = .continuousAutoFocus
+                        } else if device.isFocusModeSupported(.locked) {
+                            device.focusMode = .locked
+                        }
+                    }
                     device.focusMode = focus
+                } else if device.isFocusModeSupported(.continuousAutoFocus) {
+                    device.focusMode = .continuousAutoFocus
                 }
-                if device.isExposurePointOfInterestSupported, device.isExposureModeSupported(exposure) {
+
+                // Exposure: same pattern — POI then mode.
+                if device.isExposurePointOfInterestSupported {
                     device.exposurePointOfInterest = point
-                    device.exposureMode = exposure
                 }
+                if device.isExposureModeSupported(exposure) {
+                    if device.exposureMode == exposure {
+                        if exposure == .autoExpose, device.isExposureModeSupported(.continuousAutoExposure) {
+                            device.exposureMode = .continuousAutoExposure
+                        } else if device.isExposureModeSupported(.locked) {
+                            device.exposureMode = .locked
+                        }
+                    }
+                    device.exposureMode = exposure
+                } else if device.isExposureModeSupported(.continuousAutoExposure) {
+                    device.exposureMode = .continuousAutoExposure
+                }
+
                 device.isSubjectAreaChangeMonitoringEnabled = monitorSubjectArea
                 device.unlockForConfiguration()
             } catch { }
