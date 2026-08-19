@@ -106,8 +106,21 @@ enum Design {
 
 // MARK: - Device check (shared with Settings.swift's DeviceTier)
 
-private var usesLightweightMaterial: Bool {
+var usesLightweightMaterial: Bool {
     ProcessInfo.processInfo.physicalMemory <= 2_500_000_000
+}
+
+/// Live blur on modern devices; flat fill on iPhone 7-class (A10) to save GPU.
+struct AdaptiveMaterialFill: View {
+    var body: some View {
+        Group {
+            if usesLightweightMaterial {
+                Palette.slateDeep.opacity(0.55)
+            } else {
+                Rectangle().fill(.ultraThinMaterial).environment(\.colorScheme, .dark)
+            }
+        }
+    }
 }
 
 // MARK: - Glass / Material helpers
