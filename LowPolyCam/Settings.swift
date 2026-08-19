@@ -600,7 +600,15 @@ final class AppSettings: ObservableObject {
         useHEVC          = store.object(forKey: "useHEVC") as? Bool ?? true
         showGrid         = store.object(forKey: "showGrid") as? Bool ?? false
         autoDimOnRecord  = store.object(forKey: "autoDimOnRecord") as? Bool ?? false
-        accentColor      = AccentColor(rawValue: store.string(forKey: "accentColor") ?? "") ?? .mint
+        // Default appearance is Dial Lavender. Legacy "mint" installs map to violet
+        // (Lens Mint was removed).
+        if let raw = store.string(forKey: "accentColor"), raw != "mint",
+           let parsed = AccentColor(rawValue: raw) {
+            accentColor = parsed
+        } else {
+            accentColor = .violet
+            store.set(AccentColor.violet.rawValue, forKey: "accentColor")
+        }
         shutterSoundEnabled = store.object(forKey: "shutterSoundEnabled") as? Bool ?? true
         photoMegapixels  = PhotoMegapixels(rawValue: store.object(forKey: "photoMegapixels") as? Double ?? 12.0) ?? .mp12
         saveSelfiesUnmirrored    = store.object(forKey: "saveSelfiesUnmirrored") as? Bool ?? false
@@ -617,51 +625,51 @@ final class AppSettings: ObservableObject {
 // MARK: - Accent Colour
 
 enum AccentColor: String, CaseIterable, Identifiable {
-    case mint, violet, amber, red, ice, aurora
+    case violet, amber, red, ice, aurora, coral
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
-        case .mint: return "Lens Mint"
         case .violet: return "Dial Lavender"
         case .amber: return "Button Gold"
         case .red: return "Record Red"
         case .ice: return "Ice Cyan"
         case .aurora: return "Aurora"
+        case .coral: return "Coral Bloom"
         }
     }
 
     var color: Color {
         switch self {
-        case .mint: return Palette.mint
         case .violet: return Palette.violet
         case .amber: return Palette.amber
         case .red: return Palette.record
         case .ice: return Palette.ice
         case .aurora: return Palette.aurora
+        case .coral: return Palette.coral
         }
     }
 
     var bright: Color {
         switch self {
-        case .mint: return Palette.mintBright
         case .violet: return Palette.violet.opacity(0.9)
         case .amber: return Palette.amberBright
         case .red: return Color(hex: 0xFF7A70)
         case .ice: return Palette.iceBright
         case .aurora: return Palette.auroraBright
+        case .coral: return Palette.coralBright
         }
     }
 
     var deep: Color {
         switch self {
-        case .mint: return Palette.mintDeep
         case .violet: return Palette.violetDeep
         case .amber: return Palette.amberDeep
         case .red: return Palette.record
         case .ice: return Palette.iceDeep
         case .aurora: return Palette.auroraDeep
+        case .coral: return Palette.coralDeep
         }
     }
 }
@@ -780,34 +788,49 @@ enum Encoder {
         // 720p@240≈170MB/min, 1080p@120≈130MB/min, 720p@120≈65MB/min) —
         // matching them keeps the encoder comfortably real-time on A10.
         if isSlow {
-            // Conservative ceilings tuned for A10 real-time encode via
-            // VideoDataOutput. The previous higher numbers still produced
-            // backlog → discarded frames → Photos reporting ~197 fps instead
-            // of 240. Matching (or slightly under) Apple's stock Camera
-            // storage numbers keeps every frame.
+            // Slow-mo ceilings: high enough for acceptable per-frame quality
+            // on A10, still under the point where VideoDataOutput + HEVC
+            // starts discarding frames (which tanks fps in Photos).
+            // Apple stock is roughly 720p240≈23 Mbps, 1080p120≈17 Mbps,
+            // 720p120≈9 Mbps — we sit a bit under that for headroom, and
+            // scale with the user's Quality preset so High is clearly
+            // better than Data Saver.
+            let qualityBoost: Double
+            switch settings.quality {
+            case .high:     qualityBoost = 1.00
+            case .medium:   qualityBoost = 0.85
+            case .low:      qualityBoost = 0.70
+            case .ultraLow: qualityBoost = 0.55
+            }
             let slowMoCeilingKbps: Double
             if fps >= 240 {
-                slowMoCeilingKbps = 16000          // reliable 720p240 on A10
+                slowMoCeilingKbps = 20000 * qualityBoost   // up to ~20 Mbps @ High
             } else if res == .p1080 {
-                slowMoCeilingKbps = 14000          // reliable 1080p120 on A10
+                slowMoCeilingKbps = 18000 * qualityBoost   // up to ~18 Mbps @ High 1080p120
             } else {
-                slowMoCeilingKbps = 7000           // reliable 720p120 on A10
+                slowMoCeilingKbps = 10000 * qualityBoost   // up to ~10 Mbps @ High 720p120
             }
-            kbps = min(kbps, slowMoCeilingKbps)
+            // Floor so even Data Saver is not unusably blocky.
+            let floorKbps: Double = fps >= 240 ? 9000 : (res == .p1080 ? 8000 : 4500)
+            kbps = min(max(kbps, floorKbps), slowMoCeilingKbps)
         }
 
-        // Longevity Mode (great on iPhone 7 / A10): gently reduces bitrate
-        // and lengthens GOP so the encoder, battery, and thermal headroom
-        // last longer during marathon sessions.
+        // Longevity Mode: gentle bitrate cut for normal video. For slow-mo
+        // we cut less — per-frame bits are already scarce at 120/240 fps and
+        // a hard 0.78× made footage look muddy.
         if settings.longevityMode {
-            kbps *= 0.78
-            // Will also stretch GOP below.
+            kbps *= isSlow ? 0.90 : 0.78
         }
 
-        // Longer GOPs at 4K reduce I-frame spikes that backlog the A10 encoder.
+        // GOP length. Slow-mo needs more frequent I-frames so motion stays
+        // sharp when played back at 1/4–1/8 speed; a 4–6 s GOP at 240 fps
+        // is nearly a thousand frames between keyframes and looks soft.
         var gopSeconds = keyFrameSeconds[settings.quality] ?? 4
         if res == .p2160 { gopSeconds = max(gopSeconds, 5) }
-        if settings.longevityMode {
+        if isSlow {
+            gopSeconds = min(gopSeconds, 2)   // ≤2 s between I-frames
+        }
+        if settings.longevityMode && !isSlow {
             gopSeconds = max(gopSeconds, 6)
         }
         let aKbps = settings.recordAudio ? (audioKbps[settings.quality] ?? 32) : 0
