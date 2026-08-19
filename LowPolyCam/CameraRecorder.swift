@@ -842,18 +842,12 @@ final class CameraRecorder: NSObject, ObservableObject {
             targetFPS = min(fullFPS, idleFPSCap)
         }
 
-        // Photo mode needs a format whose highResolutionStillImageDimensions
-        // are full 4:3 sensor size (4032×3024 ≈ 12MP on iPhone 7). The usual
-        // 16:9 1080p video formats only deliver ~9MP stills because high-res
-        // stills inherit the active format's aspect ratio / FOV.
-        var format: AVCaptureDevice.Format?
-        if settings.cameraMode == .photo && !forRecording {
-            format = Self.bestPhotoStillFormat(for: device, maxPreviewHeight: dims.h, fps: targetFPS)
-        } else if isSlow {
-            format = Self.bestSlowMoAwareFormat(for: device, width: dims.w, height: dims.h, fps: targetFPS)
-        } else {
-            format = Self.bestFormat(for: device, width: dims.w, height: dims.h, fps: targetFPS)
-        }
+        // Keep the live preview on a smooth low-power video format (e.g. 1080p).
+        // Full 12MP stills on iOS 15 are obtained by a brief format swap only
+        // inside capturePhoto() — see bestPhotoStillFormat usage there.
+        var format = isSlow
+            ? Self.bestSlowMoAwareFormat(for: device, width: dims.w, height: dims.h, fps: targetFPS)
+            : Self.bestFormat(for: device, width: dims.w, height: dims.h, fps: targetFPS)
 
         if format == nil && targetFPS == 60 {
             format = Self.bestFormat(for: device, width: dims.w, height: dims.h, fps: 30)
@@ -1680,87 +1674,124 @@ final class CameraRecorder: NSObject, ObservableObject {
         let rotationAngle = physicalOrientation.videoRotationAngle
 
         sessionQueue.async {
-            // Do NOT swap activeFormat for stills on iOS 15 — that made the
-            // live preview go pixelated and flicker while the high-res format
-            // was active. High-resolution stills come from
-            // isHighResolutionPhotoEnabled + the photo output; the preview
-            // format stays put so the viewfinder stays smooth.
-            var photoSettings: AVCapturePhotoSettings
-            if self.photoOutput.availablePhotoCodecTypes.contains(.hevc) {
-                photoSettings = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.hevc])
-            } else {
-                photoSettings = AVCapturePhotoSettings()
-            }
-
+            // On iOS 15 the active format drives both preview AND still aspect
+            // ratio. A smooth 16:9 1080p preview only yields ~9MP stills.
+            // Briefly switch to a format with full 4:3 12MP still dimensions
+            // for the capture, then restore the preview format so the live
+            // view stays sharp (not pixelated) the rest of the time.
+            var didSwapForStill = false
             if #available(iOS 16.0, *) {
-                // AVCapturePhotoSettings.maxPhotoDimensions defaults to the
-                // *smallest* supported size, not the max. Explicitly request
-                // the full-sensor dimensions that configurePhotoOutput() set
-                // on the output, so we capture at true max resolution (e.g.
-                // 12MP). PhotoCaptureProcessor then downsamples to the user's
-                // chosen photoMegapixels target when encoding.
-                photoSettings.maxPhotoDimensions = self.photoOutput.maxPhotoDimensions
-            } else {
-                photoSettings.isHighResolutionPhotoEnabled = self.photoOutput.isHighResolutionCaptureEnabled
-            }
-            photoSettings.flashMode = .off
-            // Match the live preview's rendering: request the same top quality
-            // tier the output is configured for (Smart HDR / multi-frame fusion),
-            // and let the system apply still-image stabilization if it decides
-            // the scene needs it. Previously neither was set, so the discrete
-            // still capture rendered flatter/darker than the live feed.
-            if #available(iOS 13.0, *) {
-                photoSettings.photoQualityPrioritization = .quality
-            }
-            if self.photoOutput.isStillImageStabilizationSupported {
-                photoSettings.isAutoStillImageStabilizationEnabled = true
+                // iOS 16+ uses maxPhotoDimensions; no format swap needed.
+            } else if let device = self.cameraInput?.device {
+                let stillFormat = Self.bestPhotoStillFormat(for: device, maxPreviewHeight: 1080, fps: 30)
+                if let stillFormat = stillFormat {
+                    let stillDims = stillFormat.highResolutionStillImageDimensions
+                    let currentStill = device.activeFormat.highResolutionStillImageDimensions
+                    let stillArea = Int(stillDims.width) * Int(stillDims.height)
+                    let currentArea = Int(currentStill.width) * Int(currentStill.height)
+                    if stillArea > currentArea + 500_000 {
+                        self.applyUnifiedHardwareConfiguration(to: device, format: stillFormat, targetFPS: 30)
+                        self.lastAppliedFormatKey = nil // force restore after
+                        self.configurePhotoOutput()
+                        didSwapForStill = true
+                    }
+                }
             }
 
-            if let connection = self.photoOutput.connection(with: .video) {
-                // videoOrientation/isVideoMirrored are deprecated as of iOS 17 and
-                // are silently ignored on the photo connection there — the still
-                // then saves with the sensor's raw landscape buffer and EXIF
-                // orientation 1, which is the "rotated/flipped" photo bug. Use the
-                // replacement videoRotationAngle/isVideoMirrored(for photo) API
-                // when available, and only fall back to the old API pre-iOS 17.
-                if #available(iOS 17.0, *) {
-                    if connection.isVideoRotationAngleSupported(rotationAngle) {
-                        connection.videoRotationAngle = rotationAngle
-                    }
-                    if connection.isVideoMirroringSupported {
-                        connection.automaticallyAdjustsVideoMirroring = false
-                        connection.isVideoMirrored = mirrored
-                    }
+            let fireCapture: () -> Void = { [weak self] in
+                guard let self = self else { return }
+
+                var photoSettings: AVCapturePhotoSettings
+                if self.photoOutput.availablePhotoCodecTypes.contains(.hevc) {
+                    photoSettings = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.hevc])
                 } else {
-                    if connection.isVideoOrientationSupported {
-                        connection.videoOrientation = orientation
-                    }
-                    if connection.isVideoMirroringSupported {
-                        connection.automaticallyAdjustsVideoMirroring = false
-                        connection.isVideoMirrored = mirrored
+                    photoSettings = AVCapturePhotoSettings()
+                }
+
+                if #available(iOS 16.0, *) {
+                    // AVCapturePhotoSettings.maxPhotoDimensions defaults to the
+                    // *smallest* supported size, not the max. Explicitly request
+                    // the full-sensor dimensions that configurePhotoOutput() set
+                    // on the output, so we capture at true max resolution (e.g.
+                    // 12MP). PhotoCaptureProcessor then downsamples to the user's
+                    // chosen photoMegapixels target when encoding.
+                    photoSettings.maxPhotoDimensions = self.photoOutput.maxPhotoDimensions
+                } else {
+                    photoSettings.isHighResolutionPhotoEnabled = self.photoOutput.isHighResolutionCaptureEnabled
+                }
+                photoSettings.flashMode = .off
+                // Match the live preview's rendering: request the same top quality
+                // tier the output is configured for (Smart HDR / multi-frame fusion),
+                // and let the system apply still-image stabilization if it decides
+                // the scene needs it. Previously neither was set, so the discrete
+                // still capture rendered flatter/darker than the live feed.
+                if #available(iOS 13.0, *) {
+                    photoSettings.photoQualityPrioritization = .quality
+                }
+                if self.photoOutput.isStillImageStabilizationSupported {
+                    photoSettings.isAutoStillImageStabilizationEnabled = true
+                }
+
+                if let connection = self.photoOutput.connection(with: .video) {
+                    // videoOrientation/isVideoMirrored are deprecated as of iOS 17 and
+                    // are silently ignored on the photo connection there — the still
+                    // then saves with the sensor's raw landscape buffer and EXIF
+                    // orientation 1, which is the "rotated/flipped" photo bug. Use the
+                    // replacement videoRotationAngle/isVideoMirrored(for photo) API
+                    // when available, and only fall back to the old API pre-iOS 17.
+                    if #available(iOS 17.0, *) {
+                        if connection.isVideoRotationAngleSupported(rotationAngle) {
+                            connection.videoRotationAngle = rotationAngle
+                        }
+                        if connection.isVideoMirroringSupported {
+                            connection.automaticallyAdjustsVideoMirroring = false
+                            connection.isVideoMirrored = mirrored
+                        }
+                    } else {
+                        if connection.isVideoOrientationSupported {
+                            connection.videoOrientation = orientation
+                        }
+                        if connection.isVideoMirroringSupported {
+                            connection.automaticallyAdjustsVideoMirroring = false
+                            connection.isVideoMirrored = mirrored
+                        }
                     }
                 }
+
+                let shouldRestorePreview = didSwapForStill
+                let processor = PhotoCaptureProcessor(targetMegapixels: targetMP, willCapture: { [weak self] in
+                    guard let self = self else { return }
+                    DispatchQueue.main.async {
+                        if self.settings.shutterSoundEnabled { SoundPlayer.play(.shutter) }
+                        self.onWillCapturePhoto?()
+                    }
+                }, completion: { [weak self] image, metadata, errorMessage in
+                    guard let self = self else { return }
+                    // Restore smooth preview format as soon as the still is done.
+                    if shouldRestorePreview {
+                        self.sessionQueue.async {
+                            self.applyActiveFormat(forRecording: false)
+                        }
+                    }
+                    DispatchQueue.main.async { self.isCapturingPhoto = false }
+                    self.activePhotoProcessors.removeValue(forKey: photoSettings.uniqueID)
+
+                    guard let image = image else {
+                        DispatchQueue.main.async { self.notice = errorMessage ?? "Photo capture failed" }
+                        return
+                    }
+                    self.savePhoto(image, metadata: metadata, to: destination)
+                })
+                self.activePhotoProcessors[photoSettings.uniqueID] = processor
+                self.photoOutput.capturePhoto(with: photoSettings, delegate: processor)
             }
 
-            let processor = PhotoCaptureProcessor(targetMegapixels: targetMP, willCapture: { [weak self] in
-                guard let self = self else { return }
-                DispatchQueue.main.async {
-                    if self.settings.shutterSoundEnabled { SoundPlayer.play(.shutter) }
-                    self.onWillCapturePhoto?()
-                }
-            }, completion: { [weak self] image, metadata, errorMessage in
-                guard let self = self else { return }
-                DispatchQueue.main.async { self.isCapturingPhoto = false }
-                self.activePhotoProcessors.removeValue(forKey: photoSettings.uniqueID)
-
-                guard let image = image else {
-                    DispatchQueue.main.async { self.notice = errorMessage ?? "Photo capture failed" }
-                    return
-                }
-                self.savePhoto(image, metadata: metadata, to: destination)
-            })
-            self.activePhotoProcessors[photoSettings.uniqueID] = processor
-            self.photoOutput.capturePhoto(with: photoSettings, delegate: processor)
+            // After a format swap, wait for AE to settle so the still isn't dark.
+            if didSwapForStill, let device = self.cameraInput?.device {
+                self.waitForExposureSettled(device: device, timeout: 0.25, completion: fireCapture)
+            } else {
+                fireCapture()
+            }
         }
     }
 
