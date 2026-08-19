@@ -45,10 +45,7 @@ struct SettingsScreen: View {
     var body: some View {
         NavigationView {
             List {
-                // 1. Appearance first — quick visual change
-                appearanceSection
-
-                // 2. Mode-specific capture controls
+                // 1. Capture first — what you're about to shoot
                 if settings.cameraMode == .slowMo {
                     if isFrontSnapshot { frontCameraBanner }
                     slowMoFrameRateSection
@@ -65,21 +62,27 @@ struct SettingsScreen: View {
                     qualitySection
                 }
 
-                // 3. Save / duration
+                // 2. Where clips go + length limits
                 saveSection
                 if settings.cameraMode != .photo {
                     splitSection
                     maxDurationSection
                 }
 
-                // 4. Tools & feedback (merged into one denser section)
-                cameraSection
+                // 3. Capture assist (stab, grid, longevity…)
+                captureAssistSection
 
-                // 5. Format + cost
+                // 4. Feedback (sounds / haptics / flash)
+                feedbackSection
+
+                // 5. Codec + storage estimate
                 advancedSection
                 estimateSection
 
-                // 6. About
+                // 6. Theme (less critical — near the bottom)
+                appearanceSection
+
+                // 7. About
                 aboutSection
             }
             .listStyle(InsetGroupedListStyle())
@@ -330,22 +333,18 @@ struct SettingsScreen: View {
         }
     }
 
-    // MARK: - Camera tools & feedback (merged — denser, one section instead of two)
+    // MARK: - Capture assist (while shooting)
 
-    private var cameraSection: some View {
-        Section(header: sectionHeader("Camera & Feedback", icon: "camera.fill")) {
+    private var captureAssistSection: some View {
+        Section(header: sectionHeader("Capture Assist", icon: "viewfinder"),
+                footer: Text("Stabilisation, grid and longevity affect how the camera runs while you shoot.")) {
 
             Toggle(isOn: $settings.stabilization) {
-                Label("Optical stabilisation", systemImage: "hand.raised.fill")
+                Label("Stabilisation", systemImage: "hand.raised.fill")
                     .labelStyle(SettingsLabelStyle(color: settings.accentColor.deep))
             }
             .onChange(of: settings.stabilization) { _ in recorder.updateStabilization() }
             .disabled(!stabilizationSupported)
-
-            Toggle(isOn: $settings.showLevelGauge) {
-                Label("Horizon level meter", systemImage: "gyroscope")
-                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
-            }
 
             Picker(selection: $settings.gridStyle) {
                 ForEach(GridStyle.allCases) { style in
@@ -356,9 +355,9 @@ struct SettingsScreen: View {
                     .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
             }
 
-            Toggle(isOn: $settings.saveSelfiesUnmirrored) {
-                Label("Save selfies unmirrored", systemImage: "arrow.left.and.right")
-                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.deep))
+            Toggle(isOn: $settings.showLevelGauge) {
+                Label("Level meter", systemImage: "gyroscope")
+                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
             }
 
             Toggle(isOn: $settings.autoDimOnRecord) {
@@ -371,12 +370,20 @@ struct SettingsScreen: View {
                     .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
             }
             .onChange(of: settings.longevityMode) { _ in
-                // Session is paused while this sheet is open; format will be
-                // re-applied on resume. Still refresh so the next idle path
-                // is correct if the user dismisses without other changes.
                 recorder.refreshIdleFormatIfNeeded()
             }
 
+            Toggle(isOn: $settings.saveSelfiesUnmirrored) {
+                Label("Save selfies unmirrored", systemImage: "arrow.left.and.right")
+                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.deep))
+            }
+        }
+    }
+
+    // MARK: - Feedback (sounds / haptics)
+
+    private var feedbackSection: some View {
+        Section(header: sectionHeader("Sounds & Haptics", icon: "speaker.wave.2.fill")) {
             Toggle(isOn: $settings.shutterSoundEnabled) {
                 Label("Shutter & dial sounds", systemImage: "speaker.wave.2.fill")
                     .labelStyle(SettingsLabelStyle(color: settings.accentColor.bright))
@@ -388,7 +395,7 @@ struct SettingsScreen: View {
             }
 
             Toggle(isOn: $settings.captureFlashConfirmation) {
-                Label("Flash on capture", systemImage: "bolt.badge.a.fill")
+                Label("Screen flash on capture", systemImage: "bolt.badge.a.fill")
                     .labelStyle(SettingsLabelStyle(color: settings.accentColor.bright))
             }
         }
