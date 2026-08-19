@@ -72,9 +72,8 @@ struct SettingsScreen: View {
                     maxDurationSection
                 }
 
-                // 4. Tools & feedback
+                // 4. Tools & feedback (merged into one denser section)
                 cameraSection
-                feedbackSection
 
                 // 5. Format + cost
                 advancedSection
@@ -151,19 +150,19 @@ struct SettingsScreen: View {
     private var resolutionSection: some View {
         Section(header: sectionHeader("Resolution", icon: "rectangle.dashed"),
                 footer: Text("Recording at \(plan.sizeLabel).")) {
-            ForEach(Resolution.allCases.filter { $0 != .p144 || availableResolutions.contains(.p144) }) { r in
-                let enabled = availableResolutions.contains(r)
-                row(title: r.label,
-                    subtitle: enabled ? r.detail : "Not on this camera",
-                    selected: settings.resolution == r,
-                    enabled: enabled) {
-                    settings.resolution = r
-                    if let locked = r.lockedFrameRate {
-                        settings.frameRate = locked
+            chipRow(Resolution.allCases
+                .filter { $0 != .p144 || availableResolutions.contains(.p144) }
+                .map { r in
+                    ChipItem(id: r.id, label: r.label,
+                             enabled: availableResolutions.contains(r),
+                             selected: settings.resolution == r) {
+                        settings.resolution = r
+                        if let locked = r.lockedFrameRate {
+                            settings.frameRate = locked
+                        }
+                        recorder.updateCaptureFormat()
                     }
-                    recorder.updateCaptureFormat()
-                }
-            }
+                })
         }
     }
 
@@ -172,27 +171,37 @@ struct SettingsScreen: View {
                 footer: Text(settings.resolution == .p2160
                              ? "4K is limited to 30 fps on this iPhone."
                              : "60 fps looks smoother and uses more space.")) {
-            ForEach(FrameRate.allCases) { f in
+            chipRow(FrameRate.allCases.map { f in
                 let enabled = availableFrameRates.contains(f)
                     && !(settings.resolution == .p2160 && f == .fps60)
-                row(title: f.label,
-                    subtitle: enabled ? f.detail : (settings.resolution == .p2160 ? "Not with 4K" : "Not on this camera"),
-                    selected: settings.frameRate == f,
-                    enabled: enabled) {
+                return ChipItem(id: "fr-\(f.id)", label: f.label,
+                                 enabled: enabled,
+                                 selected: settings.frameRate == f) {
                     settings.frameRate = f
                     recorder.updateCaptureFormat()
                 }
-            }
+            })
         }
     }
 
     private var qualitySection: some View {
-        Section(header: sectionHeader("Quality", icon: "slider.horizontal.3")) {
-            ForEach(Quality.allCases) { q in
-                row(title: q.label, subtitle: q.detail, selected: settings.quality == q) {
+        Section(header: sectionHeader("Quality", icon: "slider.horizontal.3"),
+                footer: Text(settings.quality.detail)) {
+            chipRow(Quality.allCases.map { q in
+                ChipItem(id: q.id, label: shortQualityLabel(q),
+                          selected: settings.quality == q) {
                     settings.quality = q
                 }
-            }
+            })
+        }
+    }
+
+    private func shortQualityLabel(_ q: Quality) -> String {
+        switch q {
+        case .high: return "High"
+        case .medium: return "Medium"
+        case .low: return "Low"
+        case .ultraLow: return "Data Saver"
         }
     }
 
@@ -260,23 +269,33 @@ struct SettingsScreen: View {
     // MARK: - Save / Split / Duration
 
     private var saveSection: some View {
-        Section(header: sectionHeader("Save To", icon: "folder.fill")) {
-            ForEach(SaveLocation.allCases) { s in
-                row(title: s.label, subtitle: s.detail, selected: settings.saveLocation == s) {
+        Section(header: sectionHeader("Save To", icon: "folder.fill"),
+                footer: Text(settings.saveLocation.detail)) {
+            chipRow(SaveLocation.allCases.map { s in
+                ChipItem(id: s.id, label: s.label, selected: settings.saveLocation == s) {
                     settings.saveLocation = s
                 }
-            }
+            })
         }
     }
 
     private var splitSection: some View {
         Section(header: sectionHeader("Split Recordings", icon: "scissors"),
                 footer: Text("Shorter segments are easier to transfer and edit. No frames are lost.")) {
-            ForEach(SplitInterval.allCases) { interval in
-                row(title: interval.label, subtitle: interval.detail, selected: settings.splitInterval == interval) {
+            chipRow(SplitInterval.allCases.map { interval in
+                ChipItem(id: interval.id, label: shortSplitLabel(interval),
+                          selected: settings.splitInterval == interval) {
                     settings.splitInterval = interval
                 }
-            }
+            })
+        }
+    }
+
+    private func shortSplitLabel(_ interval: SplitInterval) -> String {
+        switch interval {
+        case .off: return "Off"
+        case .oneHour: return "1 hr"
+        case .fourHours: return "4 hr"
         }
     }
 
@@ -311,13 +330,10 @@ struct SettingsScreen: View {
         }
     }
 
-    // MARK: - Camera tools
+    // MARK: - Camera tools & feedback (merged — denser, one section instead of two)
 
     private var cameraSection: some View {
-        Section(header: sectionHeader("Camera Tools", icon: "camera.fill"),
-                footer: Text(stabilizationSupported
-                             ? "Stabilisation steadies the picture. Off = slightly wider view."
-                             : "This camera does not offer stabilisation.")) {
+        Section(header: sectionHeader("Camera & Feedback", icon: "camera.fill")) {
 
             Toggle(isOn: $settings.stabilization) {
                 Label("Optical stabilisation", systemImage: "hand.raised.fill")
@@ -344,14 +360,6 @@ struct SettingsScreen: View {
                 Label("Save selfies unmirrored", systemImage: "arrow.left.and.right")
                     .labelStyle(SettingsLabelStyle(color: settings.accentColor.deep))
             }
-        }
-    }
-
-    // MARK: - Feedback
-
-    private var feedbackSection: some View {
-        Section(header: sectionHeader("Feedback", icon: "hand.tap.fill"),
-                footer: Text("Sounds, haptics and on-screen cues. None change what is recorded.")) {
 
             Toggle(isOn: $settings.autoDimOnRecord) {
                 Label("Auto-dim when filming", systemImage: "moon.stars.fill")
@@ -468,14 +476,14 @@ struct SettingsScreen: View {
     private var aboutSection: some View {
         Section(header: sectionHeader("Good to Know", icon: "info.circle.fill")) {
             aboutRow(icon: "shield.lefthalf.filled",
-                     title: "Crash & Power Loss Safe",
-                     body: "Video is saved in short fragments. If the battery dies, footage up to that moment is recovered.")
+                     title: "Crash Safe",
+                     body: "Saved in fragments — footage survives a dead battery.")
             aboutRow(icon: "moon.fill",
-                     title: "Screen Must Stay On",
-                     body: "iOS does not allow background filming. Use the moon button to dim while recording.")
+                     title: "Screen Stays On",
+                     body: "No background filming on iOS. Use the moon button to dim.")
             aboutRow(icon: "hand.tap.fill",
-                     title: "Quick Shortcuts",
-                     body: "Double-tap the preview to flip cameras. Volume Up/Down work as a shutter.")
+                     title: "Shortcuts",
+                     body: "Double-tap preview to flip cameras. Volume keys = shutter.")
         }
     }
 
@@ -486,32 +494,78 @@ struct SettingsScreen: View {
                 footer: Text(isSlowMoSupported
                              ? "Higher fps = smoother, slower playback."
                              : "Slow motion is not available on this camera lens.")) {
-            ForEach(SlowMoFrameRate.allCases) { rate in
+            chipRow(SlowMoFrameRate.allCases.map { rate in
                 let available = availableSlowMoRates.contains(rate)
-                row(title: "\(rate.label)  (\(rate.multiplierLabel) slow)",
-                    subtitle: available ? rate.detail : "Not available on this camera",
-                    selected: settings.slowMoFrameRate == rate,
-                    enabled: available) {
+                return ChipItem(id: "sm-\(rate.id)", label: "\(rate.label) (\(rate.multiplierLabel))",
+                                 enabled: available,
+                                 selected: settings.slowMoFrameRate == rate) {
                     settings.slowMoFrameRate = rate
                     recorder.updateCaptureFormat()
                 }
-            }
+            })
         }
     }
 
     private var slowMoResolutionSection: some View {
         Section(header: sectionHeader("Slow-Mo Resolution", icon: "rectangle.dashed"),
                 footer: Text("Some frame rates limit the maximum resolution on this iPhone.")) {
-            ForEach(Resolution.allCases.filter { $0 != .p2160 }) { r in
+            chipRow(Resolution.allCases.filter { $0 != .p2160 }.map { r in
                 let available = availableSlowMoResolutions.contains(r)
-                row(title: r.label,
-                    subtitle: available ? r.detail : "Not available at \(settings.slowMoFrameRate.label)",
-                    selected: settings.slowMoResolution == r,
-                    enabled: available) {
+                return ChipItem(id: r.id, label: r.label,
+                                 enabled: available,
+                                 selected: settings.slowMoResolution == r) {
                     settings.slowMoResolution = r
                     recorder.updateCaptureFormat()
                 }
+            })
+        }
+    }
+
+    // MARK: - Compact chip picker
+
+    private struct ChipItem: Identifiable {
+        let id: String
+        let label: String
+        var enabled: Bool = true
+        var selected: Bool = false
+        let action: () -> Void
+    }
+
+    private func chipRow(_ items: [ChipItem]) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(items) { item in
+                    Button(action: {
+                        guard item.enabled else { return }
+                        if settings.hapticFeedbackEnabled { presetHaptic.selectionChanged() }
+                        item.action()
+                    }) {
+                        HStack(spacing: 4) {
+                            Text(item.label)
+                                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                            if !item.enabled {
+                                Image(systemName: "lock.fill")
+                                    .font(.system(size: 9, weight: .bold))
+                            }
+                        }
+                        .foregroundColor(
+                            item.selected && item.enabled ? .white
+                            : (item.enabled ? .primary : .secondary.opacity(0.5))
+                        )
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(
+                            Capsule()
+                                .fill(item.selected && item.enabled
+                                      ? settings.accentColor.color
+                                      : Color.secondary.opacity(0.12))
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!item.enabled)
+                }
             }
+            .padding(.vertical, 2)
         }
     }
 
