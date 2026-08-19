@@ -134,6 +134,10 @@ final class CameraRecorder: NSObject, ObservableObject {
     private let photoOutput = AVCapturePhotoOutput()
     private var activePhotoProcessors: [Int64: PhotoCaptureProcessor] = [:]
     private var appliedThermalMitigation = false
+    /// Brightness snapshot taken when thermal mitigation first dims the screen.
+    /// Restored when thermal state returns to nominal/fair so the screen does
+    /// not stay permanently dimmed after cooling down.
+    private var thermalSavedBrightness: CGFloat?
     private var cameraInput: AVCaptureDeviceInput?
 
     // Tracks the (device, format, fps) that was last actually pushed to the
@@ -197,19 +201,15 @@ final class CameraRecorder: NSObject, ObservableObject {
     private var segmentStart = CMTime.invalid
     private var lastVideoPTS = CMTime.invalid
     private var recordStartPTS = CMTime.invalid
+    // Protected by writerLock (together with writer / videoIn / audioIn /
+    // segmentStart / lastVideoPTS / recordStartPTS / segmentStartInFlight).
+    // These flags are read on videoQueue/audioQueue and written from ioQueue
+    // and sessionQueue; previously unprotected → data races under concurrent
+    // frame delivery + start/stop.
     private var wantsRecording = false
     // Number of video frames to silently discard right after a *fresh*
-    // record start (not segment rotation). The isAdjustingExposure KVO
-    // wait in waitForExposureSettled() turned out to be an unreliable
-    // signal — many devices report isAdjustingExposure == false immediately
-    // after a format switch even though AE/AGC (and on some devices scene
-    // tone-mapping) is still visibly ramping brightness up over the next
-    // few frames. Waiting on that flag was a no-op in those cases. This
-    // counter is a deterministic fallback: regardless of *why* early frames
-    // are dark, they just never reach the writer, so the recorded clip's
-    // first frame is whichever frame arrives once the counter hits zero.
-    // Only touched on videoQueue except for the initial set in
-    // startRecording(), matching the existing wantsRecording pattern.
+    // record start (not segment rotation). Deterministic fallback for the
+    // AE/AGC brightness ramp after a format switch. Touched under writerLock.
     private var pendingWarmupFrames = 0
     // Guards against dispatching startSegment more than once for the same
     // segment. Multiple video frames can arrive on videoQueue and all see
@@ -226,6 +226,10 @@ final class CameraRecorder: NSObject, ObservableObject {
     private var lastElapsedPush = CMTime.invalid
     private var droppedFrameCount = 0
     private var recordingDestination: SaveLocation = .files
+    /// Destination that was active when the in-progress clip was started.
+    /// Stored so recovery after an interruption uses the original location
+    /// instead of whatever the user has selected now.
+    private static let inProgressDestinationKey = "inProgressClipDestination"
 
     private let stopLock = NSLock()
     private var _stopRequested = false
@@ -244,8 +248,8 @@ final class CameraRecorder: NSObject, ObservableObject {
     private var recordingSessionToken: Int = 0
 
     // Guards writer/videoIn/audioIn/segmentStart/lastVideoPTS/recordStartPTS,
-    // which are now touched from both videoQueue and audioQueue concurrently
-    // (previously safe because both ran serially on one shared queue).
+    // wantsRecording, pendingWarmupFrames, segmentStartInFlight.
+    // Touched from videoQueue, audioQueue and ioQueue concurrently.
     private let writerLock = NSLock()
 
     private var rawMaxZoomSnapshot: CGFloat = 1
@@ -309,6 +313,10 @@ final class CameraRecorder: NSObject, ObservableObject {
             appliedThermalMitigation = true
 
             // Auto-Cooling: dim the screen to cut display power draw.
+            // Snapshot current brightness so we can restore it later.
+            if thermalSavedBrightness == nil {
+                thermalSavedBrightness = UIScreen.main.brightness
+            }
             if UIScreen.main.brightness > 0.30 {
                 UIScreen.main.brightness = 0.30
             }
@@ -332,6 +340,9 @@ final class CameraRecorder: NSObject, ObservableObject {
 
         case .serious:
             if !appliedThermalMitigation {
+                if thermalSavedBrightness == nil {
+                    thermalSavedBrightness = UIScreen.main.brightness
+                }
                 if UIScreen.main.brightness > 0.45 {
                     UIScreen.main.brightness = 0.45
                 }
@@ -341,6 +352,11 @@ final class CameraRecorder: NSObject, ObservableObject {
         case .nominal, .fair:
             if appliedThermalMitigation {
                 appliedThermalMitigation = false
+                // Restore pre-thermal brightness (if we were the ones who dimmed it).
+                if let saved = thermalSavedBrightness {
+                    UIScreen.main.brightness = saved
+                    thermalSavedBrightness = nil
+                }
                 if !isRecording {
                     sessionQueue.async { [weak self] in
                         self?.applyActiveFormat(forRecording: false)
@@ -1468,7 +1484,11 @@ final class CameraRecorder: NSObject, ObservableObject {
         // it from the delegate callback keeps everything to a single,
         // correctly-timed flash + click.
 
-        let targetMP = 12.0  // Always capture at full 12MP sensor resolution
+        // Honour the user's photoMegapixels setting (was previously hard-coded
+        // to 12 and ignored the persisted preference). Capture is still done
+        // at full sensor resolution; PhotoCaptureProcessor downsamples to
+        // the chosen megapixel target when encoding.
+        let targetMP = settings.photoMegapixels.megapixels
         let destination = settings.saveLocation
         // Front camera preview is mirrored by default (like a real mirror). Some people
         // want the SAVED photo mirrored back too (so text/writing reads correctly),
@@ -1773,10 +1793,6 @@ final class CameraRecorder: NSObject, ObservableObject {
                     self.plan = newPlan
                     self.recordingDestination = self.settings.saveLocation
                     self.clipTransform = transform
-                    self.writerLock.lock()
-                    self.recordStartPTS = .invalid
-                    self.segmentStartInFlight = false
-                    self.writerLock.unlock()
                     self.lastElapsedPush = .invalid
                     self.droppedFrameCount = 0
                     // Scale by fps so the discard covers a consistent real-world
@@ -1786,8 +1802,13 @@ final class CameraRecorder: NSObject, ObservableObject {
                     // low ones.
                     let fps = max(Double(newPlan.frameRate), 1)
                     let rawWarmupFrames = Int((Self.recordStartWarmupSeconds * fps).rounded(.up))
-                    self.pendingWarmupFrames = min(max(rawWarmupFrames, Self.recordStartWarmupFrameFloor), Self.recordStartWarmupFrameCeiling)
+                    let warmup = min(max(rawWarmupFrames, Self.recordStartWarmupFrameFloor), Self.recordStartWarmupFrameCeiling)
+                    self.writerLock.lock()
+                    self.recordStartPTS = .invalid
+                    self.segmentStartInFlight = false
+                    self.pendingWarmupFrames = warmup
                     self.wantsRecording = true
+                    self.writerLock.unlock()
                 }
             }
 
@@ -1869,7 +1890,9 @@ final class CameraRecorder: NSObject, ObservableObject {
                 }
                 return
             }
+            self.writerLock.lock()
             self.wantsRecording = false
+            self.writerLock.unlock()
             self.finishSegment {
                 DispatchQueue.main.async { self.isSaving = false }
                 if task != .invalid {
@@ -1886,14 +1909,18 @@ final class CameraRecorder: NSObject, ObservableObject {
         DebugLog.write("[0] startSegment called at pts=\(CMTimeGetSeconds(pts)) plan=\(plan != nil) freeBytesSnapshot=\(freeBytesSnapshot)")
         guard let plan = plan else {
             DebugLog.write("❌ no plan, bailing")
-            writerLock.lock(); segmentStartInFlight = false; writerLock.unlock()
+            writerLock.lock()
+            segmentStartInFlight = false
+            writerLock.unlock()
             return
         }
 
         guard freeBytesSnapshot > Self.reserveBytes else {
             DebugLog.write("❌ storage guard failed: freeBytesSnapshot=\(freeBytesSnapshot) reserveBytes=\(Self.reserveBytes)")
-            writerLock.lock(); segmentStartInFlight = false; writerLock.unlock()
+            writerLock.lock()
+            segmentStartInFlight = false
             wantsRecording = false
+            writerLock.unlock()
             DispatchQueue.main.async {
                 self.isRecording = false
                 self.notice = "Storage full · Recording stopped"
@@ -1906,6 +1933,9 @@ final class CameraRecorder: NSObject, ObservableObject {
             let url = Self.newClipURL()
             DebugLog.write("[1] clip URL=\(url.lastPathComponent)")
             UserDefaults.standard.set(url.lastPathComponent, forKey: Self.inProgressKey)
+            // Persist the destination that was active for this segment so
+            // recovery after an interruption does not use a later user change.
+            UserDefaults.standard.set(recordingDestination.rawValue, forKey: Self.inProgressDestinationKey)
 
             let w = try AVAssetWriter(outputURL: url, fileType: .mov)
             DebugLog.write("[2] AVAssetWriter created OK")
@@ -1977,8 +2007,8 @@ final class CameraRecorder: NSObject, ObservableObject {
             DebugLog.write("❌ startSegment threw: \(error.localizedDescription) | full: \(error)")
             writerLock.lock()
             segmentStartInFlight = false
-            writerLock.unlock()
             wantsRecording = false
+            writerLock.unlock()
             DispatchQueue.main.async {
                 self.isRecording = false
                 self.notice = "Encoder error"
@@ -2019,6 +2049,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
         w.finishWriting {
             UserDefaults.standard.removeObject(forKey: Self.inProgressKey)
+            UserDefaults.standard.removeObject(forKey: Self.inProgressDestinationKey)
 
             guard w.status == .completed else {
                 DispatchQueue.main.async {
@@ -2104,12 +2135,19 @@ final class CameraRecorder: NSObject, ObservableObject {
 
         guard size > 0 else {
             defaults.removeObject(forKey: Self.inProgressKey)
+            defaults.removeObject(forKey: Self.inProgressDestinationKey)
             try? FileManager.default.removeItem(at: url)
             return
         }
 
+        // Prefer the destination that was active when the clip was started
+        // (stored at segment start). Fall back to current setting only if
+        // the key is missing (older builds / interrupted before the key was added).
+        let destRaw = defaults.string(forKey: Self.inProgressDestinationKey)
+        let destination = destRaw.flatMap { SaveLocation(rawValue: $0) } ?? settings.saveLocation
+
         defaults.removeObject(forKey: Self.inProgressKey)
-        let destination = settings.saveLocation
+        defaults.removeObject(forKey: Self.inProgressDestinationKey)
         generateThumbnail(for: url)
         deliver(url, to: destination) { [weak self] in
             DispatchQueue.main.async {
@@ -2168,6 +2206,9 @@ final class CameraRecorder: NSObject, ObservableObject {
         PHPhotoLibrary.shared().performChanges {
             let request = PHAssetCreationRequest.forAsset()
             let options = PHAssetResourceCreationOptions()
+            // Keep the source file until we know Photos accepted it, then
+            // delete it ourselves. Using shouldMoveFile=true is risky if the
+            // library later fails to import (file would be gone).
             options.shouldMoveFile = false
             request.addResource(with: .video, fileURL: url, options: options)
         } completionHandler: { [weak self] success, error in
@@ -2175,7 +2216,10 @@ final class CameraRecorder: NSObject, ObservableObject {
                 guard let self = self else { return }
                 if success {
                     self.notice = "Saved to Photos"
-                    self.cleanupOlderClipsExcept(url)
+                    // Free the local copy now that Photos has its own; also
+                    // purge any older leftover clips so Documents does not
+                    // accumulate when the user always chooses Photos.
+                    self.cleanupLocalClipsAfterPhotosSave(keeping: nil)
                 } else {
                     self.notice = "Saved to Files (Photos refused)"
                 }
@@ -2184,11 +2228,14 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
     }
 
-    private func cleanupOlderClipsExcept(_ currentURL: URL?) {
-        guard settings.saveLocation == .photos else { return }
+    /// After a successful Photos import, remove local video clips from the
+    /// app Documents directory so storage stays low (the intended behaviour
+    /// when the user chose "Save to Photos"). Photos themselves are safe in
+    /// the library; only our temporary/local copies are removed.
+    private func cleanupLocalClipsAfterPhotosSave(keeping currentURL: URL?) {
         DispatchQueue.global(qos: .background).async {
             let fm = FileManager.default
-            guard let files = try? fm.contentsOfDirectory(at: Self.clipsDirectory, includingPropertiesForKeys: [.creationDateKey], options: [.skipsHiddenFiles]) else { return }
+            guard let files = try? fm.contentsOfDirectory(at: Self.clipsDirectory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { return }
             for file in files {
                 let ext = file.pathExtension.lowercased()
                 guard ext == "mov" || ext == "mp4" else { continue }
@@ -2456,7 +2503,10 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
                        from connection: AVCaptureConnection) {
 
         if stopRequested {
-            if wantsRecording { DebugLog.write("⚠️ frame dropped: stopRequested=true while wantsRecording=true (race)") }
+            writerLock.lock()
+            let stillWanted = wantsRecording
+            writerLock.unlock()
+            if stillWanted { DebugLog.write("⚠️ frame dropped: stopRequested=true while wantsRecording=true (race)") }
             return
         }
 
@@ -2465,60 +2515,51 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         let dur = CMSampleBufferGetDuration(sampleBuffer)
 
-        guard wantsRecording else {
-            writerLock.lock()
+        // Snapshot all shared state under one lock hold so video and audio
+        // paths stay consistent and we never leave the lock held across
+        // the (potentially blocking) append path.
+        writerLock.lock()
+        let currentlyWants = wantsRecording
+        if !currentlyWants {
             let hasWriter = writer != nil
             writerLock.unlock()
-            if hasWriter { DebugLog.write("finishSegment triggered from didOutput (wantsRecording=false, writer still present)"); finishSegment() }
+            if hasWriter {
+                DebugLog.write("finishSegment triggered from didOutput (wantsRecording=false, writer still present)")
+                finishSegment()
+            }
             return
         }
 
         // Silently discard the first few video frames after a fresh record
-        // start — the sensor's exposure/gain (and on some devices, tone
-        // mapping) is still ramping up to the new recording format's target
-        // brightness, and these frames would otherwise become the visibly
-        // dark opening of the clip. This runs before needsNewSegment is
-        // computed below, so the segment's real "first frame" — the one
-        // that becomes source time zero — is whichever frame arrives once
-        // the counter reaches zero, not whatever the sensor produced first.
+        // start — AE/AGC brightness ramp. Counter lives under writerLock.
         if isVideo && pendingWarmupFrames > 0 {
             pendingWarmupFrames -= 1
+            writerLock.unlock()
             return
         }
 
+        var needsNewSegment = false
+        var needsRotate = false
         if isVideo {
-            writerLock.lock()
-            let needsNewSegment = (writer == nil) && !segmentStartInFlight
-            var needsRotate = false
+            needsNewSegment = (writer == nil) && !segmentStartInFlight
             if writer != nil, let splitLimit = plan?.splitInterval.seconds, segmentStart.isValid {
                 let duration = CMTimeGetSeconds(CMTimeSubtract(pts, segmentStart))
                 needsRotate = duration >= splitLimit
             }
             if needsNewSegment { segmentStartInFlight = true }
-            writerLock.unlock()
+        }
 
-            // Starting or rotating a segment spins up a brand-new
-            // AVAssetWriter/hardware encoder session. That must never happen
-            // inline on the video delivery queue — even a few milliseconds
-            // of setup latency here causes the *next* incoming frame(s) to
-            // be dropped (isReadyForMoreMediaData still false), which is
-            // exactly what under-reports fps in Photos. So we hand this
-            // frame's timestamp off to ioQueue and simply drop this one
-            // frame's video data while the swap happens — a single frame
-            // drop at a segment boundary is imperceptible, whereas a stalled
-            // video queue compounds into many dropped frames.
+        let currentWriter = writer
+        let vIn = videoIn
+        let aIn = audioIn
+        let segStart = segmentStart
+        writerLock.unlock()
+
+        // Starting or rotating a segment must never happen on the video
+        // delivery queue (setup latency drops subsequent frames).
+        if isVideo {
             if needsNewSegment {
                 DebugLog.write("first video frame arrived, dispatching startSegment to ioQueue")
-                // Hand the actual sample buffer along (not just its timestamp) so
-                // startSegment can append this exact frame right after starting the
-                // AVAssetWriter session. Previously only the timestamp was passed and
-                // this frame's pixel data was thrown away, so startSession(atSourceTime:)
-                // pointed at a moment with no encoded frame — that gap is what made
-                // Photos/the gallery render a black poster/first frame. CMSampleBuffer
-                // is a CF object; retaining it here across queues is cheap (no image
-                // processing), so this doesn't reintroduce the video-queue stall the
-                // original comment was avoiding — only the AVAssetWriter setup itself
-                // still happens off the video queue, on ioQueue.
                 ioQueue.async { [weak self] in self?.startSegment(at: pts, firstSampleBuffer: sampleBuffer) }
                 return
             }
@@ -2528,15 +2569,10 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
             }
         }
 
-        writerLock.lock()
-        guard let w = writer, w.status == .writing,
-              segmentStart.isValid, CMTimeCompare(pts, segmentStart) >= 0 else {
-            writerLock.unlock()
+        guard let currentWriter = currentWriter, currentWriter.status == .writing,
+              segStart.isValid, CMTimeCompare(pts, segStart) >= 0 else {
             return
         }
-        let vIn = videoIn
-        let aIn = audioIn
-        writerLock.unlock()
 
         if isVideo {
             if vIn?.isReadyForMoreMediaData == true {
@@ -2545,34 +2581,19 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
                 lastVideoPTS = dur.isValid && dur.isNumeric ? CMTimeAdd(pts, dur) : pts
                 writerLock.unlock()
             } else {
-                // The writer briefly wasn't ready. Most of these stalls are
-                // sub-millisecond (encoder catching its breath between
-                // frames, not truly falling behind) — spinning here briefly
-                // recovers the vast majority of frames that would otherwise
-                // be counted as dropped outright. But the spin budget must
-                // stay small relative to the frame's own time budget: at
-                // 240fps a frame only has ~4.2ms before the next one is
-                // due, so spinning too long here just delays and backs up
-                // subsequent frames instead of helping. Scale the number of
-                // retries and the sleep down at high frame rates so this
-                // stays a genuine recovery step rather than becoming part
-                // of the backlog.
+                // Brief non-blocking recovery only. On A10 / high fps we prefer
+                // a clean drop over blocking the real-time video queue with
+                // usleep (which was cascading into more drops at 120/240 fps).
+                // One short poll is enough for the common sub-ms encoder stall.
                 let fps = plan?.frameRate ?? 30
-                let maxRetries = fps >= 200 ? 1 : (fps >= 100 ? 2 : 3)
-                let sleepUs: useconds_t = fps >= 200 ? 150 : 250
-                var appended = false
-                for _ in 0..<maxRetries {
-                    usleep(sleepUs)
-                    if vIn?.isReadyForMoreMediaData == true {
-                        vIn?.append(sampleBuffer)
-                        writerLock.lock()
-                        lastVideoPTS = dur.isValid && dur.isNumeric ? CMTimeAdd(pts, dur) : pts
-                        writerLock.unlock()
-                        appended = true
-                        break
-                    }
+                if fps < 100, vIn?.isReadyForMoreMediaData == true {
+                    vIn?.append(sampleBuffer)
+                    writerLock.lock()
+                    lastVideoPTS = dur.isValid && dur.isNumeric ? CMTimeAdd(pts, dur) : pts
+                    writerLock.unlock()
+                } else {
+                    countDroppedFrame()
                 }
-                if !appended { countDroppedFrame() }
             }
             pushElapsed(pts)
         } else {
@@ -2585,7 +2606,10 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
     func captureOutput(_ output: AVCaptureOutput,
                        didDrop sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
-        guard output === videoOutput, wantsRecording else { return }
+        writerLock.lock()
+        let currentlyWants = wantsRecording
+        writerLock.unlock()
+        guard output === videoOutput, currentlyWants else { return }
         countDroppedFrame()
     }
 
@@ -2645,6 +2669,9 @@ final class VolumeButtonObserver: NSObject {
     private var isObserving = false
     private var lastVolume: Float?
     private var ignoreUntil: Date = .distantFuture
+    /// Volume level we restore to after treating a press as a shutter trigger,
+    /// so using the volume buttons does not permanently change system volume.
+    private var volumeToRestore: Float?
     var onVolumeTrigger: (() -> Void)?
 
     func start() {
@@ -2690,6 +2717,19 @@ final class VolumeButtonObserver: NSObject {
         }
     }
 
+    /// Best-effort restore of system volume via the hidden MPVolumeView slider.
+    private func restoreVolumeIfNeeded() {
+        guard let target = volumeToRestore else { return }
+        volumeToRestore = nil
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, let slider = self.volumeView?.subviews.compactMap({ $0 as? UISlider }).first else { return }
+            // Ignore the KVO noise we are about to generate.
+            self.ignoreTemporarily(duration: 0.8)
+            slider.value = target
+            self.lastVolume = target
+        }
+    }
+
     override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey : Any]?, context: UnsafeMutableRawPointer?) {
         if keyPath == "outputVolume" {
             let currentVol = audioSession.outputVolume
@@ -2699,8 +2739,14 @@ final class VolumeButtonObserver: NSObject {
             }
             if let prev = lastVolume {
                 if abs(currentVol - prev) > 0.01 {
+                    // Remember the *previous* level so we can put it back after
+                    // treating this press as a shutter. Works at the extremes
+                    // as long as the system still reports a delta (some iOS
+                    // versions still fire when volume is clamped).
+                    volumeToRestore = prev
                     lastVolume = currentVol
                     onVolumeTrigger?()
+                    restoreVolumeIfNeeded()
                 }
             } else {
                 lastVolume = currentVol
