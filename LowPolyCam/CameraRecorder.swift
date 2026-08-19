@@ -125,6 +125,24 @@ final class CameraRecorder: NSObject, ObservableObject {
     private var activePhotoProcessors: [Int64: PhotoCaptureProcessor] = [:]
     private var appliedThermalMitigation = false
     private var cameraInput: AVCaptureDeviceInput?
+
+    // Tracks the (device, format, fps) that was last actually pushed to the
+    // hardware via applyUnifiedHardwareConfiguration. startRecording() and
+    // stopRecording() both call applyActiveFormat() unconditionally, which
+    // used to re-run the full device.lockForConfiguration()/activeFormat/
+    // frame-duration/zoom-reset dance every single time — even when the
+    // resulting format+fps was identical to what was already running. That
+    // redundant reconfiguration is what caused the visible flicker, the
+    // momentary "flips to front camera" glitch (it's actually the same
+    // camera re-negotiating format), the dark first frame (exposure/format
+    // reapplied right as frames start landing in the writer), and zoom
+    // snapping back to baseline on every record start/stop. We only touch
+    // the hardware again when this key actually changes.
+    private var lastAppliedFormatKey: String?
+
+    private static func formatKey(device: AVCaptureDevice, format: AVCaptureDevice.Format, fps: Double) -> String {
+        "\(device.uniqueID)|\(ObjectIdentifier(format))|\(fps.rounded())"
+    }
     private var micInput: AVCaptureDeviceInput?
     private var position: AVCaptureDevice.Position = .back
     private var isConfigured = false
@@ -687,14 +705,18 @@ final class CameraRecorder: NSObject, ObservableObject {
         guard let finalFormat = format else {
             if isSlow, let fallbackFormat = Self.bestSlowMoFormat(for: device, fps: fullFPS) {
                 let applyFPS = forRecording ? fullFPS : min(fullFPS, 30.0)
-                applyUnifiedHardwareConfiguration(to: device, format: fallbackFormat, targetFPS: applyFPS)
-                DispatchQueue.main.async {
-                    let dDims = CMVideoFormatDescriptionGetDimensions(fallbackFormat.formatDescription)
-                    let closestRes: Resolution = dDims.height >= 1080 ? .p1080 : .p720
-                    self.settings.slowMoResolution = closestRes
-                    self.notice = "\(self.settings.slowMoFrameRate.label) set to \(closestRes.label)"
+                let newKey = Self.formatKey(device: device, format: fallbackFormat, fps: applyFPS)
+                if newKey != lastAppliedFormatKey {
+                    applyUnifiedHardwareConfiguration(to: device, format: fallbackFormat, targetFPS: applyFPS)
+                    DispatchQueue.main.async {
+                        let dDims = CMVideoFormatDescriptionGetDimensions(fallbackFormat.formatDescription)
+                        let closestRes: Resolution = dDims.height >= 1080 ? .p1080 : .p720
+                        self.settings.slowMoResolution = closestRes
+                        self.notice = "\(self.settings.slowMoFrameRate.label) set to \(closestRes.label)"
+                    }
+                    refreshZoomLimits()
+                    lastAppliedFormatKey = newKey
                 }
-                refreshZoomLimits()
                 configurePhotoOutput()
                 DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
                 return
@@ -706,8 +728,12 @@ final class CameraRecorder: NSObject, ObservableObject {
             return
         }
 
-        applyUnifiedHardwareConfiguration(to: device, format: finalFormat, targetFPS: targetFPS)
-        refreshZoomLimits()
+        let newKey = Self.formatKey(device: device, format: finalFormat, fps: targetFPS)
+        if newKey != lastAppliedFormatKey {
+            applyUnifiedHardwareConfiguration(to: device, format: finalFormat, targetFPS: targetFPS)
+            refreshZoomLimits()
+            lastAppliedFormatKey = newKey
+        }
         configurePhotoOutput()
         DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
     }
