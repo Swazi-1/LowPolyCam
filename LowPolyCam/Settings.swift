@@ -573,8 +573,10 @@ final class AppSettings: ObservableObject {
         cameraMode       = CameraMode(rawValue: store.string(forKey: "cameraMode") ?? "") ?? .video
         slowMoFrameRate  = SlowMoFrameRate(rawValue: store.integer(forKey: "slowMoFrameRate")) ?? .fps120
         slowMoResolution = Resolution(rawValue: store.string(forKey: "slowMoResolution") ?? "") ?? .p1080
-        resolution       = Resolution(rawValue: store.string(forKey: "resolution") ?? "") ?? .p720
-        quality          = Quality(rawValue: store.string(forKey: "quality") ?? "") ?? .medium
+        // First-launch defaults: 1080p · 30 fps · High · Photos · split/auto-stop off,
+        // stabilisation on, grid/level/dim/longevity off, sounds & haptics on.
+        resolution       = Resolution(rawValue: store.string(forKey: "resolution") ?? "") ?? .p1080
+        quality          = Quality(rawValue: store.string(forKey: "quality") ?? "") ?? .high
         frameRate        = FrameRate(rawValue: store.integer(forKey: "frameRate")) ?? .fps30
         saveLocation     = SaveLocation(rawValue: store.string(forKey: "saveLocation") ?? "") ?? .photos
         splitInterval    = SplitInterval(rawValue: store.string(forKey: "splitInterval") ?? "") ?? .off
@@ -612,13 +614,11 @@ final class AppSettings: ObservableObject {
         shutterSoundEnabled = store.object(forKey: "shutterSoundEnabled") as? Bool ?? true
         photoMegapixels  = PhotoMegapixels(rawValue: store.object(forKey: "photoMegapixels") as? Double ?? 12.0) ?? .mp12
         saveSelfiesUnmirrored    = store.object(forKey: "saveSelfiesUnmirrored") as? Bool ?? false
-        captureFlashConfirmation = store.object(forKey: "captureFlashConfirmation") as? Bool ?? true
+        // Screen-flash confirmation removed from Settings; keep key for migration only.
+        captureFlashConfirmation = store.object(forKey: "captureFlashConfirmation") as? Bool ?? false
         hapticFeedbackEnabled    = store.object(forKey: "hapticFeedbackEnabled") as? Bool ?? true
-        // Default Longevity Mode ON for iPhone 7 / 7 Plus class (A10, ≤2.5 GB).
-        // This is the primary target device (iOS 15.8.8); the mode reduces heat,
-        // bitrate and idle preview cost which is essential on 2 GB RAM.
-        let defaultLongevity = DeviceTier.isLowMemoryDevice
-        longevityMode            = store.object(forKey: "longevityMode") as? Bool ?? defaultLongevity
+        // Longevity defaults OFF on first launch (user can enable for long sessions).
+        longevityMode            = store.object(forKey: "longevityMode") as? Bool ?? false
     }
 }
 
