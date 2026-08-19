@@ -53,7 +53,7 @@ struct ClipGalleryScreen: View {
                 Palette.slateDeep.ignoresSafeArea()
 
                 if isLoading {
-                    ProgressView().tint(Palette.mintBright).scaleEffect(1.2)
+                    ProgressView().tint(Palette.violet.opacity(0.95)).scaleEffect(1.2)
                 } else if clips.isEmpty {
                     emptyState
                 } else {
@@ -79,7 +79,7 @@ struct ClipGalleryScreen: View {
             }
         }
         .navigationViewStyle(StackNavigationViewStyle())
-        .accentColor(Palette.mint)
+        .accentColor(Palette.violet)
         .onAppear(perform: reload)
         .sheet(item: $playingClip) { clip in
             if clip.isPhoto {
@@ -127,13 +127,13 @@ struct ClipGalleryScreen: View {
                     .fill(Palette.slateMid.opacity(0.6))
                     .frame(width: 88, height: 88)
                 Facet(sides: 6, rotation: .pi / 6)
-                    .stroke(Palette.mint.opacity(0.35), lineWidth: 1.5)
+                    .stroke(Palette.violet.opacity(0.35), lineWidth: 1.5)
                     .frame(width: 88, height: 88)
                 Image(systemName: "film.stack")
                     .font(.system(size: 32, weight: .medium))
-                    .foregroundColor(Palette.mintBright)
+                    .foregroundColor(Palette.violet.opacity(0.95))
             }
-            .shadow(color: Palette.mint.opacity(0.2), radius: 16)
+            .shadow(color: Palette.violet.opacity(0.2), radius: 16)
 
             Text("No Clips Yet")
                 .font(.system(size: 20, weight: .bold, design: .rounded))
@@ -167,7 +167,7 @@ struct ClipGalleryScreen: View {
         HStack(spacing: 12) {
             if isEditing {
                 Image(systemName: selection.contains(clip.url) ? "checkmark.circle.fill" : "circle")
-                    .foregroundColor(selection.contains(clip.url) ? Palette.mintBright : .white.opacity(0.35))
+                    .foregroundColor(selection.contains(clip.url) ? Palette.violet.opacity(0.95) : .white.opacity(0.35))
                     .font(.system(size: 20))
             }
 
@@ -179,13 +179,13 @@ struct ClipGalleryScreen: View {
                     Facet(sides: 6, rotation: .pi / 6)
                         .fill(
                             LinearGradient(
-                                colors: [Palette.mintBright, Palette.mint],
+                                colors: [Palette.violet.opacity(0.95), Palette.violet],
                                 startPoint: .topLeading,
                                 endPoint: .bottomTrailing
                             )
                         )
                 )
-                .shadow(color: Palette.mint.opacity(0.3), radius: 4, y: 2)
+                .shadow(color: Palette.violet.opacity(0.3), radius: 4, y: 2)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(clip.name)
@@ -218,7 +218,7 @@ struct ClipGalleryScreen: View {
             Button { shareItems = [clip.url] } label: {
                 Label("Share", systemImage: "square.and.arrow.up")
             }
-            .tint(Palette.mintDeep)
+            .tint(Palette.violetDeep)
             Button {
                 renameText = (clip.url.deletingPathExtension().lastPathComponent)
                 renameClip = clip
@@ -242,10 +242,10 @@ struct ClipGalleryScreen: View {
                             selection = Set(clips.map { $0.url })
                         }
                     }
-                    .foregroundColor(Palette.mintBright)
+                    .foregroundColor(Palette.violet.opacity(0.95))
                 } else {
                     Button("Select") { isEditing = true }
-                        .foregroundColor(Palette.mintBright)
+                        .foregroundColor(Palette.violet.opacity(0.95))
                 }
             }
         }
@@ -270,7 +270,7 @@ struct ClipGalleryScreen: View {
                 Label("Share", systemImage: "square.and.arrow.up")
             }
             .disabled(selection.isEmpty)
-            .foregroundColor(selection.isEmpty ? .white.opacity(0.3) : Palette.mintBright)
+            .foregroundColor(selection.isEmpty ? .white.opacity(0.3) : Palette.violet.opacity(0.95))
         } else if !clips.isEmpty {
             Button("Delete Older Than 3 Days") { confirmDeleteOld = true }
                 .foregroundColor(.white.opacity(0.75))
@@ -473,7 +473,7 @@ struct PhotoPreviewView: View {
                     }
                     .padding()
                 } else {
-                    ProgressView().tint(Palette.mintBright).scaleEffect(1.2)
+                    ProgressView().tint(Palette.violet.opacity(0.95)).scaleEffect(1.2)
                 }
             }
             .navigationBarTitle("Preview", displayMode: .inline)
@@ -482,7 +482,7 @@ struct PhotoPreviewView: View {
             })
         }
         .navigationViewStyle(StackNavigationViewStyle())
-        .accentColor(Palette.mint)
+        .accentColor(Palette.violet)
         .onAppear {
             DispatchQueue.global(qos: .userInitiated).async {
                 let loaded = UIImage(contentsOfFile: url.path)
