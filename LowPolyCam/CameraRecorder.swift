@@ -220,6 +220,13 @@ final class CameraRecorder: NSObject, ObservableObject {
     // which fails with "Cannot Save" (AVFoundationErrorDomain -11823) and
     // was the actual cause of "press record, it instantly stops."
     private var segmentStartInFlight = false
+    /// Video frames that arrive while AVAssetWriter is still spinning up
+    /// (segmentStartInFlight && writer == nil). Previously these were
+    /// silently dropped, which left gaps in the PTS timeline and made
+    /// Photos report e.g. 27.52 fps instead of 30.00 on short clips.
+    /// Buffered under writerLock and flushed in order once the writer is live.
+    private var pendingStartBuffers: [CMSampleBuffer] = []
+    private static let pendingStartBufferLimit = 18
     private var plan: EncodePlan?
     private var clipTransform = CGAffineTransform.identity
     private var freeBytesSnapshot: Int64 = .max
@@ -817,17 +824,16 @@ final class CameraRecorder: NSObject, ObservableObject {
             device.activeFormat = format
 
             let desiredFPS = max(1.0, targetFPS.rounded())
-            // Use a high timescale so 60 / 120 / 240 land on exact rational
-            // durations (1/60, 1/120, 1/240) rather than approximate floats.
-            // This is what makes Photos report a clean 60.00 / 240.00 instead
-            // of 59.94 / 197 etc. when no frames are dropped.
-            let timescale = CMTimeScale(desiredFPS * 1000.0)
-            var minDur = CMTime(value: 1000, timescale: timescale)
+            // Exact 1/N second frame duration for integer fps (30, 60, 120, 240).
+            // Using timescale == fps and value == 1 keeps the media timeline on
+            // clean rationals so Photos reports 30.00 instead of 29.97/27.x when
+            // every frame is written.
+            let fpsInt = max(Int(desiredFPS), 1)
+            var minDur = CMTime(value: 1, timescale: CMTimeScale(fpsInt))
             var maxDur = minDur
             if let range = format.videoSupportedFrameRateRanges.first(where: {
                 $0.minFrameRate - 0.5 <= desiredFPS && desiredFPS <= $0.maxFrameRate + 0.5
             }) {
-                // Prefer exact target; fall back to nearest edge of the range.
                 let lo = range.minFrameDuration
                 let hi = range.maxFrameDuration
                 // minFrameDuration = duration of fastest rate; maxFrameDuration = slowest.
@@ -1806,6 +1812,7 @@ final class CameraRecorder: NSObject, ObservableObject {
                     self.writerLock.lock()
                     self.recordStartPTS = .invalid
                     self.segmentStartInFlight = false
+                    self.pendingStartBuffers.removeAll(keepingCapacity: true)
                     self.pendingWarmupFrames = warmup
                     self.wantsRecording = true
                     self.writerLock.unlock()
@@ -1892,6 +1899,7 @@ final class CameraRecorder: NSObject, ObservableObject {
             }
             self.writerLock.lock()
             self.wantsRecording = false
+            self.pendingStartBuffers.removeAll(keepingCapacity: false)
             self.writerLock.unlock()
             self.finishSegment {
                 DispatchQueue.main.async { self.isSaving = false }
@@ -1919,6 +1927,7 @@ final class CameraRecorder: NSObject, ObservableObject {
             DebugLog.write("❌ storage guard failed: freeBytesSnapshot=\(freeBytesSnapshot) reserveBytes=\(Self.reserveBytes)")
             writerLock.lock()
             segmentStartInFlight = false
+            pendingStartBuffers.removeAll(keepingCapacity: false)
             wantsRecording = false
             writerLock.unlock()
             DispatchQueue.main.async {
@@ -1981,7 +1990,7 @@ final class CameraRecorder: NSObject, ObservableObject {
             if let first = firstSampleBuffer, v.isReadyForMoreMediaData {
                 if v.append(first) {
                     let dur = CMSampleBufferGetDuration(first)
-                    appendedFirstPTS = dur.isValid && dur.isNumeric ? CMTimeAdd(pts, dur) : pts
+                    appendedFirstPTS = Self.endPTS(for: pts, duration: dur, fps: plan.frameRate)
                     DebugLog.write("[9b] first frame appended at segment start ✅")
                 } else {
                     DebugLog.write("⚠️ first frame append failed, status=\(w.status.rawValue) error=\(w.error?.localizedDescription ?? "nil")")
@@ -1990,23 +1999,45 @@ final class CameraRecorder: NSObject, ObservableObject {
                 DebugLog.write("⚠️ no first sample buffer / input not ready yet, black-frame gap possible")
             }
 
+            // Drain frames that arrived while the writer was starting so their
+            // PTS timeline stays contiguous with the first frame. Without this
+            // Photos reports average fps well below the target (e.g. 27.52 vs 30).
             writerLock.lock()
+            let buffered = pendingStartBuffers
+            pendingStartBuffers.removeAll(keepingCapacity: true)
             writer = w
             videoIn = v
             audioIn = a
             segmentStart = pts
-            lastVideoPTS = appendedFirstPTS
+            var endPTS = appendedFirstPTS
             if !recordStartPTS.isValid { recordStartPTS = pts }
             segmentStartInFlight = false
             writerLock.unlock()
 
+            for buf in buffered {
+                let bPTS = CMSampleBufferGetPresentationTimeStamp(buf)
+                // Skip the seed frame if it was also handed in as firstSampleBuffer
+                // (same PTS) — already appended above.
+                if CMTimeCompare(bPTS, pts) == 0 { continue }
+                if CMTimeCompare(bPTS, pts) < 0 { continue }
+                if v.isReadyForMoreMediaData, v.append(buf) {
+                    let bDur = CMSampleBufferGetDuration(buf)
+                    endPTS = Self.endPTS(for: bPTS, duration: bDur, fps: plan.frameRate)
+                }
+            }
+
+            writerLock.lock()
+            lastVideoPTS = endPTS
+            writerLock.unlock()
+
             DispatchQueue.main.async { self.clipsThisSession += 1 }
-            DebugLog.write("[10] segment fully started ✅")
+            DebugLog.write("[10] segment fully started ✅ (flushed \(buffered.count) buffered frames)")
 
         } catch {
             DebugLog.write("❌ startSegment threw: \(error.localizedDescription) | full: \(error)")
             writerLock.lock()
             segmentStartInFlight = false
+            pendingStartBuffers.removeAll(keepingCapacity: false)
             wantsRecording = false
             writerLock.unlock()
             DispatchQueue.main.async {
@@ -2567,6 +2598,22 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
                 ioQueue.async { [weak self] in self?.rotateSegment(at: pts, firstSampleBuffer: sampleBuffer) }
                 return
             }
+            // Writer still spinning up — buffer this frame instead of
+            // dropping it. Dropping here was the main reason short 30 fps
+            // clips showed ~27.5 fps in Photos (PTS span included the gap,
+            // frame count did not).
+            if currentWriter == nil {
+                writerLock.lock()
+                if segmentStartInFlight {
+                    if pendingStartBuffers.count < Self.pendingStartBufferLimit {
+                        pendingStartBuffers.append(sampleBuffer)
+                    } else {
+                        countDroppedFrame()
+                    }
+                }
+                writerLock.unlock()
+                return
+            }
         }
 
         guard let currentWriter = currentWriter, currentWriter.status == .writing,
@@ -2578,22 +2625,13 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
             if vIn?.isReadyForMoreMediaData == true {
                 vIn?.append(sampleBuffer)
                 writerLock.lock()
-                lastVideoPTS = dur.isValid && dur.isNumeric ? CMTimeAdd(pts, dur) : pts
+                lastVideoPTS = Self.endPTS(for: pts, duration: dur, fps: plan?.frameRate ?? 30)
                 writerLock.unlock()
             } else {
-                // Brief non-blocking recovery only. On A10 / high fps we prefer
-                // a clean drop over blocking the real-time video queue with
-                // usleep (which was cascading into more drops at 120/240 fps).
-                // One short poll is enough for the common sub-ms encoder stall.
-                let fps = plan?.frameRate ?? 30
-                if fps < 100, vIn?.isReadyForMoreMediaData == true {
-                    vIn?.append(sampleBuffer)
-                    writerLock.lock()
-                    lastVideoPTS = dur.isValid && dur.isNumeric ? CMTimeAdd(pts, dur) : pts
-                    writerLock.unlock()
-                } else {
-                    countDroppedFrame()
-                }
+                // Prefer a clean drop over blocking the real-time video queue.
+                // Drops still hurt average-fps reporting in Photos, so keep
+                // bitrates conservative on A10 (see Encoder ceilings).
+                countDroppedFrame()
             }
             pushElapsed(pts)
         } else {
@@ -2615,6 +2653,19 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
 
     private func countDroppedFrame() {
         droppedFrameCount += 1
+    }
+
+    /// End timestamp for a written frame. Prefer the buffer's own duration;
+    /// if it's invalid (common on some A10 paths), fall back to 1/fps so
+    /// endSession does not undershoot and Photos duration stays consistent
+    /// with frame count.
+    private static func endPTS(for pts: CMTime, duration: CMTime, fps: Int) -> CMTime {
+        if duration.isValid && duration.isNumeric && duration.seconds > 0 {
+            return CMTimeAdd(pts, duration)
+        }
+        let safeFPS = max(fps, 1)
+        let oneFrame = CMTime(value: 1, timescale: CMTimeScale(safeFPS))
+        return CMTimeAdd(pts, oneFrame)
     }
 
     private func pushElapsed(_ pts: CMTime) {
