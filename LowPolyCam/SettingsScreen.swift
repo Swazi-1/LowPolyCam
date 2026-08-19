@@ -12,6 +12,7 @@ struct SettingsLabelStyle: LabelStyle {
                 .frame(width: 28, height: 28)
                 .background(
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        // Always the selected theme accent — never deep/bright variants.
                         .fill(color)
                 )
             configuration.title
@@ -30,6 +31,7 @@ struct SettingsScreen: View {
     @Environment(\.presentationMode) private var presentation
 
     @State private var appliedPresetId: String? = nil
+    @State private var showPresetsSheet = false
     @State private var presetHaptic = UISelectionFeedbackGenerator()
     @State private var freeBytesSnapshot: Int64 = 0
     @State private var isFrontSnapshot = false
@@ -45,12 +47,14 @@ struct SettingsScreen: View {
     var body: some View {
         NavigationView {
             List {
-                // Active setup summary
                 summarySection
 
                 if isFrontSnapshot { frontCameraBanner }
 
-                // Capture — mode-specific, fewer separate sections
+                if settings.cameraMode == .video {
+                    quickPresetsEntrySection
+                }
+
                 if settings.cameraMode == .slowMo {
                     slowMoFrameRateSection
                     slowMoResolutionSection
@@ -59,37 +63,22 @@ struct SettingsScreen: View {
                     photoMegapixelsSection
                     qualitySection
                 } else {
-                    presetsSection
                     videoCaptureSection
                 }
 
-                // Output
                 outputSection
-
-                // Assist + feedback side by side in spirit (separate list groups)
                 captureAssistSection
                 feedbackSection
-
-                // Codec
                 advancedSection
-
-                // Theme + about
                 appearanceSection
                 aboutSection
             }
             .listStyle(InsetGroupedListStyle())
-            // Isolate list identity per mode so photo/slo-mo don't reuse heavy video cells
             .id(settings.cameraMode)
-            // Kill implicit animations that fight scrolling on A10
             .animation(nil, value: settings.cameraMode)
             .animation(nil, value: settings.accentColor)
             .animation(nil, value: appliedPresetId)
             .transaction { $0.animation = nil }
-            // Drop the pull-down "search over the list" gesture recognizer
-            // some iOS 15 List/NavigationView combos install even with no
-            // .searchable() attached — it can compete with normal scroll's
-            // gesture recognizer on older hardware, showing up as random
-            // stutter that isn't tied to any one row's content.
             .navigationViewStyle(StackNavigationViewStyle())
             .navigationBarTitle("Settings", displayMode: .inline)
             .navigationBarItems(trailing: Button(action: {
@@ -98,12 +87,14 @@ struct SettingsScreen: View {
                 Text("Done")
                     .font(.system(size: 16, weight: .bold))
             })
+            .sheet(isPresented: $showPresetsSheet) {
+                presetsSheet
+            }
         }
         .navigationViewStyle(StackNavigationViewStyle())
         .accentColor(settings.accentColor.color)
         .onAppear {
             presetHaptic.prepare()
-            // Snapshot once — prevents continuous body rebuilds from live stats
             freeBytesSnapshot = recorder.freeBytes
             isFrontSnapshot = recorder.isFrontCamera
             availableResolutions = recorder.availableResolutions
@@ -119,122 +110,166 @@ struct SettingsScreen: View {
 
     private var summarySection: some View {
         Section {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Text(settings.cameraMode.label.uppercased())
-                        .font(.system(size: 11, weight: .bold, design: .rounded))
-                        .foregroundColor(settings.accentColor.bright)
-                        .tracking(0.8)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(settings.cameraMode.label)
+                        .font(.system(size: 15, weight: .bold, design: .rounded))
                     Spacer()
-                    Text(plan.sizeLabel)
+                    Text(compactPlanLabel)
                         .font(.system(size: 13, weight: .semibold, design: .rounded))
-                        .foregroundColor(.white.opacity(0.85))
-                }
-                HStack(spacing: 16) {
-                    summaryStat(title: "Quality", value: shortQualityLabel(settings.quality))
-                    summaryStat(title: "Save", value: settings.saveLocation.label)
-                    if settings.cameraMode != .photo {
-                        summaryStat(title: "Split", value: shortSplitLabel(settings.splitInterval))
-                    }
+                        .foregroundColor(settings.accentColor.color)
                 }
                 if settings.cameraMode != .photo {
-                    Text("~\(Int(plan.megabytesPerHour.rounded())) MB/hr · \(Fmt.size(freeBytesSnapshot)) free")
+                    Text("\(shortQualityLabel(settings.quality)) · \(settings.saveLocation.label) · Split \(shortSplitLabel(settings.splitInterval))")
+                        .font(.system(size: 13, weight: .medium, design: .rounded))
+                        .foregroundColor(.secondary)
+                    Text("~\(Int(plan.megabytesPerHour.rounded())) MB/h · \(Fmt.size(freeBytesSnapshot)) free")
                         .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundColor(.secondary.opacity(0.9))
+                } else {
+                    Text("\(settings.photoMegapixels.label) · \(shortQualityLabel(settings.quality)) · \(settings.saveLocation.label)")
+                        .font(.system(size: 13, weight: .medium, design: .rounded))
                         .foregroundColor(.secondary)
                 }
             }
-            .padding(.vertical, 4)
+            .padding(.vertical, 2)
         }
     }
 
-    private func summaryStat(title: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(.system(size: 10, weight: .semibold, design: .rounded))
-                .foregroundColor(.secondary)
-            Text(value)
-                .font(.system(size: 14, weight: .semibold, design: .rounded))
-                .foregroundColor(.primary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
+    private var compactPlanLabel: String {
+        if settings.cameraMode == .photo {
+            return settings.photoMegapixels.label
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        if settings.cameraMode == .slowMo {
+            return "\(settings.slowMoResolution.label) · \(settings.slowMoFrameRate.label)"
+        }
+        return "\(settings.resolution.label) · \(settings.frameRate.label)"
     }
 
     // MARK: - Video capture (res + fps + quality in one place)
 
     private var videoCaptureSection: some View {
         Section(header: sectionHeader("Video", icon: "video.fill"),
-                footer: Text("Recording at \(plan.sizeLabel).")) {
-            Text("Resolution")
-                .font(.system(size: 12, weight: .semibold, design: .rounded))
-                .foregroundColor(.secondary)
-            chipRow(Resolution.allCases
-                .filter { $0 != .p144 || availableResolutions.contains(.p144) }
-                .map { r in
-                    ChipItem(id: r.id, label: r.label,
-                             enabled: availableResolutions.contains(r),
-                             selected: settings.resolution == r) {
-                        settings.resolution = r
-                        if let locked = r.lockedFrameRate {
-                            settings.frameRate = locked
+                footer: Text("Swipe chips sideways for more options (e.g. 144p).")) {
+            labeledChipRow(title: "Resolution", showMoreHint: true) {
+                chipRow(Resolution.allCases
+                    .filter { $0 != .p144 || availableResolutions.contains(.p144) }
+                    .map { r in
+                        ChipItem(id: r.id, label: r.label,
+                                 enabled: availableResolutions.contains(r),
+                                 selected: settings.resolution == r) {
+                            settings.resolution = r
+                            if let locked = r.lockedFrameRate {
+                                settings.frameRate = locked
+                            }
+                            recorder.updateCaptureFormat()
                         }
+                    })
+            }
+
+            labeledChipRow(title: "Frame rate") {
+                chipRow(FrameRate.allCases.map { f in
+                    let enabled = availableFrameRates.contains(f)
+                        && !(settings.resolution == .p2160 && f == .fps60)
+                    return ChipItem(id: "fr-\(f.id)", label: f.label,
+                                     enabled: enabled,
+                                     selected: settings.frameRate == f) {
+                        settings.frameRate = f
                         recorder.updateCaptureFormat()
                     }
                 })
+            }
 
-            Text("Frame rate")
-                .font(.system(size: 12, weight: .semibold, design: .rounded))
-                .foregroundColor(.secondary)
-                .padding(.top, 6)
-            chipRow(FrameRate.allCases.map { f in
-                let enabled = availableFrameRates.contains(f)
-                    && !(settings.resolution == .p2160 && f == .fps60)
-                return ChipItem(id: "fr-\(f.id)", label: f.label,
-                                 enabled: enabled,
-                                 selected: settings.frameRate == f) {
-                    settings.frameRate = f
-                    recorder.updateCaptureFormat()
-                }
-            })
-
-            Text("Quality")
-                .font(.system(size: 12, weight: .semibold, design: .rounded))
-                .foregroundColor(.secondary)
-                .padding(.top, 6)
-            chipRow(Quality.allCases.map { q in
-                ChipItem(id: q.id, label: shortQualityLabel(q),
-                          selected: settings.quality == q) {
-                    settings.quality = q
-                }
-            })
+            labeledChipRow(title: "Quality") {
+                chipRow(Quality.allCases.map { q in
+                    ChipItem(id: q.id, label: shortQualityLabel(q),
+                              selected: settings.quality == q) {
+                        settings.quality = q
+                    }
+                })
+            }
         }
     }
 
-    // MARK: - Output (save + split + auto-stop + storage)
+    private func labeledChipRow<Content: View>(title: String, showMoreHint: Bool = false, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 4) {
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundColor(.primary)
+                if showMoreHint {
+                    Image(systemName: "chevron.left.2")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(.secondary)
+                    Text("swipe")
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .foregroundColor(.secondary)
+                }
+            }
+            content()
+        }
+        .padding(.vertical, 2)
+    }
+
+    // MARK: - Output
 
     private var outputSection: some View {
-        Section(header: sectionHeader("Output", icon: "tray.and.arrow.down.fill")) {
-            Text("Save to")
-                .font(.system(size: 12, weight: .semibold, design: .rounded))
-                .foregroundColor(.secondary)
-            chipRow(SaveLocation.allCases.map { s in
-                ChipItem(id: s.id, label: s.label, selected: settings.saveLocation == s) {
-                    settings.saveLocation = s
+        Section(header: sectionHeader("Output", icon: "tray.and.arrow.down.fill"),
+                footer: Text(settings.cameraMode == .photo
+                             ? settings.saveLocation.detail
+                             : "Where clips go, and how long each file runs.")) {
+            // Save destination as clear tappable choices
+            HStack(spacing: 10) {
+                ForEach(SaveLocation.allCases) { loc in
+                    let on = settings.saveLocation == loc
+                    Button {
+                        settings.saveLocation = loc
+                        if settings.hapticFeedbackEnabled { presetHaptic.selectionChanged() }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: loc == .photos ? "photo.on.rectangle" : "folder.fill")
+                                .font(.system(size: 12, weight: .semibold))
+                            Text(loc.label)
+                                .font(.system(size: 14, weight: .semibold, design: .rounded))
+                        }
+                        .foregroundColor(on ? .white : .primary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(on ? settings.accentColor.color : Color.secondary.opacity(0.14))
+                        )
+                    }
+                    .buttonStyle(.plain)
                 }
-            })
+            }
+            .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 8, trailing: 16))
 
             if settings.cameraMode != .photo {
-                Text("Split clips")
-                    .font(.system(size: 12, weight: .semibold, design: .rounded))
-                    .foregroundColor(.secondary)
-                    .padding(.top, 6)
-                chipRow(SplitInterval.allCases.map { interval in
-                    ChipItem(id: interval.id, label: shortSplitLabel(interval),
-                              selected: settings.splitInterval == interval) {
-                        settings.splitInterval = interval
+                HStack(spacing: 8) {
+                    Text("Split")
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundColor(.primary)
+                        .frame(width: 44, alignment: .leading)
+                    ForEach(SplitInterval.allCases) { interval in
+                        let on = settings.splitInterval == interval
+                        Button {
+                            settings.splitInterval = interval
+                            if settings.hapticFeedbackEnabled { presetHaptic.selectionChanged() }
+                        } label: {
+                            Text(shortSplitLabel(interval))
+                                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                                .foregroundColor(on ? .white : .primary)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .background(
+                                    Capsule().fill(on ? settings.accentColor.color : Color.secondary.opacity(0.14))
+                                )
+                        }
+                        .buttonStyle(.plain)
                     }
-                })
+                    Spacer(minLength: 0)
+                }
 
                 Picker(selection: $settings.maxDuration) {
                     ForEach(MaxDuration.allCases) { d in
@@ -242,9 +277,8 @@ struct SettingsScreen: View {
                     }
                 } label: {
                     Label("Auto-stop", systemImage: "timer")
-                        .labelStyle(SettingsLabelStyle(color: settings.accentColor.deep))
+                        .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
                 }
-                .padding(.top, 4)
 
                 infoRow("Space / hour", "\(Int(plan.megabytesPerHour.rounded())) MB")
                 infoRow("Room left", Fmt.hours(hoursLeft))
@@ -261,7 +295,7 @@ struct SettingsScreen: View {
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundColor(.white)
                     .frame(width: 30, height: 30)
-                    .background(settings.accentColor.deep)
+                    .background(settings.accentColor.color)
                     .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
 
                 VStack(alignment: .leading, spacing: 2) {
@@ -337,62 +371,93 @@ struct SettingsScreen: View {
         }
     }
 
-    // MARK: - Quick Presets
+    // MARK: - Quick Presets (entry + sheet)
 
-    private var presetsSection: some View {
-        Section(header: sectionHeader("Quick Presets", icon: "bolt.fill"),
-                footer: Text("One tap applies instantly. Tweak anything after.")) {
-            ForEach(CapturePreset.all) { preset in
-                Button(action: { applyPresetNow(preset) }) {
-                    HStack(spacing: 12) {
-                        Image(systemName: preset.icon)
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundColor(.white)
-                            .frame(width: 30, height: 30)
-                            .background(
-                                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                    .fill(settings.accentColor.color)
-                            )
+    private var quickPresetsEntrySection: some View {
+        Section {
+            Button(action: { showPresetsSheet = true }) {
+                HStack(spacing: 12) {
+                    Image(systemName: "bolt.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.white)
+                        .frame(width: 28, height: 28)
+                        .background(
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(settings.accentColor.color)
+                        )
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Quick Presets")
+                            .font(.system(size: 16, weight: .semibold, design: .rounded))
+                            .foregroundColor(.primary)
+                        Text("Balanced, Social, All Day…")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.secondary.opacity(0.5))
+                }
+                .padding(.vertical, 4)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+    }
 
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(preset.name)
-                                .font(.system(size: 15, weight: .semibold, design: .rounded))
-                                .foregroundColor(.primary)
-                            Text(preset.detail)
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundColor(.secondary)
-                                .lineLimit(1)
-                        }
-
-                        Spacer(minLength: 4)
-
-                        if appliedPresetId == preset.id {
-                            Image(systemName: "checkmark.circle.fill")
-                                .font(.system(size: 18, weight: .semibold))
-                                .foregroundColor(settings.accentColor.color)
-                        } else {
+    private var presetsSheet: some View {
+        NavigationView {
+            List {
+                ForEach(CapturePreset.all) { preset in
+                    Button(action: {
+                        applyPresetNow(preset)
+                        showPresetsSheet = false
+                    }) {
+                        HStack(spacing: 12) {
+                            Image(systemName: preset.icon)
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(.white)
+                                .frame(width: 30, height: 30)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                        .fill(settings.accentColor.color)
+                                )
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(preset.name)
+                                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+                                    .foregroundColor(.primary)
+                                Text(preset.detail)
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
                             Image(systemName: "chevron.right")
                                 .font(.system(size: 12, weight: .semibold))
                                 .foregroundColor(.secondary.opacity(0.45))
                         }
+                        .padding(.vertical, 4)
+                        .contentShape(Rectangle())
                     }
-                    .padding(.vertical, 6)
-                    .contentShape(Rectangle())
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(PresetButtonStyle())
             }
+            .listStyle(InsetGroupedListStyle())
+            .navigationBarTitle("Quick Presets", displayMode: .inline)
+            .navigationBarItems(trailing: Button("Cancel") {
+                showPresetsSheet = false
+            })
         }
+        .navigationViewStyle(StackNavigationViewStyle())
+        .accentColor(settings.accentColor.color)
     }
 
     private func applyPresetNow(_ preset: CapturePreset) {
         presetHaptic.selectionChanged()
         presetHaptic.prepare()
         appliedPresetId = preset.id
-
         settings.applyPreset(preset)
         recorder.updateCaptureFormat()
         recorder.syncMicInput()
-
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             if appliedPresetId == preset.id { appliedPresetId = nil }
         }
@@ -440,7 +505,7 @@ struct SettingsScreen: View {
                 }
             } label: {
                 Label("Max duration", systemImage: "timer")
-                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.deep))
+                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
             }
             if settings.maxDuration != .off {
                 Text(settings.maxDuration.subtitle)
@@ -470,7 +535,7 @@ struct SettingsScreen: View {
 
             Toggle(isOn: $settings.stabilization) {
                 Label("Stabilisation", systemImage: "hand.raised.fill")
-                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.deep))
+                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
             }
             .onChange(of: settings.stabilization) { _ in recorder.updateStabilization() }
             .disabled(!stabilizationSupported)
@@ -491,7 +556,7 @@ struct SettingsScreen: View {
 
             Toggle(isOn: $settings.autoDimOnRecord) {
                 Label("Auto-dim when filming", systemImage: "moon.stars.fill")
-                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.deep))
+                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
             }
 
             Toggle(isOn: $settings.longevityMode) {
@@ -500,11 +565,6 @@ struct SettingsScreen: View {
             }
             .onChange(of: settings.longevityMode) { _ in
                 recorder.refreshIdleFormatIfNeeded()
-            }
-
-            Toggle(isOn: $settings.saveSelfiesUnmirrored) {
-                Label("Save selfies unmirrored", systemImage: "arrow.left.and.right")
-                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.deep))
             }
         }
     }
@@ -515,7 +575,7 @@ struct SettingsScreen: View {
         Section(header: sectionHeader("Sounds & Haptics", icon: "speaker.wave.2.fill")) {
             Toggle(isOn: $settings.shutterSoundEnabled) {
                 Label("Shutter & dial sounds", systemImage: "speaker.wave.2.fill")
-                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.bright))
+                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
             }
 
             Toggle(isOn: $settings.hapticFeedbackEnabled) {
@@ -525,7 +585,7 @@ struct SettingsScreen: View {
 
             Toggle(isOn: $settings.captureFlashConfirmation) {
                 Label("Screen flash on capture", systemImage: "bolt.badge.a.fill")
-                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.bright))
+                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
             }
         }
     }
@@ -602,7 +662,7 @@ struct SettingsScreen: View {
             row(title: "H.264",
                 subtitle: "Bigger files · plays on everything",
                 icon: "film.fill",
-                iconColor: settings.accentColor.deep,
+                iconColor: settings.accentColor.color,
                 selected: !settings.useHEVC) {
                 settings.useHEVC = false
             }
