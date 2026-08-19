@@ -52,6 +52,16 @@ enum PhysicalOrientation {
     }
 }
 
+// MARK: - Device check (used to warn about memory-heavy settings on older hardware)
+
+enum DeviceTier {
+    /// True on iPhone 7 / 7 Plus (A10, 2GB RAM) where 4K recording is more
+    /// likely to hit memory pressure during long sessions.
+    static var isLowMemoryDevice: Bool {
+        ProcessInfo.processInfo.physicalMemory <= 2_500_000_000
+    }
+}
+
 // MARK: - Resolution
 
 enum Resolution: String, CaseIterable, Identifiable {
