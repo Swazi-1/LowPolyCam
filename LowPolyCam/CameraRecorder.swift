@@ -44,6 +44,16 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     static let fragmentSeconds: Double = 4
     static let reserveBytes: Int64 = 300 * 1024 * 1024
+
+    // How long (in seconds) after a fresh record start to silently discard
+    // video frames before letting any reach the writer, to cover the AE/AGC
+    // brightness ramp on the newly-applied recording format. Frame count is
+    // derived from this and the actual recording fps (see startRecording()),
+    // clamped to a sane range so a bad fps read can't discard too much or
+    // too little.
+    static let recordStartWarmupSeconds: Double = 0.15
+    static let recordStartWarmupFrameFloor = 2
+    static let recordStartWarmupFrameCeiling = 14
     private static let inProgressKey = "inProgressClipName"
 
     // MARK: Published state
@@ -188,6 +198,19 @@ final class CameraRecorder: NSObject, ObservableObject {
     private var lastVideoPTS = CMTime.invalid
     private var recordStartPTS = CMTime.invalid
     private var wantsRecording = false
+    // Number of video frames to silently discard right after a *fresh*
+    // record start (not segment rotation). The isAdjustingExposure KVO
+    // wait in waitForExposureSettled() turned out to be an unreliable
+    // signal — many devices report isAdjustingExposure == false immediately
+    // after a format switch even though AE/AGC (and on some devices scene
+    // tone-mapping) is still visibly ramping brightness up over the next
+    // few frames. Waiting on that flag was a no-op in those cases. This
+    // counter is a deterministic fallback: regardless of *why* early frames
+    // are dark, they just never reach the writer, so the recorded clip's
+    // first frame is whichever frame arrives once the counter hits zero.
+    // Only touched on videoQueue except for the initial set in
+    // startRecording(), matching the existing wantsRecording pattern.
+    private var pendingWarmupFrames = 0
     // Guards against dispatching startSegment more than once for the same
     // segment. Multiple video frames can arrive on videoQueue and all see
     // writer == nil before the *first* startSegment call (running on
@@ -1756,6 +1779,14 @@ final class CameraRecorder: NSObject, ObservableObject {
                     self.writerLock.unlock()
                     self.lastElapsedPush = .invalid
                     self.droppedFrameCount = 0
+                    // Scale by fps so the discard covers a consistent real-world
+                    // settle time — at 240fps slow-mo the same wall-clock ramp
+                    // spans many more frames than at 30fps, so a fixed frame
+                    // count would under-cover high frame rates and over-cover
+                    // low ones.
+                    let fps = max(newPlan.frameRate, 1)
+                    let rawWarmupFrames = Int((Self.recordStartWarmupSeconds * fps).rounded(.up))
+                    self.pendingWarmupFrames = min(max(rawWarmupFrames, Self.recordStartWarmupFrameFloor), Self.recordStartWarmupFrameCeiling)
                     self.wantsRecording = true
                 }
             }
@@ -2439,6 +2470,19 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
             let hasWriter = writer != nil
             writerLock.unlock()
             if hasWriter { DebugLog.write("finishSegment triggered from didOutput (wantsRecording=false, writer still present)"); finishSegment() }
+            return
+        }
+
+        // Silently discard the first few video frames after a fresh record
+        // start — the sensor's exposure/gain (and on some devices, tone
+        // mapping) is still ramping up to the new recording format's target
+        // brightness, and these frames would otherwise become the visibly
+        // dark opening of the clip. This runs before needsNewSegment is
+        // computed below, so the segment's real "first frame" — the one
+        // that becomes source time zero — is whichever frame arrives once
+        // the counter reaches zero, not whatever the sensor produced first.
+        if isVideo && pendingWarmupFrames > 0 {
+            pendingWarmupFrames -= 1
             return
         }
 
