@@ -706,7 +706,10 @@ enum Encoder {
 
     private static let fpsMultiplier: [FrameRate: Double] = [
         .fps30: 1.0,
-        .fps60: 1.45   // keep 60 fps sustainable on A10 without drops
+        // Slightly conservative so the A10 real-time encoder never falls
+        // behind at 1080p60 / 720p60; under-run was the main cause of
+        // Photos reporting 56–62 fps instead of a clean 60.00.
+        .fps60: 1.30
     ]
 
     static func plan(for settings: AppSettings) -> EncodePlan {
@@ -745,13 +748,18 @@ enum Encoder {
         // 720p@240≈170MB/min, 1080p@120≈130MB/min, 720p@120≈65MB/min) —
         // matching them keeps the encoder comfortably real-time on A10.
         if isSlow {
+            // Conservative ceilings tuned for A10 real-time encode via
+            // VideoDataOutput. The previous higher numbers still produced
+            // backlog → discarded frames → Photos reporting ~197 fps instead
+            // of 240. Matching (or slightly under) Apple's stock Camera
+            // storage numbers keeps every frame.
             let slowMoCeilingKbps: Double
             if fps >= 240 {
-                slowMoCeilingKbps = 20000          // ~170MB/min @ 720p240
+                slowMoCeilingKbps = 16000          // reliable 720p240 on A10
             } else if res == .p1080 {
-                slowMoCeilingKbps = 17000          // ~130MB/min @ 1080p120
+                slowMoCeilingKbps = 14000          // reliable 1080p120 on A10
             } else {
-                slowMoCeilingKbps = 8500            // ~65MB/min @ 720p120
+                slowMoCeilingKbps = 7000           // reliable 720p120 on A10
             }
             kbps = min(kbps, slowMoCeilingKbps)
         }
