@@ -32,6 +32,7 @@ struct SettingsScreen: View {
 
     @State private var appliedPresetId: String? = nil
     @State private var showPresetsSheet = false
+    @State private var showAboutSheet = false
     @State private var presetHaptic = UISelectionFeedbackGenerator()
     @State private var freeBytesSnapshot: Int64 = 0
     @State private var isFrontSnapshot = false
@@ -51,27 +52,34 @@ struct SettingsScreen: View {
 
                 if isFrontSnapshot { frontCameraBanner }
 
-                if settings.cameraMode == .video {
+                // Strict mode separation — nothing that does not affect the active mode.
+                switch settings.cameraMode {
+                case .video:
                     quickPresetsEntrySection
-                }
-
-                if settings.cameraMode == .slowMo {
+                    videoCaptureSection
+                    outputSection
+                    videoAssistSection
+                    advancedSection
+                case .slowMo:
                     slowMoFrameRateSection
                     slowMoResolutionSection
-                    qualitySection
-                } else if settings.cameraMode == .photo {
+                    videoQualitySection
+                    slowMoOutputSection
+                    slowMoAssistSection
+                    advancedSection
+                case .photo:
+                    // Photo only: size + where to save + framing assists.
+                    // No video quality, codec, frame rate, stab, split, etc.
                     photoMegapixelsSection
-                    qualitySection
-                } else {
-                    videoCaptureSection
+                    photoOutputSection
+                    photoAssistSection
                 }
 
-                outputSection
-                captureAssistSection
                 feedbackSection
-                advancedSection
                 appearanceSection
-                aboutSection
+
+                // Small entry — opens Good to Know sheet
+                aboutEntrySection
             }
             .listStyle(InsetGroupedListStyle())
             .id(settings.cameraMode)
@@ -89,6 +97,9 @@ struct SettingsScreen: View {
             })
             .sheet(isPresented: $showPresetsSheet) {
                 presetsSheet
+            }
+            .sheet(isPresented: $showAboutSheet) {
+                aboutSheet
             }
         }
         .navigationViewStyle(StackNavigationViewStyle())
@@ -127,7 +138,7 @@ struct SettingsScreen: View {
                         .font(.system(size: 12, weight: .medium, design: .rounded))
                         .foregroundColor(.secondary.opacity(0.9))
                 } else {
-                    Text("\(settings.photoMegapixels.label) · \(shortQualityLabel(settings.quality)) · \(settings.saveLocation.label)")
+                    Text("\(settings.photoMegapixels.label) · \(settings.saveLocation.label)")
                         .font(.system(size: 13, weight: .medium, design: .rounded))
                         .foregroundColor(.secondary)
                 }
@@ -350,15 +361,25 @@ struct SettingsScreen: View {
         }
     }
 
-    private var qualitySection: some View {
+    /// Video / Slow-Mo bitrate quality only (not used for still photos).
+    private var videoQualitySection: some View {
         Section(header: sectionHeader("Quality", icon: "slider.horizontal.3"),
-                footer: Text(settings.quality.detail)) {
+                footer: Text(videoQualityFooter)) {
             chipRow(Quality.allCases.map { q in
                 ChipItem(id: q.id, label: shortQualityLabel(q),
                           selected: settings.quality == q) {
                     settings.quality = q
                 }
             })
+        }
+    }
+
+    private var videoQualityFooter: String {
+        switch settings.quality {
+        case .high: return "Highest bitrate · larger files"
+        case .medium: return "Balanced quality and size"
+        case .low: return "Smaller files · still clear"
+        case .ultraLow: return "Smallest files · longest sessions"
         }
     }
 
@@ -527,46 +548,122 @@ struct SettingsScreen: View {
         }
     }
 
-    // MARK: - Capture assist (while shooting)
+    // MARK: - Assist (mode-specific)
 
-    private var captureAssistSection: some View {
+    private var videoAssistSection: some View {
+        Section(header: sectionHeader("Capture Assist", icon: "viewfinder")) {
+            assistStabilisation
+            assistGrid
+            assistLevel
+            assistAutoDim
+            assistLongevity
+        }
+    }
+
+    private var slowMoAssistSection: some View {
         Section(header: sectionHeader("Capture Assist", icon: "viewfinder"),
-                footer: Text("Stabilisation, grid and longevity affect how the camera runs while you shoot.")) {
+                footer: Text("Video-only options (split, HEVC presets) are hidden in Slow-Mo.")) {
+            assistGrid
+            assistLevel
+            assistLongevity
+        }
+    }
 
-            Toggle(isOn: $settings.stabilization) {
-                Label("Stabilisation", systemImage: "hand.raised.fill")
-                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
+    private var photoAssistSection: some View {
+        Section(header: sectionHeader("Capture Assist", icon: "viewfinder"),
+                footer: Text("Video settings are hidden while you are in Photo mode.")) {
+            assistGrid
+            assistLevel
+        }
+    }
+
+    private var assistStabilisation: some View {
+        Toggle(isOn: $settings.stabilization) {
+            Label("Stabilisation", systemImage: "hand.raised.fill")
+                .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
+        }
+        .onChange(of: settings.stabilization) { _ in recorder.updateStabilization() }
+        .disabled(!stabilizationSupported)
+    }
+
+    private var assistGrid: some View {
+        Picker(selection: $settings.gridStyle) {
+            ForEach(GridStyle.allCases) { style in
+                Text(style.label).tag(style)
             }
-            .onChange(of: settings.stabilization) { _ in recorder.updateStabilization() }
-            .disabled(!stabilizationSupported)
+        } label: {
+            Label("Grid overlay", systemImage: "grid")
+                .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
+        }
+    }
 
-            Picker(selection: $settings.gridStyle) {
-                ForEach(GridStyle.allCases) { style in
-                    Text(style.label).tag(style)
+    private var assistLevel: some View {
+        Toggle(isOn: $settings.showLevelGauge) {
+            Label("Level meter", systemImage: "gyroscope")
+                .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
+        }
+    }
+
+    private var assistAutoDim: some View {
+        Toggle(isOn: $settings.autoDimOnRecord) {
+            Label("Auto-dim when filming", systemImage: "moon.stars.fill")
+                .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
+        }
+    }
+
+    private var assistLongevity: some View {
+        Toggle(isOn: $settings.longevityMode) {
+            Label("Longevity Mode", systemImage: "leaf.fill")
+                .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
+        }
+        .onChange(of: settings.longevityMode) { _ in
+            recorder.refreshIdleFormatIfNeeded()
+        }
+    }
+
+    // MARK: - Output (mode-specific)
+
+    private var slowMoOutputSection: some View {
+        Section(header: sectionHeader("Output", icon: "tray.and.arrow.down.fill")) {
+            outputSaveButtons
+            infoRow("Space / hour", "\(Int(plan.megabytesPerHour.rounded())) MB")
+            infoRow("Room left", Fmt.hours(hoursLeft))
+        }
+    }
+
+    private var photoOutputSection: some View {
+        Section(header: sectionHeader("Output", icon: "tray.and.arrow.down.fill"),
+                footer: Text(settings.saveLocation.detail)) {
+            outputSaveButtons
+        }
+    }
+
+    private var outputSaveButtons: some View {
+        HStack(spacing: 10) {
+            ForEach(SaveLocation.allCases) { loc in
+                let on = settings.saveLocation == loc
+                Button {
+                    settings.saveLocation = loc
+                    if settings.hapticFeedbackEnabled { presetHaptic.selectionChanged() }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: loc == .photos ? "photo.on.rectangle" : "folder.fill")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text(loc.label)
+                            .font(.system(size: 14, weight: .semibold, design: .rounded))
+                    }
+                    .foregroundColor(on ? .white : .primary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(on ? settings.accentColor.color : Color.secondary.opacity(0.14))
+                    )
                 }
-            } label: {
-                Label("Grid overlay", systemImage: "grid")
-                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
-            }
-
-            Toggle(isOn: $settings.showLevelGauge) {
-                Label("Level meter", systemImage: "gyroscope")
-                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
-            }
-
-            Toggle(isOn: $settings.autoDimOnRecord) {
-                Label("Auto-dim when filming", systemImage: "moon.stars.fill")
-                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
-            }
-
-            Toggle(isOn: $settings.longevityMode) {
-                Label("Longevity Mode", systemImage: "leaf.fill")
-                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
-            }
-            .onChange(of: settings.longevityMode) { _ in
-                recorder.refreshIdleFormatIfNeeded()
+                .buttonStyle(.plain)
             }
         }
+        .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 8, trailing: 16))
     }
 
     // MARK: - Feedback (sounds / haptics)
@@ -582,12 +679,55 @@ struct SettingsScreen: View {
                 Label("Haptic feedback", systemImage: "hand.tap.fill")
                     .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
             }
-
-            Toggle(isOn: $settings.captureFlashConfirmation) {
-                Label("Screen flash on capture", systemImage: "bolt.badge.a.fill")
-                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
-            }
         }
+    }
+
+    // MARK: - Good to Know entry + sheet
+
+    private var aboutEntrySection: some View {
+        Section {
+            Button(action: { showAboutSheet = true }) {
+                HStack {
+                    Image(systemName: "info.circle.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(settings.accentColor.color)
+                    Text("Good to Know")
+                        .font(.system(size: 15, weight: .semibold, design: .rounded))
+                        .foregroundColor(.primary)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.secondary.opacity(0.5))
+                }
+                .padding(.vertical, 2)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var aboutSheet: some View {
+        NavigationView {
+            List {
+                aboutRow(icon: "shield.lefthalf.filled",
+                         title: "Crash Safe",
+                         body: "Clips save in small pieces so a dead battery rarely loses the whole take.")
+                aboutRow(icon: "moon.fill",
+                         title: "Cooler When Idle",
+                         body: "Preview uses a lighter sensor path until you hit record.")
+                aboutRow(icon: "leaf.fill",
+                         title: "Longevity Mode",
+                         body: "Optional. Lower heat and smaller files for long sessions on older iPhones.")
+                aboutRow(icon: "sparkles",
+                         title: "Built for iPhone 7",
+                         body: "Tuned for A10 and 2 GB RAM on iOS 15.8.x.")
+            }
+            .listStyle(InsetGroupedListStyle())
+            .navigationBarTitle("Good to Know", displayMode: .inline)
+            .navigationBarItems(trailing: Button("Done") { showAboutSheet = false })
+        }
+        .navigationViewStyle(StackNavigationViewStyle())
+        .accentColor(settings.accentColor.color)
     }
 
     // MARK: - Appearance
