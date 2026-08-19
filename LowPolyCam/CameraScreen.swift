@@ -141,9 +141,10 @@ struct CameraScreen: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
 
-                // Overlay Pro panel above the HUD so bottom controls stay put.
+                // Overlay Pro panel mid-low — high enough to reach, above bottom HUD
+                // so mode/zoom/shutter stay visible and unused space isn't wasted.
                 if showProMenu && !recorder.isRecording && !recorder.isSaving {
-                    Color.black.opacity(0.35)
+                    Color.black.opacity(0.4)
                         .ignoresSafeArea()
                         .onTapGesture {
                             withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
@@ -155,11 +156,13 @@ struct CameraScreen: View {
                     VStack {
                         Spacer(minLength: 0)
                         proToolsDrawer
-                            .padding(.horizontal, 12)
-                            .padding(.bottom, 8)
+                            .padding(.horizontal, 14)
+                            // Sit above the bottom HUD (zoom + mode + shutter ~150pt)
+                            .padding(.bottom, 150)
                     }
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                     .zIndex(20)
+                    .allowsHitTesting(true)
                 }
             }
         }
@@ -634,13 +637,12 @@ struct CameraScreen: View {
     }
 
     private var proToolsDrawer: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            // Compact header row
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
                 Text("Shoot")
-                    .font(.system(size: 15, weight: .bold, design: .rounded))
+                    .font(.system(size: 16, weight: .bold, design: .rounded))
                     .foregroundColor(.white)
-                Spacer(minLength: 0)
+                Spacer()
                 Button(action: {
                     withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) { showProMenu = false }
                 }) {
@@ -654,17 +656,27 @@ struct CameraScreen: View {
                 .buttonStyle(.plain)
             }
 
-            // Timer chips + Level toggle on one dense row
-            HStack(spacing: 8) {
-                ForEach(CountdownTimer.allCases) { timer in
-                    proToolsChip(label: timer.label, selected: settings.countdownTimer == timer) {
-                        settings.countdownTimer = timer
-                    }
-                }
-                Spacer(minLength: 6)
-                Text("Level")
+            // Timer
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Timer")
                     .font(.system(size: 12, weight: .semibold, design: .rounded))
                     .foregroundColor(.white.opacity(0.55))
+                HStack(spacing: 8) {
+                    ForEach(CountdownTimer.allCases) { timer in
+                        proToolsChip(label: timer.label, selected: settings.countdownTimer == timer) {
+                            settings.countdownTimer = timer
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+
+            // Level
+            HStack {
+                Text("Level meter")
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundColor(.white.opacity(0.9))
+                Spacer()
                 Toggle("", isOn: Binding(
                     get: { settings.showLevelGauge },
                     set: { newValue in
@@ -674,52 +686,63 @@ struct CameraScreen: View {
                 ))
                 .labelsHidden()
                 .toggleStyle(SwitchToggleStyle(tint: settings.accentColor.color))
-                .scaleEffect(0.85)
             }
 
-            // Exposure compact
-            HStack(spacing: 10) {
-                Text(String(format: "%@%.1f", settings.exposureBias > 0 ? "+" : "", settings.exposureBias))
-                    .font(.system(size: 14, weight: .bold, design: .rounded))
-                    .foregroundColor(settings.exposureBias == 0 ? .white.opacity(0.45) : .white)
-                    .frame(width: 42, alignment: .leading)
-                Slider(value: $settings.exposureBias, in: -2.0...2.0, step: 0.1)
-                    .tint(settings.accentColor.color)
-                    .onChange(of: settings.exposureBias) { val in
-                        recorder.setExposureBias(val)
+            // Exposure
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Exposure")
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .foregroundColor(.white.opacity(0.55))
+                    Spacer()
+                    Text(String(format: "%@%.1f EV", settings.exposureBias > 0 ? "+" : "", settings.exposureBias))
+                        .font(.system(size: 13, weight: .bold, design: .rounded))
+                        .foregroundColor(.white.opacity(0.9))
+                }
+                HStack(spacing: 8) {
+                    Slider(value: $settings.exposureBias, in: -2.0...2.0, step: 0.1)
+                        .tint(settings.accentColor.color)
+                        .onChange(of: settings.exposureBias) { val in
+                            recorder.setExposureBias(val)
+                        }
+                    if abs(settings.exposureBias) > 0.01 {
+                        Button("Reset") {
+                            settings.exposureBias = 0
+                            recorder.setExposureBias(0)
+                        }
+                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                        .foregroundColor(.white.opacity(0.85))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Palette.slateMid)
+                        .clipShape(Capsule())
+                        .buttonStyle(.plain)
                     }
-                if abs(settings.exposureBias) > 0.01 {
-                    Button("0") {
-                        settings.exposureBias = 0
-                        recorder.setExposureBias(0)
-                    }
-                    .font(.system(size: 12, weight: .bold, design: .rounded))
-                    .foregroundColor(.white.opacity(0.8))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Palette.slateMid)
-                    .clipShape(Capsule())
-                    .buttonStyle(.plain)
                 }
             }
 
-            // White balance chips — single tight row
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    ForEach(WhiteBalancePreset.allCases) { preset in
-                        proToolsChip(label: preset.label, selected: settings.whiteBalance == preset) {
-                            settings.whiteBalance = preset
-                            recorder.setWhiteBalance(preset)
+            // White balance
+            VStack(alignment: .leading, spacing: 6) {
+                Text("White balance")
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .foregroundColor(.white.opacity(0.55))
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(WhiteBalancePreset.allCases) { preset in
+                            proToolsChip(label: preset.label, selected: settings.whiteBalance == preset) {
+                                settings.whiteBalance = preset
+                                recorder.setWhiteBalance(preset)
+                            }
                         }
                     }
                 }
             }
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+        .padding(.vertical, 14)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Palette.slateDeep.opacity(0.96))
+                .fill(Palette.slateDeep.opacity(0.97))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
