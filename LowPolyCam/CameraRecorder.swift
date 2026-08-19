@@ -512,7 +512,16 @@ final class CameraRecorder: NSObject, ObservableObject {
             if self.volumeObserver == nil {
                 let obs = VolumeButtonObserver()
                 obs.onVolumeTrigger = { [weak self] in
-                    DispatchQueue.main.async { self?.toggleRecording() }
+                    DispatchQueue.main.async {
+                        guard let self = self else { return }
+                        // Volume shutter must match the current mode — photo
+                        // mode used to start a video recording by mistake.
+                        if self.settings.cameraMode == .photo {
+                            self.capturePhoto()
+                        } else {
+                            self.toggleRecording()
+                        }
+                    }
                 }
                 obs.start()
                 self.volumeObserver = obs
@@ -708,14 +717,15 @@ final class CameraRecorder: NSObject, ObservableObject {
         applyStabilization(to: c)
     }
 
-    private func applyStabilization(to connection: AVCaptureConnection? = nil) {
+    private func applyStabilization(to connection: AVCaptureConnection? = nil, forceRecording: Bool? = nil) {
         guard let c = connection ?? videoOutput.connection(with: .video) else { return }
         let supported = c.isVideoStabilizationSupported
         if supported {
             // Stabilisation burns ISP power even on the live preview. Only
             // enable it while actually recording. Also force off at 4K so the
             // A10 encoder can keep a true 30 fps without frame drops.
-            let wantStab = isRecording
+            let recording = forceRecording ?? isRecording
+            let wantStab = recording
                 && settings.stabilization
                 && settings.resolution != .p2160
             c.preferredVideoStabilizationMode = wantStab ? .auto : .off
@@ -902,10 +912,19 @@ final class CameraRecorder: NSObject, ObservableObject {
                 }
             }
 
-            // 4. Baseline Zoom Prime
+            // 4. Zoom — preserve the user's current factor across format switches
+            // (idle ↔ record). Forcing baseline every time was the main cause
+            // of the visible jump/flicker when pressing Record.
             let baseline = Self.wideAngleBaseline(for: device)
             let ceiling = device.activeFormat.videoMaxZoomFactor
-            device.videoZoomFactor = min(max(baseline, device.minAvailableVideoZoomFactor), ceiling)
+            let floor = device.minAvailableVideoZoomFactor
+            let desiredRaw: CGFloat
+            if self.zoomBaselineSnapshot > 0, self.zoomFactor > 0 {
+                desiredRaw = self.zoomFactor * baseline
+            } else {
+                desiredRaw = max(baseline, floor)
+            }
+            device.videoZoomFactor = min(max(desiredRaw, floor), ceiling)
 
             device.unlockForConfiguration()
         } catch {
@@ -1431,14 +1450,28 @@ final class CameraRecorder: NSObject, ObservableObject {
         let rawCeiling = min(device.activeFormat.videoMaxZoomFactor, baseline * 8)
         let rawFloor = device.minAvailableVideoZoomFactor
 
+        // Keep the user's zoom factor (UI units) when the format changes.
+        let previousFactor = zoomFactor
         zoomBaselineSnapshot = baseline
         rawMaxZoomSnapshot = rawCeiling
         rawMinZoomSnapshot = rawFloor
 
+        let clampedUI = max(rawFloor / baseline, min(previousFactor > 0 ? previousFactor : 1, rawCeiling / baseline))
+        // Re-apply on hardware so activeFormat's new zoom range matches UI.
+        let raw = clampedUI * baseline
+        let clampedRaw = max(rawFloor, min(raw, rawCeiling))
+        if abs(device.videoZoomFactor - clampedRaw) > 0.01 {
+            do {
+                try device.lockForConfiguration()
+                device.videoZoomFactor = clampedRaw
+                device.unlockForConfiguration()
+            } catch { }
+        }
+
         DispatchQueue.main.async {
             self.maxZoomFactor = rawCeiling / baseline
             self.minZoomFactor = rawFloor / baseline
-            self.zoomFactor = 1
+            self.zoomFactor = clampedUI
         }
     }
 
@@ -1784,7 +1817,9 @@ final class CameraRecorder: NSObject, ObservableObject {
     }
 
     func startRecording() {
-        guard !isRecording else { return }
+        // Never start while a previous clip is still finishing — that path
+        // used to orphan the prior AVAssetWriter (token mismatch → no finishWriting).
+        guard !isRecording, !isSaving else { return }
         DebugLog.reset()
         DebugLog.write("===== startRecording() called =====")
         guard freeBytes > Self.reserveBytes else {
@@ -1802,33 +1837,37 @@ final class CameraRecorder: NSObject, ObservableObject {
         recordingSessionToken += 1
         let myToken = recordingSessionToken
 
-        // Switch sensor to the full target rate (60 / 120 / 240) and attach
-        // the sample-buffer delegates only while recording. This keeps idle
-        // preview cool and ensures every delivered frame is at the exact
-        // rate the encode plan expects.
-        //
-        // Order matters: apply format + attach delegates *first*, then set
-        // wantsRecording. Otherwise early frames can land at the idle 30 fps
-        // (or during the format transition) and pull the average down in
-        // Photos (especially on short clips).
-        // Mark recording before the session work so applyStabilization sees it.
-        isRecording = true
-        UIApplication.shared.isIdleTimerDisabled = true
-
         // Check free space more often while recording.
         spaceTimer?.invalidate()
         spaceTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             self?.refreshFreeSpace()
         }
 
+        notice = nil
+        elapsed = 0
+        clipsThisSession = 0
+        droppedFrames = 0
+        audioLevel = 0
+        if settings.shutterSoundEnabled { SoundPlayer.play(.start) }
+
+        // Format + zoom preserve first, then stab, then publish isRecording.
+        // Publishing isRecording before the format switch made the HUD go
+        // "live" while the preview was still jumping.
         sessionQueue.async {
+            guard self.recordingSessionToken == myToken, !self.stopRequested else { return }
             self.applyActiveFormat(forRecording: true)
-            self.applyStabilization()
+            guard self.recordingSessionToken == myToken, !self.stopRequested else { return }
+            // Stab after format so framing only shifts once.
+            self.applyStabilization(forceRecording: true)
+
+            DispatchQueue.main.async {
+                guard self.recordingSessionToken == myToken, !self.stopRequested else { return }
+                self.isRecording = true
+                UIApplication.shared.isIdleTimerDisabled = true
+            }
 
             let beginCapture: () -> Void = {
-                // Bail if a newer start/stop already superseded this one while
-                // we were waiting for exposure to settle.
-                guard self.recordingSessionToken == myToken, self.isRecording, !self.stopRequested else { return }
+                guard self.recordingSessionToken == myToken, !self.stopRequested else { return }
                 self.videoOutput.setSampleBufferDelegate(self, queue: self.videoQueue)
                 self.audioOutput.setSampleBufferDelegate(self, queue: self.audioQueue)
 
@@ -1838,11 +1877,6 @@ final class CameraRecorder: NSObject, ObservableObject {
                     self.clipTransform = transform
                     self.lastElapsedPush = .invalid
                     self.droppedFrameCount = 0
-                    // Scale by fps so the discard covers a consistent real-world
-                    // settle time — at 240fps slow-mo the same wall-clock ramp
-                    // spans many more frames than at 30fps, so a fixed frame
-                    // count would under-cover high frame rates and over-cover
-                    // low ones.
                     let fps = max(Double(newPlan.frameRate), 1)
                     let rawWarmupFrames = Int((Self.recordStartWarmupSeconds * fps).rounded(.up))
                     let warmup = min(max(rawWarmupFrames, Self.recordStartWarmupFrameFloor), Self.recordStartWarmupFrameCeiling)
@@ -1857,24 +1891,11 @@ final class CameraRecorder: NSObject, ObservableObject {
             }
 
             if let device = self.cameraInput?.device {
-                // Cap the wait itself: the sensor was already running (idle
-                // preview) before this call, so this only covers the tail
-                // end of AE re-converging to the new record format/exposure
-                // target — not a cold start. 0.35s keeps worst-case record
-                // start latency imperceptible while still catching the
-                // common 2-4 frame dark ramp.
-                self.waitForExposureSettled(device: device, timeout: 0.35, completion: beginCapture)
+                self.waitForExposureSettled(device: device, timeout: 0.22, completion: beginCapture)
             } else {
                 beginCapture()
             }
         }
-
-        notice = nil
-        elapsed = 0
-        clipsThisSession = 0
-        droppedFrames = 0
-        audioLevel = 0
-        if settings.shutterSoundEnabled { SoundPlayer.play(.start) }
     }
 
     func stopRecording(notice message: String?) {
