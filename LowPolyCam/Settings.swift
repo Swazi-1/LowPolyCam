@@ -91,11 +91,18 @@ enum Resolution: String, CaseIterable, Identifiable {
         }
     }
 
+    /// Sensor / activeFormat dimensions to request. On iPhone 7 (A10) lower
+    /// target resolutions should also drive a lower capture format when the
+    /// hardware supports it, otherwise "Data Saver" modes still run the ISP
+    /// at 720p and only scale in the encoder (wasted heat and power).
     var captureDimensions: (w: Int, h: Int) {
         switch self {
         case .p2160: return (3840, 2160)
         case .p1080: return (1920, 1080)
-        default: return (1280, 720)
+        case .p720:  return (1280, 720)
+        case .p480:  return (848, 480)
+        case .p320:  return (640, 360)   // closest common low format; encoder scales to 568x320
+        case .p144:  return (640, 360)   // native 144p formats are rare on A10
         }
     }
 
@@ -599,7 +606,11 @@ final class AppSettings: ObservableObject {
         saveSelfiesUnmirrored    = store.object(forKey: "saveSelfiesUnmirrored") as? Bool ?? false
         captureFlashConfirmation = store.object(forKey: "captureFlashConfirmation") as? Bool ?? true
         hapticFeedbackEnabled    = store.object(forKey: "hapticFeedbackEnabled") as? Bool ?? true
-        longevityMode            = store.object(forKey: "longevityMode") as? Bool ?? false
+        // Default Longevity Mode ON for iPhone 7 / 7 Plus class (A10, ≤2.5 GB).
+        // This is the primary target device (iOS 15.8.8); the mode reduces heat,
+        // bitrate and idle preview cost which is essential on 2 GB RAM.
+        let defaultLongevity = DeviceTier.isLowMemoryDevice
+        longevityMode            = store.object(forKey: "longevityMode") as? Bool ?? defaultLongevity
     }
 }
 
