@@ -769,6 +769,8 @@ struct CameraScreen: View {
                     .disabled(recorder.isSwitchingCamera)
                     .opacity(recorder.isSwitchingCamera ? 0.35 : 1)
                     .frame(maxWidth: .infinity, alignment: .center)
+                    // Sit a bit lower above the shutter (same size/design).
+                    .padding(.top, 6)
             }
 
             ZStack(alignment: .center) {
