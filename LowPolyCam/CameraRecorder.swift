@@ -235,7 +235,7 @@ final class CameraRecorder: NSObject, ObservableObject {
     /// a handful of frames and flushing them the moment the encoder catches
     /// up recovers most of that shortfall without adding noticeable latency.
     private var pendingMidBuffers: [CMSampleBuffer] = []
-    private static let pendingMidBufferLimit = 12
+    private static let pendingMidBufferLimit = 4
     /// Host time of the most recent `device.activeFormat` / frame-duration
     /// change (see applyUnifiedHardwareConfiguration). Switching to a
     /// demanding Slow-Mo format (120/240 fps) right as recording starts can
@@ -247,7 +247,7 @@ final class CameraRecorder: NSObject, ObservableObject {
     /// the brief window right after our own format switch are treated as
     /// this false-positive case and ignored instead of stopping the clip.
     private var lastFormatReconfigureHostTime: CFTimeInterval = 0
-    private static let formatReconfigureGraceSeconds: CFTimeInterval = 0.6
+    private static let formatReconfigureGraceSeconds: CFTimeInterval = 1.5
     // Number of video frames to silently discard right after a *fresh*
     // record start (not segment rotation). Deterministic fallback for the
     // AE/AGC brightness ramp after a format switch. Touched under writerLock.
@@ -2848,11 +2848,17 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
                     }
                 }
             } else if let vIn = vIn {
-                // Steady-state recording: flush any frames queued from a
-                // recent transient stall first, in order, then this frame.
-                // Only actually drop a frame once the small backlog buffer
-                // is full — a real, sustained overrun rather than a
-                // millisecond-scale hiccup.
+                // Steady-state recording: flush a couple of frames queued
+                // from a recent millisecond-scale stall, then this frame.
+                // Capped to a small number of attempts per callback — at
+                // 240fps a callback only has ~4ms, and looping through a
+                // large backlog synchronously here was itself starving the
+                // video queue and causing more frames to be dropped by
+                // AVFoundation before they ever reached this code (seen as
+                // fps getting *worse*, not better, at 240fps). This is only
+                // meant to absorb brief hiccups, not to buffer a sustained
+                // overload — a sustained overload needs a lower bitrate/fps,
+                // not more buffering.
                 writerLock.lock()
                 var backlog = pendingMidBuffers
                 pendingMidBuffers.removeAll(keepingCapacity: true)
@@ -2861,8 +2867,9 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
                 backlog.append(sampleBuffer)
                 var newestAppendedEndPTS: CMTime?
                 var remaining: [CMSampleBuffer] = []
+                let maxAttemptsThisCallback = 3
                 for (index, buf) in backlog.enumerated() {
-                    if vIn.isReadyForMoreMediaData, vIn.append(buf) {
+                    if index < maxAttemptsThisCallback, vIn.isReadyForMoreMediaData, vIn.append(buf) {
                         let bPTS = CMSampleBufferGetPresentationTimeStamp(buf)
                         let bDur = CMSampleBufferGetDuration(buf)
                         newestAppendedEndPTS = Self.endPTS(for: bPTS, duration: bDur, fps: plan?.frameRate ?? 30)
