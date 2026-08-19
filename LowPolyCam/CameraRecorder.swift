@@ -237,10 +237,24 @@ final class CameraRecorder: NSObject, ObservableObject {
             appliedThermalMitigation = true
 
             // Auto-Cooling: dim the screen to cut display power draw.
-            // Preview is already locked to 30 fps while idle; recording will
-            // still use the selected rate but the dim helps overall.
             if UIScreen.main.brightness > 0.30 {
                 UIScreen.main.brightness = 0.30
+            }
+
+            // Brightness alone barely touches the ISP/encoder heat that
+            // actually drives A10 into critical — those keep running at
+            // whatever the idle preview format currently is. If we're not
+            // recording, force preview down to the lowest idle path (720p
+            // @ 15fps) regardless of Longevity Mode, on top of the normal
+            // idle caps in applyActiveFormat(forRecording:false). This is
+            // skipped while actively recording so we never touch the
+            // AVAssetWriter session mid-clip; the existing free-space/UI
+            // notice is the only feedback during an active recording.
+            if !isRecording {
+                sessionQueue.async { [weak self] in
+                    self?.applyActiveFormat(forRecording: false, forceLowestIdlePreview: true)
+                    self?.applyStabilization()
+                }
             }
             notice = "Phone is hot · Cooling down"
 
@@ -253,7 +267,15 @@ final class CameraRecorder: NSObject, ObservableObject {
             }
 
         case .nominal, .fair:
-            appliedThermalMitigation = false
+            if appliedThermalMitigation {
+                appliedThermalMitigation = false
+                if !isRecording {
+                    sessionQueue.async { [weak self] in
+                        self?.applyActiveFormat(forRecording: false)
+                        self?.applyStabilization()
+                    }
+                }
+            }
 
         @unknown default:
             break
@@ -602,7 +624,7 @@ final class CameraRecorder: NSObject, ObservableObject {
     /// - Parameter forRecording: when false (idle preview), force a low-power
     ///   sensor path so the phone stays cool like the stock Camera app.
     ///   High rates / high res are only engaged while actually recording.
-    private func applyActiveFormat(forRecording: Bool = false) {
+    private func applyActiveFormat(forRecording: Bool = false, forceLowestIdlePreview: Bool = false) {
         DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
         ensureCorrectCameraDevice(for: settings.cameraMode)
         guard let device = cameraInput?.device else { return }
@@ -638,13 +660,13 @@ final class CameraRecorder: NSObject, ObservableObject {
         if forRecording {
             targetFPS = fullFPS
         } else {
-            let idleCapH = settings.longevityMode ? 720 : 1080
+            let idleCapH = (forceLowestIdlePreview || settings.longevityMode) ? 720 : 1080
             if dims.h > idleCapH {
                 dims = idleCapH >= 1080
                     ? Resolution.p1080.captureDimensions
                     : Resolution.p720.captureDimensions
             }
-            let idleFPSCap: Double = settings.longevityMode ? 24.0 : 30.0
+            let idleFPSCap: Double = forceLowestIdlePreview ? 15.0 : (settings.longevityMode ? 24.0 : 30.0)
             targetFPS = min(fullFPS, idleFPSCap)
         }
 
@@ -2568,4 +2590,3 @@ final class VolumeButtonObserver: NSObject {
         }
     }
 }
-
