@@ -41,6 +41,12 @@ struct ClipGalleryScreen: View {
         return f
     }()
 
+    private let relativeDateFormatter: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .abbreviated
+        return f
+    }()
+
     var body: some View {
         NavigationView {
             ZStack {
@@ -285,9 +291,7 @@ struct ClipGalleryScreen: View {
     }
 
     private func relativeDate(_ date: Date) -> String {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        return formatter.localizedString(for: date, relativeTo: Date())
+        relativeDateFormatter.localizedString(for: date, relativeTo: Date())
     }
 
     private func durationLabel(_ seconds: TimeInterval) -> String {
