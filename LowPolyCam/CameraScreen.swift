@@ -137,10 +137,16 @@ struct CameraScreen: View {
                     
                     if showProMenu && !recorder.isRecording && !recorder.isSaving {
                         proToolsDrawer
-                            .transition(.asymmetric(
-                                insertion: .move(edge: .bottom).combined(with: .opacity).combined(with: .scale(scale: 0.95)),
-                                removal: .move(edge: .bottom).combined(with: .opacity)
-                            ))
+                            // Scale was the expensive part of this transition:
+                            // animating scale forces SwiftUI to re-rasterize the
+                            // whole drawer (ScrollView, Slider, Toggle, all the
+                            // chips) at a changing size every frame, which is
+                            // what was still stuttering on open even after the
+                            // shadow fix. Move + opacity are just layer
+                            // translation/alpha — both effectively free, no
+                            // re-rasterization needed — and read as the same
+                            // "slide up" motion.
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
                             .padding(.bottom, 10)
                     }
 
@@ -823,7 +829,7 @@ struct CameraScreen: View {
                     // "..." button positioned between shutter and flip-camera button
                     if !recorder.isRecording && !recorder.isSaving {
                         Button(action: {
-                            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) {
                                 showProMenu.toggle()
                             }
                         }) {
