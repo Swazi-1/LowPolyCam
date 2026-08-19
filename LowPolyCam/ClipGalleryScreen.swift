@@ -147,11 +147,11 @@ struct ClipGalleryScreen: View {
             Text("No Clips Yet")
                 .font(.system(size: 20, weight: .bold, design: .rounded))
                 .foregroundColor(.white)
-            Text("Recordings and photos saved in the app will show up here.")
+            Text("New recordings appear here. If you only used an older build that deleted local copies after Photos save, record a new clip and it will show up.")
                 .font(.system(size: 14, weight: .medium))
                 .foregroundColor(.white.opacity(0.55))
                 .multilineTextAlignment(.center)
-                .padding(.horizontal, 40)
+                .padding(.horizontal, 36)
         }
     }
 
