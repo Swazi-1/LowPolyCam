@@ -320,10 +320,18 @@ struct ClipGalleryScreen: View {
                 let values = try? url.resourceValues(forKeys: Set(keys))
                 let created = values?.creationDate ?? .distantPast
                 let size = Int64(values?.fileSize ?? 0)
-                let duration = isVideo ? CMTimeGetSeconds(AVURLAsset(url: url).duration) : 0
+                // Prefer a quick duration read. For movie-fragment files the property
+                // can be inaccurate until tracks are loaded; we accept a best-effort
+                // value here to keep the gallery responsive on A10 / iPhone 7.
+                var duration: TimeInterval = 0
+                if isVideo {
+                    let asset = AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: false])
+                    let sec = CMTimeGetSeconds(asset.duration)
+                    duration = sec.isFinite ? sec : 0
+                }
                 return RecordedClip(id: url, url: url, name: url.deletingPathExtension().lastPathComponent,
                                      createdAt: created, fileSize: size,
-                                     duration: duration.isFinite ? duration : 0,
+                                     duration: duration,
                                      isPhoto: isPhoto)
             }.sorted { $0.createdAt > $1.createdAt }
 
