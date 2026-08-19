@@ -1784,7 +1784,7 @@ final class CameraRecorder: NSObject, ObservableObject {
                     // spans many more frames than at 30fps, so a fixed frame
                     // count would under-cover high frame rates and over-cover
                     // low ones.
-                    let fps = max(newPlan.frameRate, 1)
+                    let fps = max(Double(newPlan.frameRate), 1)
                     let rawWarmupFrames = Int((Self.recordStartWarmupSeconds * fps).rounded(.up))
                     self.pendingWarmupFrames = min(max(rawWarmupFrames, Self.recordStartWarmupFrameFloor), Self.recordStartWarmupFrameCeiling)
                     self.wantsRecording = true
