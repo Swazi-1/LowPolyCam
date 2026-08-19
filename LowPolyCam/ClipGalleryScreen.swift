@@ -34,6 +34,7 @@ struct ClipGalleryScreen: View {
     @State private var playingClip: RecordedClip?
     @State private var renameClip: RecordedClip?
     @State private var renameText: String = ""
+    @State private var renameError: String?
 
     private let byteFormatter: ByteCountFormatter = {
         let f = ByteCountFormatter()
@@ -115,6 +116,14 @@ struct ClipGalleryScreen: View {
             Button("Cancel", role: .cancel) { renameClip = nil }
         } message: {
             Text("Enter a new name for this file.")
+        }
+        .alert("Rename Failed", isPresented: Binding(
+            get: { renameError != nil },
+            set: { if !$0 { renameError = nil } }
+        )) {
+            Button("OK", role: .cancel) { renameError = nil }
+        } message: {
+            Text(renameError ?? "Unknown error")
         }
     }
 
@@ -376,6 +385,7 @@ struct ClipGalleryScreen: View {
             reload()
         } catch {
             renameClip = nil
+            renameError = "Could not rename: \(error.localizedDescription)"
         }
     }
 
