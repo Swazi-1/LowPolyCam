@@ -2226,15 +2226,19 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
             } else {
                 // The writer briefly wasn't ready. Most of these stalls are
                 // sub-millisecond (encoder catching its breath between
-                // frames, not truly falling behind) — spinning here for a
-                // couple hundred microseconds recovers the vast majority of
-                // frames that the old code counted as dropped outright, which
-                // is what was under-reporting fps in Photos (4K30 clips
-                // reading back at ~29 fps or lower despite the hardware
-                // encoder having headroom). If it's still not ready after
-                // a few short retries, it really is dropped and we count it.
+                // frames, not truly falling behind) — spinning here briefly
+                // recovers the vast majority of frames that would otherwise
+                // be counted as dropped outright. But the spin budget must
+                // stay small relative to the frame's own time budget: at
+                // 240fps a frame only has ~4.2ms before the next one is
+                // due, so spinning too long here just delays and backs up
+                // subsequent frames instead of helping. Scale the number of
+                // retries down at high frame rates so this stays a genuine
+                // recovery step rather than becoming part of the backlog.
+                let fps = plan?.frameRate ?? 30
+                let maxRetries = fps >= 200 ? 2 : (fps >= 100 ? 3 : 4)
                 var appended = false
-                for _ in 0..<4 {
+                for _ in 0..<maxRetries {
                     usleep(300)
                     if vIn?.isReadyForMoreMediaData == true {
                         vIn?.append(sampleBuffer)
