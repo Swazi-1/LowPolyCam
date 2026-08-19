@@ -2279,10 +2279,8 @@ final class CameraRecorder: NSObject, ObservableObject {
                 guard let self = self else { return }
                 if success {
                     self.notice = "Saved to Photos"
-                    // Free the local copy now that Photos has its own; also
-                    // purge any older leftover clips so Documents does not
-                    // accumulate when the user always chooses Photos.
-                    self.cleanupLocalClipsAfterPhotosSave(keeping: nil)
+                    // Keep the local copy so Recorded Clips gallery can list it.
+                    // User can delete from the gallery when they want the space.
                 } else {
                     self.notice = "Saved to Files (Photos refused)"
                 }
