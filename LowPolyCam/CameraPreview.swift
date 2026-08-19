@@ -41,7 +41,7 @@ final class PreviewView: UIView {
         super.layoutSubviews()
         guard let c = previewLayer.connection, c.isVideoOrientationSupported else { return }
         let o = window?.windowScene?.interfaceOrientation ?? .portrait
-        if let v = AVCaptureVideoOrientation(rawValue: o.rawValue) {
+        if let v = AVCaptureVideoOrientation(rawValue: o.rawValue), c.videoOrientation != v {
             c.videoOrientation = v
         }
     }
