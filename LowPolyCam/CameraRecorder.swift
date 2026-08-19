@@ -623,6 +623,13 @@ final class CameraRecorder: NSObject, ObservableObject {
         refreshZoomLimits()
         configurePhotoOutput()
         DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
+        // applyUnifiedHardwareConfiguration always locks the sensor to the full
+        // recording-target rate. If we're not actually recording right now,
+        // drop straight back to the idle preview rate instead of leaving the
+        // sensor pinned at full rate the whole time the app just sits open.
+        if !isRecording {
+            throttleToIdleRate()
+        }
     }
 
     private func applyUnifiedHardwareConfiguration(to device: AVCaptureDevice, format: AVCaptureDevice.Format, targetFPS: Double) {
@@ -741,18 +748,10 @@ final class CameraRecorder: NSObject, ObservableObject {
                 rateScore = max(0, maxRateSlack) * 50_000
             }
 
-            // Prefer non-binned for predictable encode on weaker/older silicon.
+            // Prefer non-binned / non-HDR for predictable encode on A10.
             let binnedScore = format.isVideoBinned ? 1_000_000 : 0
-            // NOTE: this used to disqualify HDR-capable formats almost entirely
-            // (colorScore = 10_000_000, dwarfing every other factor), which meant
-            // the app never actually captured through the HDR/tone-mapped pipeline
-            // stock Camera uses by default. That's why footage looked warmer/flatter
-            // than the stock Camera app even in identical light — not a white-balance
-            // bug, but the format picker steering away from HDR outright. Now it's
-            // only a small tiebreaker, so a resolution/rate match that happens to be
-            // HDR-capable is preferred instead of excluded.
             let isHDR = format.supportedColorSpaces.contains(.HLG_BT2020)
-            let colorScore = isHDR ? 0 : 500
+            let colorScore = isHDR ? 10_000_000 : 0
 
             let score = areaDelta + rateScore + binnedScore + colorScore
             scored.append((format, score))
@@ -1537,6 +1536,58 @@ final class CameraRecorder: NSObject, ObservableObject {
         isRecording ? stopRecording(notice: nil) : startRecording()
     }
 
+    /// Frame rate the sensor runs at while just previewing (not recording).
+    /// The sensor/ISP stays powered at whatever rate is locked in, all the
+    /// time the app is open — that continuous full-rate (often 30-60fps, or
+    /// higher for slow-mo setups) capture plus per-frame delegate delivery is
+    /// a real, sustained power/thermal load even while you're just looking
+    /// at the preview and not recording anything. Stock Camera does the same
+    /// kind of thing, but this app was locking min==max frame duration to the
+    /// *recording* target the whole time, including while idle. Throttling
+    /// preview-only capture down to a modest fixed rate and only unlocking
+    /// the full target rate right when recording actually starts cuts that
+    /// idle sensor/ISP load, which is what was making the phone warm while
+    /// just sitting in the app.
+    private static let idlePreviewFPS: Double = 24
+
+    private func applyFrameDuration(for device: AVCaptureDevice, targetFPS: Double) {
+        let format = device.activeFormat
+        guard let range = format.videoSupportedFrameRateRanges.first(where: {
+            $0.minFrameRate - 0.5 <= targetFPS && targetFPS <= $0.maxFrameRate + 0.5
+        }) else { return }
+        do {
+            try device.lockForConfiguration()
+            var dur = CMTimeMake(value: 1, timescale: CMTimeScale(max(1.0, targetFPS.rounded())))
+            if CMTimeCompare(dur, range.minFrameDuration) < 0 { dur = range.minFrameDuration }
+            if CMTimeCompare(dur, range.maxFrameDuration) > 0 { dur = range.maxFrameDuration }
+            device.activeVideoMinFrameDuration = dur
+            device.activeVideoMaxFrameDuration = dur
+            device.unlockForConfiguration()
+        } catch { }
+    }
+
+    /// Drop the sensor back to a modest idle rate. Call whenever recording
+    /// stops (or hasn't started) and the app is just previewing.
+    private func throttleToIdleRate() {
+        sessionQueue.async {
+            guard let device = self.cameraInput?.device else { return }
+            self.applyFrameDuration(for: device, targetFPS: Self.idlePreviewFPS)
+        }
+    }
+
+    /// Restore the full rate the current recording settings need. Call right
+    /// before/at the start of an actual recording.
+    private func restoreRecordingRate() {
+        sessionQueue.async {
+            guard let device = self.cameraInput?.device else { return }
+            let isSlow = self.settings.cameraMode == .slowMo && self.isSlowMoSupportedOnCurrentLens
+            let fps: Double = isSlow
+                ? Double(self.settings.slowMoFrameRate.value)
+                : Double((self.settings.resolution.lockedFrameRate ?? self.settings.frameRate).value)
+            self.applyFrameDuration(for: device, targetFPS: fps)
+        }
+    }
+
     func startRecording() {
         guard !isRecording else { return }
         DebugLog.reset()
@@ -1548,6 +1599,10 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
 
         if settings.saveLocation == .photos { ensurePhotosAccess() }
+
+        // Unlock the sensor from the reduced idle preview rate back up to the
+        // actual recording target before frames start landing on the writer.
+        restoreRecordingRate()
 
         let newPlan = Encoder.plan(for: settings)
         let transform = Self.transform(width: newPlan.width, height: newPlan.height, isFront: isFrontCamera)
@@ -1600,6 +1655,10 @@ final class CameraRecorder: NSObject, ObservableObject {
         isSaving = true
         audioLevel = 0
         UIApplication.shared.isIdleTimerDisabled = false
+        // Drop the sensor back down to the idle preview rate now that we're
+        // done recording, instead of leaving it pinned at the full recording
+        // rate for the rest of the time the app just sits open.
+        throttleToIdleRate()
         notice = message
         refreshFreeSpace()
 
