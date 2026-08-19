@@ -211,38 +211,25 @@ struct CameraScreen: View {
         }
         .onChange(of: showSettings) { isPresented in
             if isPresented {
-                recorder.stopMotionUpdates()
-                recorder.pauseVolumeMonitoring()
-                // Settings can briefly resign app-active during the sheet
-                // transition, which (correctly) kills the physical torch —
-                // but the UI's torchOn state wasn't always getting resynced,
-                // so the bolt icon could keep showing "on" after the torch
-                // had actually gone off. Turn it off explicitly here (nobody
-                // wants the flashlight blasting away while poking at
-                // settings anyway) so hardware and UI never disagree.
-                if recorder.torchOn { recorder.setTorch(on: false) }
+                // Full sensor stop while the settings sheet covers the preview —
+                // biggest single idle-heat win when you're not looking at the camera.
+                recorder.pausePreviewSession()
             } else {
-                recorder.startMotionUpdates()
-                recorder.resumeVolumeMonitoring()
-                recorder.refreshTorchState()
+                recorder.resumePreviewSession()
             }
         }
         .onChange(of: showPlayer) { isPresented in
             if isPresented {
-                recorder.stopMotionUpdates()
-                recorder.pauseVolumeMonitoring()
+                recorder.pausePreviewSession()
             } else {
-                recorder.startMotionUpdates()
-                recorder.resumeVolumeMonitoring()
+                recorder.resumePreviewSession()
             }
         }
         .onChange(of: showGallery) { isPresented in
             if isPresented {
-                recorder.stopMotionUpdates()
-                recorder.pauseVolumeMonitoring()
+                recorder.pausePreviewSession()
             } else {
-                recorder.startMotionUpdates()
-                recorder.resumeVolumeMonitoring()
+                recorder.resumePreviewSession()
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
