@@ -35,6 +35,10 @@ struct CameraScreen: View {
 
     // Capture flash confirmation
     @State private var showCaptureFlash = false
+    // Sustained screen-illumination for the selfie "flash" — separate from
+    // showCaptureFlash above, which is just the brief post-shutter blink.
+    @State private var screenFlashIlluminating = false
+    @State private var frontFlashSavedBrightness: CGFloat = UIScreen.main.brightness
 
     @State private var startHaptic = UIImpactFeedbackGenerator(style: .medium)
     @State private var stopHaptic = UIImpactFeedbackGenerator(style: .light)
@@ -102,6 +106,15 @@ struct CameraScreen: View {
                     .opacity(showCaptureFlash ? 0.85 : 0)
                     .allowsHitTesting(false)
                     .animation(.easeOut(duration: 0.18), value: showCaptureFlash)
+
+                // Sustained screen flash for selfies — front camera has no
+                // physical torch, so we light the whole screen white (and
+                // max out brightness) the way iOS's Camera app does, giving
+                // the sensor a moment to re-expose before the shutter fires.
+                Color.white
+                    .opacity(screenFlashIlluminating ? 1 : 0)
+                    .allowsHitTesting(false)
+                    .animation(.easeOut(duration: 0.15), value: screenFlashIlluminating)
 
                 if dimmed { dimOverlay }
             }
@@ -194,9 +207,18 @@ struct CameraScreen: View {
             if isPresented {
                 recorder.stopMotionUpdates()
                 recorder.pauseVolumeMonitoring()
+                // Settings can briefly resign app-active during the sheet
+                // transition, which (correctly) kills the physical torch —
+                // but the UI's torchOn state wasn't always getting resynced,
+                // so the bolt icon could keep showing "on" after the torch
+                // had actually gone off. Turn it off explicitly here (nobody
+                // wants the flashlight blasting away while poking at
+                // settings anyway) so hardware and UI never disagree.
+                if recorder.torchOn { recorder.setTorch(on: false) }
             } else {
                 recorder.startMotionUpdates()
                 recorder.resumeVolumeMonitoring()
+                recorder.refreshTorchState()
             }
         }
         .onChange(of: showPlayer) { isPresented in
@@ -249,6 +271,17 @@ struct CameraScreen: View {
                             tint: recorder.torchOn ? settings.accentColor.bright : .white,
                             hitSlop: topHUDHitSlop) {
                     recorder.toggleTorch()
+                }
+            } else if recorder.isFrontCamera {
+                // No physical torch on the front camera — this toggles the
+                // screen-illumination flash used at capture time instead
+                // (see performFrontFlashCapture), same idea as stock Camera.
+                facetButton(system: recorder.frontFlashEnabled ? "bolt.fill" : "bolt.slash.fill",
+                            size: 40,
+                            tint: recorder.frontFlashEnabled ? settings.accentColor.bright : .white,
+                            hitSlop: topHUDHitSlop) {
+                    recorder.frontFlashEnabled.toggle()
+                    if settings.hapticFeedbackEnabled { levelHaptic.selectionChanged() }
                 }
             } else {
                 // Keep layout balanced even when torch is unavailable.
@@ -854,7 +887,7 @@ struct CameraScreen: View {
                 } else if settings.countdownTimer != .off {
                     startCountdown()
                 } else {
-                    recorder.capturePhoto()
+                    triggerPhotoCapture()
                 }
                 return
             }
@@ -1105,6 +1138,35 @@ struct CameraScreen: View {
         .allowsHitTesting(false)
     }
 
+    // MARK: - Photo capture (routes selfie flash through screen illumination)
+
+    private func triggerPhotoCapture() {
+        if recorder.isFrontCamera && recorder.frontFlashEnabled {
+            performFrontFlashCapture()
+        } else {
+            recorder.capturePhoto()
+        }
+    }
+
+    private func performFrontFlashCapture() {
+        frontFlashSavedBrightness = UIScreen.main.brightness
+        UIScreen.main.brightness = 1.0
+        screenFlashIlluminating = true
+
+        // Give the sensor a beat to re-expose for the much brighter,
+        // screen-lit subject before actually grabbing the frame — firing
+        // instantly would just capture mid-adjustment, half-exposed.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+            recorder.capturePhoto()
+            // Hold the bright screen a moment after the shutter too (avoids
+            // an abrupt cut back to a dark screen), then fade and restore.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                screenFlashIlluminating = false
+                UIScreen.main.brightness = frontFlashSavedBrightness
+            }
+        }
+    }
+
     private func startCountdown() {
         countdownRemaining = settings.countdownTimer.rawValue
         let haptic = UIImpactFeedbackGenerator(style: .heavy)
@@ -1121,7 +1183,7 @@ struct CameraScreen: View {
                 countdownRemaining = 0
                 guard !recorder.isSwitchingCamera else { return }
                 if settings.cameraMode == .photo {
-                    recorder.capturePhoto()
+                    triggerPhotoCapture()
                 } else {
                     startHaptic.impactOccurred()
                     recorder.startRecording()
