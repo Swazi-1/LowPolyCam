@@ -209,6 +209,9 @@ final class CameraRecorder: NSObject, ObservableObject {
     private var audioIn: AVAssetWriterInput?
     private var segmentStart = CMTime.invalid
     private var lastVideoPTS = CMTime.invalid
+    /// Duration of the last appended video sample — used so endSession
+    /// covers the final frame instead of ending at its start PTS.
+    private var lastVideoDuration = CMTime.invalid
     private var recordStartPTS = CMTime.invalid
     // Protected by writerLock (together with writer / videoIn / audioIn /
     // segmentStart / lastVideoPTS / recordStartPTS / segmentStartInFlight).
@@ -216,6 +219,10 @@ final class CameraRecorder: NSObject, ObservableObject {
     // and sessionQueue; previously unprotected → data races under concurrent
     // frame delivery + start/stop.
     private var wantsRecording = false
+    /// After Stop is pressed, keep accepting this many more *video* frames
+    /// so the file includes the moment of the tap (and any frames already
+    /// in the capture pipeline). 0 = not draining / normal record.
+    private var stopDrainFramesRemaining = 0
     // Number of video frames to silently discard right after a *fresh*
     // record start (not segment rotation). Deterministic fallback for the
     // AE/AGC brightness ramp after a format switch. Touched under writerLock.
@@ -1808,6 +1815,11 @@ final class CameraRecorder: NSObject, ObservableObject {
         let transform = Self.transform(width: newPlan.width, height: newPlan.height, isFront: isFrontCamera)
 
         stopRequested = false
+        writerLock.lock()
+        stopDrainFramesRemaining = 0
+        pendingStopToken = 0
+        pendingStopBackgroundTask = .invalid
+        writerLock.unlock()
         recordingSessionToken += 1
         let myToken = recordingSessionToken
 
@@ -1879,15 +1891,14 @@ final class CameraRecorder: NSObject, ObservableObject {
         // *newer* recording has started by the time this actually runs on
         // ioQueue (possible if stop/start are tapped in quick succession,
         // or a prior stop was still finishing up), bail out instead of
-        // tearing down the newer session. Without this, a fast
-        // stop -> start could let the old stop's async work land after the
-        // new recording began, instantly killing it — matching the
-        // "start, stop, start again -> instantly errors/instantly saves a
-        // blank clip" pattern.
+        // tearing down the newer session.
         let myToken = recordingSessionToken
 
         if settings.shutterSoundEnabled { SoundPlayer.play(.stop) }
-        stopRequested = true
+        // Do NOT set stopRequested yet and do NOT tear down the sample-buffer
+        // delegates yet. Frames already in the capture pipeline (and a couple
+        // more after the tap) must still be written so the clip ends at the
+        // stop moment instead of ~1s earlier.
         isRecording = false
         isSaving = true
         audioLevel = 0
@@ -1895,16 +1906,6 @@ final class CameraRecorder: NSObject, ObservableObject {
         notice = message
         refreshFreeSpace()
 
-        // Immediately drop back to low-power idle preview and stop delivering
-        // sample buffers. Also turn stabilisation off so the ISP cools down.
-        sessionQueue.async {
-            self.videoOutput.setSampleBufferDelegate(nil, queue: nil)
-            self.audioOutput.setSampleBufferDelegate(nil, queue: nil)
-            self.applyActiveFormat(forRecording: false)
-            self.applyStabilization()
-        }
-
-        // Relax free-space polling while idle again.
         spaceTimer?.invalidate()
         spaceTimer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in
             self?.refreshFreeSpace()
@@ -1918,10 +1919,55 @@ final class CameraRecorder: NSObject, ObservableObject {
             }
         }
 
+        // Accept a few more video frames (~100–150 ms at 30 fps), then finalize.
+        writerLock.lock()
+        stopDrainFramesRemaining = 4
+        pendingStopToken = myToken
+        pendingStopBackgroundTask = task
+        writerLock.unlock()
+
+        // Safety net: if frames stop arriving (rare), finalize after a short wait.
+        ioQueue.asyncAfter(deadline: .now() + 0.30) { [weak self] in
+            self?.completeStopDrainIfNeeded(reason: "timeout")
+        }
+    }
+
+    /// Session token + background task for the in-flight stop drain.
+    private var pendingStopToken: Int = 0
+    private var pendingStopBackgroundTask: UIBackgroundTaskIdentifier = .invalid
+
+    /// Finalize once drain hits zero (or timeout). Safe to call multiple times.
+    private func completeStopDrainIfNeeded(reason: String) {
+        writerLock.lock()
+        let token = pendingStopToken
+        var task = pendingStopBackgroundTask
+        let shouldRun = stopDrainFramesRemaining == 0 || reason == "timeout"
+        if reason == "timeout" {
+            stopDrainFramesRemaining = 0
+        }
+        // Only one completer wins.
+        guard shouldRun, token != 0, token == recordingSessionToken else {
+            writerLock.unlock()
+            return
+        }
+        pendingStopToken = 0
+        pendingStopBackgroundTask = .invalid
+        wantsRecording = false
+        stopDrainFramesRemaining = 0
+        pendingStartBuffers.removeAll(keepingCapacity: false)
+        writerLock.unlock()
+
+        stopRequested = true
+
+        sessionQueue.async {
+            self.videoOutput.setSampleBufferDelegate(nil, queue: nil)
+            self.audioOutput.setSampleBufferDelegate(nil, queue: nil)
+            self.applyActiveFormat(forRecording: false)
+            self.applyStabilization()
+        }
+
         ioQueue.async {
-            guard myToken == self.recordingSessionToken else {
-                // A newer recording has already started; this stop is
-                // stale, do not touch its writer/state.
+            guard token == self.recordingSessionToken else {
                 DispatchQueue.main.async { self.isSaving = false }
                 if task != .invalid {
                     UIApplication.shared.endBackgroundTask(task)
@@ -1929,10 +1975,6 @@ final class CameraRecorder: NSObject, ObservableObject {
                 }
                 return
             }
-            self.writerLock.lock()
-            self.wantsRecording = false
-            self.pendingStartBuffers.removeAll(keepingCapacity: false)
-            self.writerLock.unlock()
             self.finishSegment {
                 DispatchQueue.main.async { self.isSaving = false }
                 if task != .invalid {
@@ -2090,6 +2132,7 @@ final class CameraRecorder: NSObject, ObservableObject {
             return
         }
         let a = audioIn
+        // lastVideoPTS already includes the last sample's duration (endPTS).
         let end = lastVideoPTS
         let start = segmentStart
         let destination = recordingDestination
@@ -2097,6 +2140,7 @@ final class CameraRecorder: NSObject, ObservableObject {
 
         writer = nil; videoIn = nil; audioIn = nil
         segmentStart = .invalid
+        lastVideoDuration = .invalid
         writerLock.unlock()
 
         guard w.status == .writing else {
@@ -2563,11 +2607,8 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
                        didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
 
+        // Hard stop only after drain finished (finalizeStop sets stopRequested).
         if stopRequested {
-            writerLock.lock()
-            let stillWanted = wantsRecording
-            writerLock.unlock()
-            if stillWanted { DebugLog.write("⚠️ frame dropped: stopRequested=true while wantsRecording=true (race)") }
             return
         }
 
@@ -2580,7 +2621,17 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
         // paths stay consistent and we never leave the lock held across
         // the (potentially blocking) append path.
         writerLock.lock()
-        let currentlyWants = wantsRecording
+        var currentlyWants = wantsRecording
+        var shouldFinalizeAfterAppend = false
+        if isVideo && stopDrainFramesRemaining > 0 {
+            // Keep accepting frames during stop drain.
+            currentlyWants = true
+            stopDrainFramesRemaining -= 1
+            if stopDrainFramesRemaining == 0 {
+                shouldFinalizeAfterAppend = true
+                wantsRecording = false
+            }
+        }
         if !currentlyWants {
             let hasWriter = writer != nil
             writerLock.unlock()
@@ -2656,12 +2707,19 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
                 vIn?.append(sampleBuffer)
                 writerLock.lock()
                 lastVideoPTS = Self.endPTS(for: pts, duration: dur, fps: plan?.frameRate ?? 30)
+                let drainDone = shouldFinalizeAfterAppend
                 writerLock.unlock()
+                if drainDone {
+                    completeStopDrainIfNeeded(reason: "drain")
+                }
             } else {
                 // Prefer a clean drop over blocking the real-time video queue.
                 // Drops still hurt average-fps reporting in Photos, so keep
                 // bitrates conservative on A10 (see Encoder ceilings).
                 countDroppedFrame()
+                if shouldFinalizeAfterAppend {
+                    completeStopDrainIfNeeded(reason: "drain")
+                }
             }
             pushElapsed(pts)
         } else {
