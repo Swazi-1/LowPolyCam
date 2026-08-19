@@ -235,13 +235,10 @@ struct CameraScreen: View {
                 recorder.resumePreviewSession()
             }
         }
-        .onChange(of: showGallery) { isPresented in
-            if isPresented {
-                recorder.pausePreviewSession()
-            } else {
-                recorder.resumePreviewSession()
-            }
-        }
+        // Keep the capture session running under the Clips sheet.
+        // stopRunning/startRunning on A10 costs 2–3s of frozen preview when
+        // the sheet is swipe-dismissed; leaving the session live makes return
+        // instant (same as stock Camera).
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
             if dimmed { leaveDim() }
         }
@@ -500,6 +497,12 @@ struct CameraScreen: View {
                         .font(.system(size: 11, weight: .semibold, design: .monospaced))
                         .foregroundColor(.white.opacity(0.55))
                 }
+
+                // Battery while filming — same indicator as idle HUD.
+                Text("·")
+                    .foregroundColor(Palette.slateLight)
+                    .font(.system(size: 11, weight: .bold))
+                batteryIndicator
 
                 if recorder.droppedFrames > 0 {
                     Text("\(recorder.droppedFrames)d")
@@ -933,6 +936,8 @@ struct CameraScreen: View {
             .frame(width: 82, height: 82)
         }
         .buttonStyle(.plain)
+        // Visual size stays 82; expand the touch target ~14pt each side.
+        .frame(width: 110, height: 110)
         .contentShape(Circle())
         .disabled(recorder.isSaving || recorder.isSwitchingCamera || recorder.isCapturingPhoto)
         .animation(.spring(response: 0.35, dampingFraction: 0.7), value: recorder.isRecording)
