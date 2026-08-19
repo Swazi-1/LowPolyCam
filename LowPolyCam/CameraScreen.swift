@@ -562,25 +562,52 @@ struct CameraScreen: View {
             : settings.accentColor.color
     }
 
-    // MARK: Enhanced Pro Tools Menu
+    // MARK: Pro Tools Menu (redesigned to match Settings' clean list style)
+
+    private func proToolsSectionHeader(_ title: String, icon: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.system(size: 11, weight: .bold))
+                .foregroundColor(settings.accentColor.color)
+            Text(title.uppercased())
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .foregroundColor(.white.opacity(0.55))
+                .tracking(0.6)
+        }
+    }
+
+    private func proToolsChip(label: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: {
+            if settings.hapticFeedbackEnabled { modeHaptic.selectionChanged() }
+            action()
+        }) {
+            Text(label)
+                .font(.system(size: 13, weight: selected ? .semibold : .medium, design: .rounded))
+                .foregroundColor(selected ? .white : .white.opacity(0.85))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(
+                    Capsule()
+                        .fill(selected ? settings.accentColor.color : Color.white.opacity(0.08))
+                )
+        }
+        .buttonStyle(.plain)
+    }
 
     private var proToolsDrawer: some View {
-        VStack(spacing: 16) {
+        VStack(alignment: .leading, spacing: 18) {
             HStack {
-                HStack(spacing: 8) {
-                    Facet(sides: 6, rotation: .pi / 6)
-                        .fill(LinearGradient(colors: [settings.accentColor.bright, settings.accentColor.deep], startPoint: .topLeading, endPoint: .bottomTrailing))
-                        .frame(width: 20, height: 20)
-                        .overlay(
-                            Image(systemName: "slider.horizontal.3")
-                                .font(.system(size: 9, weight: .black))
-                                .foregroundColor(Palette.slateDeep)
-                        )
-
-                    Text("PRO TOOLS")
-                        .font(.system(size: 13, weight: .black, design: .rounded))
+                HStack(spacing: 10) {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(.white)
-                        .tracking(1.2)
+                        .frame(width: 28, height: 28)
+                        .background(settings.accentColor.color)
+                        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+
+                    Text("Pro Tools")
+                        .font(.system(size: 17, weight: .bold, design: .rounded))
+                        .foregroundColor(.white)
                 }
 
                 Spacer()
@@ -590,34 +617,24 @@ struct CameraScreen: View {
                 }) {
                     Image(systemName: "xmark")
                         .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(Palette.slateLight)
+                        .foregroundColor(.white.opacity(0.7))
                         .frame(width: 26, height: 26)
-                        .background(Palette.slate.opacity(0.7))
+                        .background(Color.white.opacity(0.08))
                         .clipShape(Circle())
                 }
                 .buttonStyle(.plain)
             }
 
-            VStack(spacing: 8) {
+            // Exposure
+            VStack(alignment: .leading, spacing: 10) {
+                proToolsSectionHeader("Exposure", icon: "sun.max.fill")
+
                 HStack {
-                    HStack(spacing: 5) {
-                        Image(systemName: "sun.max.fill")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundColor(settings.accentColor.bright)
-                        Text("Exposure (EV)")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundColor(.white.opacity(0.85))
-                    }
+                    Text(String(format: "%@%.1f EV", settings.exposureBias > 0 ? "+" : "", settings.exposureBias))
+                        .font(.system(size: 15, weight: .medium, design: .rounded))
+                        .foregroundColor(settings.exposureBias == 0 ? .white.opacity(0.6) : .white)
 
                     Spacer()
-
-                    Text(String(format: "%@%.1f EV", settings.exposureBias > 0 ? "+" : "", settings.exposureBias))
-                        .font(.system(size: 12, weight: .bold, design: .monospaced))
-                        .foregroundColor(settings.exposureBias == 0 ? .white.opacity(0.7) : settings.accentColor.bright)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(Palette.slate.opacity(0.8))
-                        .clipShape(Capsule())
 
                     if abs(settings.exposureBias) > 0.01 {
                         Button("Reset") {
@@ -626,173 +643,81 @@ struct CameraScreen: View {
                                 recorder.setExposureBias(0.0)
                             }
                         }
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(settings.accentColor.bright)
-                        .padding(.leading, 4)
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundColor(settings.accentColor.color)
                     }
                 }
 
                 Slider(value: $settings.exposureBias, in: -2.0...2.0, step: 0.1)
-                    .tint(settings.accentColor.bright)
+                    .tint(settings.accentColor.color)
                     .onChange(of: settings.exposureBias) { val in
                         recorder.setExposureBias(val)
                     }
             }
-            .padding(12)
-            .background(Palette.slate.opacity(0.45))
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
 
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 5) {
-                    Image(systemName: "paintpalette.fill")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(settings.accentColor.bright)
-                    Text("White Balance")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(.white.opacity(0.85))
-                }
+            Divider().overlay(Color.white.opacity(0.08))
+
+            // White balance
+            VStack(alignment: .leading, spacing: 10) {
+                proToolsSectionHeader("White Balance", icon: "paintpalette.fill")
 
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(WhiteBalancePreset.allCases) { preset in
-                            let isSelected = settings.whiteBalance == preset
-                            Button(action: { settings.whiteBalance = preset }) {
-                                HStack(spacing: 6) {
-                                    Image(systemName: preset.icon)
-                                        .font(.system(size: 11, weight: .bold))
-                                    Text(preset.label)
-                                        .font(.system(size: 12, weight: isSelected ? .bold : .medium))
-                                }
-                                .foregroundColor(isSelected ? Palette.slateDeep : .white.opacity(0.9))
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
-                                .background(
-                                    ZStack {
-                                        if isSelected {
-                                            LinearGradient(colors: [settings.accentColor.bright, settings.accentColor.color], startPoint: .topLeading, endPoint: .bottomTrailing)
-                                        } else {
-                                            Palette.slate.opacity(0.65)
-                                        }
-                                    }
-                                )
-                                .clipShape(Capsule())
-                                .overlay(
-                                    Capsule()
-                                        .stroke(isSelected ? settings.accentColor.bright.opacity(0.7) : Palette.slateLight.opacity(0.25), lineWidth: 0.8)
-                                )
-                                .shadow(color: isSelected ? settings.accentColor.color.opacity(0.4) : .clear, radius: 6, x: 0, y: 2)
+                            proToolsChip(label: preset.label, selected: settings.whiteBalance == preset) {
+                                settings.whiteBalance = preset
+                                recorder.setWhiteBalance(preset)
                             }
-                            .buttonStyle(.plain)
                         }
                     }
-                    .padding(.horizontal, 2)
-                }
-                .onChange(of: settings.whiteBalance) { preset in
-                    recorder.setWhiteBalance(preset)
+                    .padding(.vertical, 2)
                 }
             }
 
-            HStack(spacing: 12) {
-                Button(action: {
-                    // Only toggles the on-screen gauge overlay — motion updates
-                    // themselves keep running regardless, since they also drive
-                    // the orientation used to save photos the right way up.
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
-                        settings.showLevelGauge.toggle()
+            Divider().overlay(Color.white.opacity(0.08))
+
+            // Level meter + countdown
+            VStack(alignment: .leading, spacing: 10) {
+                proToolsSectionHeader("Tools", icon: "wrench.and.screwdriver.fill")
+
+                HStack(spacing: 8) {
+                    proToolsChip(label: "Level Meter", selected: settings.showLevelGauge) {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                            settings.showLevelGauge.toggle()
+                        }
                     }
-                }) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "gyroscope")
-                            .font(.system(size: 13, weight: .bold))
-                        Text("Level Meter")
-                            .font(.system(size: 12, weight: .bold))
-                    }
-                    .foregroundColor(settings.showLevelGauge ? Palette.slateDeep : .white)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-                    .background(
-                        ZStack {
-                            if settings.showLevelGauge {
-                                LinearGradient(colors: [settings.accentColor.bright, settings.accentColor.color], startPoint: .topLeading, endPoint: .bottomTrailing)
-                            } else {
-                                Palette.slate.opacity(0.6)
+
+                    Spacer(minLength: 4)
+
+                    HStack(spacing: 6) {
+                        Text("Timer")
+                            .font(.system(size: 12, weight: .medium, design: .rounded))
+                            .foregroundColor(.white.opacity(0.5))
+
+                        ForEach(CountdownTimer.allCases) { timer in
+                            proToolsChip(label: timer.label, selected: settings.countdownTimer == timer) {
+                                settings.countdownTimer = timer
                             }
                         }
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .stroke(settings.showLevelGauge ? settings.accentColor.bright.opacity(0.7) : Palette.slateLight.opacity(0.3), lineWidth: 0.8)
-                    )
-                    .shadow(color: settings.showLevelGauge ? settings.accentColor.color.opacity(0.35) : .clear, radius: 6)
-                }
-                .buttonStyle(.plain)
-
-                HStack(spacing: 4) {
-                    Image(systemName: "timer")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(settings.accentColor.bright)
-                        .padding(.leading, 6)
-
-                    ForEach(CountdownTimer.allCases) { timer in
-                        let isSelected = settings.countdownTimer == timer
-                        Button(action: { settings.countdownTimer = timer }) {
-                            Text(timer.label)
-                                .font(.system(size: 11, weight: isSelected ? .bold : .medium))
-                                .foregroundColor(isSelected ? Palette.slateDeep : .white.opacity(0.85))
-                                .padding(.horizontal, 9)
-                                .padding(.vertical, 7)
-                                .background(
-                                    ZStack {
-                                        if isSelected {
-                                            LinearGradient(colors: [settings.accentColor.bright, settings.accentColor.color], startPoint: .topLeading, endPoint: .bottomTrailing)
-                                        } else {
-                                            Color.clear
-                                        }
-                                    }
-                                )
-                                .clipShape(Capsule())
-                        }
-                        .buttonStyle(.plain)
                     }
                 }
-                .padding(4)
-                .background(Palette.slate.opacity(0.6))
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .stroke(Palette.slateLight.opacity(0.3), lineWidth: 0.8)
-                )
             }
-
-            // Audio is always recorded — no mute control
         }
-        .padding(14)
+        .padding(16)
         .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Palette.panel.opacity(0.88))
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Palette.panel.opacity(0.92))
                 .background(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .fill(.ultraThinMaterial)
                         .environment(\.colorScheme, .dark)
                 )
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(
-                    LinearGradient(
-                        colors: [
-                            settings.accentColor.bright.opacity(0.5),
-                            Color.white.opacity(0.08),
-                            settings.accentColor.color.opacity(0.25)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    lineWidth: 1.2
-                )
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
         )
-        .shadow(color: .black.opacity(0.55), radius: 28, x: 0, y: 14)
+        .shadow(color: .black.opacity(0.4), radius: 20, x: 0, y: 10)
     }
 
     // MARK: Bottom HUD Bar (Live Zoom Always Visible)
