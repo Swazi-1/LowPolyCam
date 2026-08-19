@@ -804,14 +804,18 @@ enum Encoder {
             }
             let slowMoCeilingKbps: Double
             if fps >= 240 {
-                slowMoCeilingKbps = 20000 * qualityBoost   // up to ~20 Mbps @ High
+                // Was 20000 — still landing at ~210fps of 240 target after
+                // the buffering fix (i.e. encoder-bound, not a transient
+                // stall). Trading some per-frame bit density for the A10
+                // encoder actually keeping up in real time.
+                slowMoCeilingKbps = 14000 * qualityBoost   // up to ~14 Mbps @ High
             } else if res == .p1080 {
                 slowMoCeilingKbps = 18000 * qualityBoost   // up to ~18 Mbps @ High 1080p120
             } else {
                 slowMoCeilingKbps = 10000 * qualityBoost   // up to ~10 Mbps @ High 720p120
             }
             // Floor so even Data Saver is not unusably blocky.
-            let floorKbps: Double = fps >= 240 ? 9000 : (res == .p1080 ? 8000 : 4500)
+            let floorKbps: Double = fps >= 240 ? 7000 : (res == .p1080 ? 8000 : 4500)
             kbps = min(max(kbps, floorKbps), slowMoCeilingKbps)
         }
 
