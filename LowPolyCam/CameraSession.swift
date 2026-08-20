@@ -158,14 +158,8 @@ extension CameraRecorder {
                     self.settings.slowMoFrameRate = fallback
                 }
             }
-            // 240 fps is 720p-only (matches iOS Camera on iPhone).
-            if settings.slowMoFrameRate == .fps240, settings.slowMoResolution == .p1080 {
-                DispatchQueue.main.async { self.settings.slowMoResolution = .p720 }
-                dims = Resolution.p720.captureDimensions
-            } else {
-                dims = settings.slowMoResolution.captureDimensions
-            }
             fullFPS = Double(settings.slowMoFrameRate.value)
+            dims = settings.slowMoResolution.captureDimensions
         } else {
             dims = settings.resolution.captureDimensions
             if let locked = settings.resolution.lockedFrameRate, settings.frameRate != locked {
@@ -497,6 +491,7 @@ extension CameraRecorder {
         guard !isRecording, !isSwitchingCamera else { return }
 
         DispatchQueue.main.async {
+            self.volumeObserver?.ignoreTemporarily(duration: 2.0)
             self.isSwitchingCamera = true
             self.volumeObserver?.ignoreTemporarily(duration: 0.6)
         }
@@ -530,7 +525,7 @@ extension CameraRecorder {
             DispatchQueue.main.async {
                 self.isFrontCamera = (next == .front)
                 self.isSwitchingCamera = false
-                self.volumeObserver?.ignoreTemporarily(duration: 0.4)
+                self.volumeObserver?.ignoreTemporarily(duration: 2.0)
             }
 
             // Capabilities (front may lack 60 fps / slo-mo) update after UI unlocks.
