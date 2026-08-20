@@ -711,13 +711,15 @@ final class CameraRecorder: NSObject, ObservableObject {
         guard let c = connection ?? videoOutput.connection(with: .video) else { return }
         let supported = c.isVideoStabilizationSupported
         if supported {
-            // Stabilisation burns ISP power even on the live preview. Only
-            // enable it while actually recording. Also force off at 4K so the
-            // A10 encoder can keep a true 30 fps without frame drops.
-            let recording = forceRecording ?? isRecording
-            let wantStab = recording
-                && settings.stabilization
+            // Keep stabilisation ON whenever the user has it enabled (Video /
+            // Slow-Mo only), not only while recording. Toggling it at Record
+            // start/stop crops the FOV and looks like a flash/flicker — stock
+            // Camera does not do that. Still force off at 4K (A10 can't hold
+            // 30 fps with stab) and in Photo mode (still path is separate).
+            _ = forceRecording // retained for call-site compatibility
+            let wantStab = settings.stabilization
                 && settings.resolution != .p2160
+                && settings.cameraMode != .photo
             c.preferredVideoStabilizationMode = wantStab ? .auto : .off
         }
         DispatchQueue.main.async { self.stabilizationSupported = supported }
@@ -747,13 +749,14 @@ final class CameraRecorder: NSObject, ObservableObject {
     }
 
     /// Applies the active camera format + frame rate.
-    /// - Parameter forRecording: when false (idle preview), force a low-power
-    ///   sensor path so the phone stays cool like the stock Camera app.
-    ///   High rates / high res are only engaged while actually recording.
-    private func applyActiveFormat(forRecording: Bool = false, forceLowestIdlePreview: Bool = false) {
+    /// Returns `true` if the sensor format/fps actually changed (caller may
+    /// need to wait for AE). Returns `false` when it was already correct —
+    /// that path is what keeps Record start/stop flicker-free.
+    @discardableResult
+    private func applyActiveFormat(forRecording: Bool = false, forceLowestIdlePreview: Bool = false) -> Bool {
         DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
         ensureCorrectCameraDevice(for: settings.cameraMode)
-        guard let device = cameraInput?.device else { return }
+        guard let device = cameraInput?.device else { return false }
 
         let isSlow = settings.cameraMode == .slowMo && isSlowMoSupportedOnCurrentLens
         var dims: (w: Int, h: Int)
@@ -779,21 +782,24 @@ final class CameraRecorder: NSObject, ObservableObject {
             fullFPS = Double((settings.resolution.lockedFrameRate ?? settings.frameRate).value)
         }
 
-        // Idle preview: force a low-power sensor path. Biggest idle heat on A10
-        // came from staying at the *recording* resolution (e.g. 4K) and >30 fps.
-        // Cap both while not recording. Longevity Mode is stricter still.
+        // Idle preview: match the recording resolution + fps whenever possible
+        // so pressing Record / Stop does not reconfigure the sensor (that was
+        // the ~0.5s freeze + flicker). Only Longevity Mode / thermal throttle
+        // still force a cooler lower-res idle path.
         let targetFPS: Double
         if forRecording {
             targetFPS = fullFPS
-        } else {
-            let idleCapH = (forceLowestIdlePreview || settings.longevityMode) ? 720 : 1080
+        } else if forceLowestIdlePreview || settings.longevityMode {
+            let idleCapH = 720
             if dims.h > idleCapH {
-                dims = idleCapH >= 1080
-                    ? Resolution.p1080.captureDimensions
-                    : Resolution.p720.captureDimensions
+                dims = Resolution.p720.captureDimensions
             }
-            let idleFPSCap: Double = forceLowestIdlePreview ? 15.0 : (settings.longevityMode ? 24.0 : 30.0)
+            let idleFPSCap: Double = forceLowestIdlePreview ? 15.0 : 24.0
             targetFPS = min(fullFPS, idleFPSCap)
+        } else {
+            // Same dims + fps as recording → applyActiveFormat is a no-op when
+            // starting/stopping (lastAppliedFormatKey matches).
+            targetFPS = fullFPS
         }
 
         // Route format selection through the mode-specific policy so Video,
@@ -818,6 +824,7 @@ final class CameraRecorder: NSObject, ObservableObject {
             if isSlow, let fallbackFormat = CameraFormatSelector.bestSlowMoFormat(for: device, fps: fullFPS) {
                 let applyFPS = forRecording ? fullFPS : min(fullFPS, 30.0)
                 let newKey = Self.formatKey(device: device, format: fallbackFormat, fps: applyFPS)
+                var changed = false
                 if newKey != lastAppliedFormatKey {
                     applyUnifiedHardwareConfiguration(to: device, format: fallbackFormat, targetFPS: applyFPS)
                     DispatchQueue.main.async {
@@ -828,26 +835,30 @@ final class CameraRecorder: NSObject, ObservableObject {
                     }
                     refreshZoomLimits()
                     lastAppliedFormatKey = newKey
+                    changed = true
                 }
                 configurePhotoOutput()
                 DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
-                return
+                return changed
             }
 
             DispatchQueue.main.async {
                 self.notice = "Format adjusted for this lens"
             }
-            return
+            return false
         }
 
         let newKey = Self.formatKey(device: device, format: finalFormat, fps: targetFPS)
+        var changed = false
         if newKey != lastAppliedFormatKey {
             applyUnifiedHardwareConfiguration(to: device, format: finalFormat, targetFPS: targetFPS)
             refreshZoomLimits()
             lastAppliedFormatKey = newKey
+            changed = true
         }
         configurePhotoOutput()
         DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
+        return changed
     }
 
     private func applyUnifiedHardwareConfiguration(to device: AVCaptureDevice, format: AVCaptureDevice.Format, targetFPS: Double) {
@@ -1748,14 +1759,13 @@ final class CameraRecorder: NSObject, ObservableObject {
         audioLevel = 0
         if settings.shutterSoundEnabled { SoundPlayer.play(.start) }
 
-        // Format + zoom preserve first, then stab, then publish isRecording.
-        // Publishing isRecording before the format switch made the HUD go
-        // "live" while the preview was still jumping.
+        // Format first (usually a no-op now — idle already matches record),
+        // then publish isRecording. Skip AE wait when the sensor did not
+        // reconfigure so Record feels instant like the stock Camera app.
         sessionQueue.async {
             guard self.recordingSessionToken == myToken, !self.stopRequested else { return }
-            self.applyActiveFormat(forRecording: true)
+            let formatChanged = self.applyActiveFormat(forRecording: true)
             guard self.recordingSessionToken == myToken, !self.stopRequested else { return }
-            // Stab after format so framing only shifts once.
             self.applyStabilization(forceRecording: true)
 
             DispatchQueue.main.async {
@@ -1775,9 +1785,17 @@ final class CameraRecorder: NSObject, ObservableObject {
                     self.clipTransform = transform
                     self.lastElapsedPush = .invalid
                     self.droppedFrameCount = 0
-                    let fps = max(Double(newPlan.frameRate), 1)
-                    let rawWarmupFrames = Int((Self.recordStartWarmupSeconds * fps).rounded(.up))
-                    let warmup = min(max(rawWarmupFrames, Self.recordStartWarmupFrameFloor), Self.recordStartWarmupFrameCeiling)
+                    // Warmup only needed after a real format switch (AE ramp).
+                    // When idle already matched record format, start writing
+                    // immediately — no discarded frames / no freeze.
+                    let warmup: Int
+                    if formatChanged {
+                        let fps = max(Double(newPlan.frameRate), 1)
+                        let rawWarmupFrames = Int((Self.recordStartWarmupSeconds * fps).rounded(.up))
+                        warmup = min(max(rawWarmupFrames, Self.recordStartWarmupFrameFloor), Self.recordStartWarmupFrameCeiling)
+                    } else {
+                        warmup = 0
+                    }
                     self.writerLock.lock()
                     self.recordStartPTS = .invalid
                     self.segmentStartInFlight = false
@@ -1789,7 +1807,7 @@ final class CameraRecorder: NSObject, ObservableObject {
                 }
             }
 
-            if let device = self.cameraInput?.device {
+            if formatChanged, let device = self.cameraInput?.device {
                 self.waitForExposureSettled(device: device, timeout: 0.22, completion: beginCapture)
             } else {
                 beginCapture()
