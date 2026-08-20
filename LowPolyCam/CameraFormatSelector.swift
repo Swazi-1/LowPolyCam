@@ -125,7 +125,7 @@ enum CameraFormatSelector {
         var scored: [(format: AVCaptureDevice.Format, score: Int)] = []
         for format in formats {
             let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
-            // Prefer formats that can cover the target. Tiny targets (144p/320p)
+            // Prefer formats that can cover the target. Tiny targets (144p/360p)
             // rarely exist natively — we still pick the smallest available and
             // the encoder scales down via AVVideoWidth/Height.
             guard Int(dims.width) >= width, Int(dims.height) >= height else { continue }
@@ -135,6 +135,15 @@ enum CameraFormatSelector {
             }) else { continue }
 
             let areaDelta = Int(dims.width) * Int(dims.height) - width * height
+
+            // The source format controls the preview crop too. A 4:3 format
+            // can have a smaller area delta than 1280x720 for 480p, but it
+            // visibly zooms a portrait aspect-fill preview and then has to be
+            // stretched into a 16:9 file. Prefer matching the requested
+            // aspect ratio first so low tiers keep the stock-Camera-like FOV.
+            let targetAspect = Double(width) / Double(height)
+            let formatAspect = Double(dims.width) / Double(dims.height)
+            let aspectScore = Int((abs(formatAspect - targetAspect) * 100_000_000).rounded())
 
             let rateDelta = matchingRange.maxFrameRate - fps
             let rateScore: Int
@@ -157,7 +166,7 @@ enum CameraFormatSelector {
             let minDurDelta = abs(CMTimeGetSeconds(matchingRange.minFrameDuration) - CMTimeGetSeconds(idealDur))
             let durScore = Int((minDurDelta * 50_000).rounded())
 
-            let score = areaDelta + rateScore + binnedScore + colorScore + durScore
+            let score = areaDelta + aspectScore + rateScore + binnedScore + colorScore + durScore
             scored.append((format, score))
         }
         return scored.sorted { $0.score < $1.score }.map { $0.format }
@@ -179,5 +188,3 @@ enum CameraFormatSelector {
         return value > 0 ? value : 1
     }
 }
-
-
