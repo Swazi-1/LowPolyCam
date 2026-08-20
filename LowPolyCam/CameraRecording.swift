@@ -447,32 +447,22 @@ extension CameraRecorder {
         lastVideoDuration = .invalid
         writerLock.unlock()
 
-        // Salvage path: if writer already failed/cancelled but the file has
-        // real bytes, still try to deliver it (intermittent A10 encoder failures
-        // often leave a playable partial MOV).
+        // Incomplete MOVs (writer died mid-take without finishWriting) are NOT
+        // valid for Photos — PHPhotosError 3302. Only delete + message.
         func fileByteSize(_ u: URL) -> Int {
             (try? u.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
         }
-        func salvageOrFail(_ reason: String) {
+        func failIncomplete(_ reason: String) {
             let bytes = fileByteSize(url)
-            DebugLog.write("❌ finishSegment \(reason) fileBytes=\(bytes)")
+            DebugLog.write("❌ finishSegment \(reason) fileBytes=\(bytes) (incomplete — not sending to Photos)")
             UserDefaults.standard.removeObject(forKey: Self.inProgressKey)
             UserDefaults.standard.removeObject(forKey: Self.inProgressDestinationKey)
-            if bytes > 50_000 {
-                // ≥ ~50 KB — treat as a real clip and deliver.
-                self.generateThumbnail(for: url)
-                self.deliver(url, to: destination) {
-                    DispatchQueue.main.async { self.refreshFreeSpace() }
-                    completion?()
-                }
-            } else {
-                try? FileManager.default.removeItem(at: url)
-                DispatchQueue.main.async {
-                    self.notice = "Clip failed to save"
-                    self.refreshFreeSpace()
-                }
-                completion?()
+            try? FileManager.default.removeItem(at: url)
+            DispatchQueue.main.async {
+                self.notice = "Clip failed to save"
+                self.refreshFreeSpace()
             }
+            completion?()
         }
 
         guard w.status == .writing else {
@@ -483,14 +473,14 @@ extension CameraRecorder {
             } else {
                 w.cancelWriting()
             }
-            salvageOrFail("writer not writing: \(err)")
+            failIncomplete("writer not writing: \(err)")
             return
         }
 
         if !hadFrames {
             DebugLog.write("⚠️ finishSegment: no video frames written")
             w.cancelWriting()
-            salvageOrFail("no frames")
+            failIncomplete("no frames")
             return
         }
 
@@ -510,27 +500,16 @@ extension CameraRecorder {
                 return
             }
 
-            // finishWriting reported failure — salvage if the file is usable.
+            // finishWriting failed — file is not a valid Photos asset (3302).
             let err = w.error?.localizedDescription ?? "status=\(w.status.rawValue)"
             let bytes = fileByteSize(url)
             DebugLog.write("❌ finishWriting not completed: \(err) fileBytes=\(bytes)")
-            if bytes > 50_000 {
-                self.generateThumbnail(for: url)
-                self.deliver(url, to: destination) {
-                    DispatchQueue.main.async {
-                        self.notice = "Saved (recovered)"
-                        self.refreshFreeSpace()
-                    }
-                    completion?()
-                }
-            } else {
-                try? FileManager.default.removeItem(at: url)
-                DispatchQueue.main.async {
-                    self.notice = "Clip failed to save"
-                    self.refreshFreeSpace()
-                }
-                completion?()
+            try? FileManager.default.removeItem(at: url)
+            DispatchQueue.main.async {
+                self.notice = "Clip failed to save"
+                self.refreshFreeSpace()
             }
+            completion?()
         }
     }
 
