@@ -594,6 +594,7 @@ struct SettingsScreen: View {
             assistLevel
             assistAutoDim
             assistLongevity
+            assistRecordingStats
         }
     }
 
@@ -603,6 +604,7 @@ struct SettingsScreen: View {
             assistGrid
             assistLevel
             assistLongevity
+            assistRecordingStats
         }
     }
 
@@ -643,6 +645,15 @@ struct SettingsScreen: View {
     private var assistAutoDim: some View {
         Toggle(isOn: $settings.autoDimOnRecord) {
             Label("Auto-dim when filming", systemImage: "moon.stars.fill")
+                .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
+        }
+    }
+
+    /// 📊 Opt-in live stats readout (measured fps / bitrate) shown in the
+    /// recording HUD. Off by default — purely additive to the settings list.
+    private var assistRecordingStats: some View {
+        Toggle(isOn: $settings.showRecordingStats) {
+            Label("Live recording stats", systemImage: "waveform.path.ecg")
                 .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
         }
     }
