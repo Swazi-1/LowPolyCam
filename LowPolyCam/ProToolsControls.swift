@@ -11,28 +11,32 @@ import SwiftUI
 // the spacing/fonts/haptics of its neighbours.
 //
 // Now a Pro Tools control is just one `ProToolControl` value describing
-// *what* it is (a toggle, a slider, a set of chips, ...) and *where its
-// data comes from* (a closure into `AppSettings`/`CameraRecorder`). The
-// drawer just lays out a list of these. All the shared chrome (section
-// label styling, haptics-on-tap, spacing, chip look) lives in one renderer
-// here instead of being re-typed per control.
+// *what* it is (a toggle, a slider, a set of chips, a tap-to-open picker...)
+// and *where its data comes from* (a closure into `AppSettings`/
+// `CameraRecorder`). The drawer just lays out a list of these. All the
+// shared chrome — icon badge, row separators, haptics-on-tap, spacing —
+// lives in one renderer here instead of being re-typed per control. The
+// icon-badge look intentionally matches `SettingsLabelStyle` in
+// SettingsScreen.swift so Pro Tools feels like the same app as Settings,
+// not a bare floating menu.
 //
 // HOW TO ADD A NEW PRO TOOLS CONTROL
 // -----------------------------------
 // 1. If it needs a new setting, add it to `AppSettings` in Settings.swift
 //    (see the "HOW TO ADD A NEW SETTING" comment there).
-// 2. Add ONE case to the `proToolsControls` array below (in CameraScreen.swift,
+// 2. Add ONE case to the `proToolsDrawerControls` array below (in CameraScreen.swift,
 //    see `proToolsDrawerControls`), using whichever `ProToolControl` case
-//    fits: `.toggle`, `.chips`, `.slider`, or `.custom` for anything bespoke.
+//    fits: `.toggle`, `.chips`, `.slider`, `.navigation`, or `.custom` for
+//    anything bespoke.
 // 3. That's it — the drawer renders it automatically with the right
-//    spacing, label styling, and haptic feedback.
+//    spacing, icon badge, label styling, and haptic feedback.
 
 /// One control inside the Pro Tools drawer. Each case carries just the data
 /// needed to render + wire up that kind of control; the drawer never needs
 /// to know about specific settings by name.
 enum ProToolControl: Identifiable {
 
-    /// A simple on/off row with a title and a trailing switch.
+    /// A simple on/off row with an icon, title, and a trailing switch.
     case toggle(ToggleSpec)
 
     /// A horizontal row of selectable chips (e.g. Timer: Off / 3s / 10s).
@@ -41,7 +45,12 @@ enum ProToolControl: Identifiable {
     /// A labeled slider with a live value readout and optional reset button.
     case slider(SliderSpec)
 
-    /// Escape hatch for anything that doesn't fit the three shapes above.
+    /// A row that opens a separate full sheet to pick from (e.g. White
+    /// balance). Shows an icon, title, the current value, and a chevron —
+    /// tapping opens whatever sheet the drawer wires up via `action`.
+    case navigation(NavigationSpec)
+
+    /// Escape hatch for anything that doesn't fit the shapes above.
     /// Prefer the typed cases where possible so new controls stay
     /// consistent; reach for `.custom` only for one-off layouts.
     case custom(id: String, AnyView)
@@ -51,20 +60,23 @@ enum ProToolControl: Identifiable {
         case .toggle(let spec): return spec.id
         case .chips(let spec): return spec.id
         case .slider(let spec): return spec.id
+        case .navigation(let spec): return spec.id
         case .custom(let id, _): return id
         }
     }
 
     struct ToggleSpec {
         let id: String
+        let icon: String
         let title: String
         let isOn: Binding<Bool>
         /// Called after the toggle changes, for side effects like
         /// `recorder.refreshMotionUpdateRate()`. Optional.
         var onChange: ((Bool) -> Void)? = nil
 
-        init(id: String, title: String, isOn: Binding<Bool>, onChange: ((Bool) -> Void)? = nil) {
+        init(id: String, icon: String, title: String, isOn: Binding<Bool>, onChange: ((Bool) -> Void)? = nil) {
             self.id = id
+            self.icon = icon
             self.title = title
             self.isOn = isOn
             self.onChange = onChange
@@ -73,6 +85,7 @@ enum ProToolControl: Identifiable {
 
     struct ChipsSpec {
         let id: String
+        let icon: String
         let title: String
         let items: [Item]
         /// Chips wider than this many items scroll horizontally instead of wrapping.
@@ -88,6 +101,7 @@ enum ProToolControl: Identifiable {
 
     struct SliderSpec {
         let id: String
+        let icon: String
         let title: String
         let value: Binding<Float>
         let range: ClosedRange<Float>
@@ -98,14 +112,24 @@ enum ProToolControl: Identifiable {
         /// `recorder.setExposureBias(val)`. Optional.
         var onChange: ((Float) -> Void)? = nil
         /// Value considered "default" — when the slider differs from it,
-        /// a Reset button appears.
+        /// a reset button appears next to the header instead of crowding the track.
         var defaultValue: Float = 0
+    }
+
+    struct NavigationSpec {
+        let id: String
+        let icon: String
+        let title: String
+        /// Current selection, shown trailing (e.g. "Auto").
+        let valueLabel: String
+        let action: () -> Void
     }
 }
 
-/// Renders a list of `ProToolControl`s with the drawer's shared chrome.
-/// This is the one place that knows how each control kind should look —
-/// individual controls never re-implement fonts/spacing/haptics themselves.
+/// Renders a list of `ProToolControl`s with the drawer's shared chrome:
+/// a leading icon badge (matches Settings), consistent row height, and a
+/// hairline separator between rows so the drawer reads as structured rows
+/// instead of loose floating text.
 struct ProToolsControlList: View {
     let controls: [ProToolControl]
     let accentColor: Color
@@ -114,18 +138,48 @@ struct ProToolsControlList: View {
     @State private var chipHaptic = UISelectionFeedbackGenerator()
 
     var body: some View {
-        ForEach(controls) { control in
-            switch control {
-            case .toggle(let spec):
-                ProToolsToggleRow(spec: spec, accentColor: accentColor)
-            case .chips(let spec):
-                ProToolsChipsRow(spec: spec, accentColor: accentColor, hapticsEnabled: hapticsEnabled, haptic: chipHaptic)
-            case .slider(let spec):
-                ProToolsSliderRow(spec: spec, accentColor: accentColor)
-            case .custom(_, let view):
-                view
+        VStack(spacing: 0) {
+            ForEach(Array(controls.enumerated()), id: \.element.id) { index, control in
+                Group {
+                    switch control {
+                    case .toggle(let spec):
+                        ProToolsToggleRow(spec: spec, accentColor: accentColor)
+                    case .chips(let spec):
+                        ProToolsChipsRow(spec: spec, accentColor: accentColor, hapticsEnabled: hapticsEnabled, haptic: chipHaptic)
+                    case .slider(let spec):
+                        ProToolsSliderRow(spec: spec, accentColor: accentColor)
+                    case .navigation(let spec):
+                        ProToolsNavigationRow(spec: spec, accentColor: accentColor)
+                    case .custom(_, let view):
+                        view
+                    }
+                }
+                .padding(.vertical, 12)
+
+                if index < controls.count - 1 {
+                    Divider().overlay(Color.white.opacity(0.08))
+                }
             }
         }
+    }
+}
+
+/// The shared icon badge used by every row — same 28pt rounded-square look
+/// as `SettingsLabelStyle`, so Pro Tools rows read as the same visual
+/// language as the Settings screen.
+private struct ProToolsIconBadge: View {
+    let icon: String
+    let accentColor: Color
+
+    var body: some View {
+        Image(systemName: icon)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundColor(.white)
+            .frame(width: 28, height: 28)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(accentColor)
+            )
     }
 }
 
@@ -134,10 +188,11 @@ private struct ProToolsToggleRow: View {
     let accentColor: Color
 
     var body: some View {
-        HStack {
+        HStack(spacing: 12) {
+            ProToolsIconBadge(icon: spec.icon, accentColor: accentColor)
             Text(spec.title)
-                .font(.system(size: 13, weight: .semibold, design: .rounded))
-                .foregroundColor(.white.opacity(0.9))
+                .font(.system(size: 15, weight: .medium, design: .rounded))
+                .foregroundColor(.white.opacity(0.92))
             Spacer()
             Toggle("", isOn: Binding(
                 get: { spec.isOn.wrappedValue },
@@ -159,10 +214,14 @@ private struct ProToolsChipsRow: View {
     let haptic: UISelectionFeedbackGenerator
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(spec.title)
-                .font(.system(size: 12, weight: .semibold, design: .rounded))
-                .foregroundColor(.white.opacity(0.55))
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                ProToolsIconBadge(icon: spec.icon, accentColor: accentColor)
+                Text(spec.title)
+                    .font(.system(size: 15, weight: .medium, design: .rounded))
+                    .foregroundColor(.white.opacity(0.92))
+                Spacer()
+            }
 
             let chips = HStack(spacing: 8) {
                 ForEach(spec.items) { item in
@@ -170,6 +229,7 @@ private struct ProToolsChipsRow: View {
                 }
                 if !spec.scrollsHorizontally { Spacer(minLength: 0) }
             }
+            .padding(.leading, 40) // aligns under the title, past the icon badge
 
             if spec.scrollsHorizontally {
                 ScrollView(.horizontal, showsIndicators: false) { chips }
@@ -200,41 +260,73 @@ private struct ProToolsChipsRow: View {
     }
 }
 
+/// Settings-inspired layout: icon + title + live value on one header line,
+/// with the slider indented underneath it (instead of a bare track sitting
+/// in empty space, which read as "unfinished" before).
 private struct ProToolsSliderRow: View {
     let spec: ProToolControl.SliderSpec
     let accentColor: Color
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                ProToolsIconBadge(icon: spec.icon, accentColor: accentColor)
                 Text(spec.title)
-                    .font(.system(size: 12, weight: .semibold, design: .rounded))
-                    .foregroundColor(.white.opacity(0.55))
+                    .font(.system(size: 15, weight: .medium, design: .rounded))
+                    .foregroundColor(.white.opacity(0.92))
                 Spacer()
                 Text(spec.valueLabel(spec.value.wrappedValue))
                     .font(.system(size: 13, weight: .bold, design: .rounded))
-                    .foregroundColor(.white.opacity(0.9))
-            }
-            HStack(spacing: 8) {
-                Slider(value: spec.value, in: spec.range, step: spec.step)
-                    .tint(accentColor)
-                    .onChange(of: spec.value.wrappedValue) { val in
-                        spec.onChange?(val)
-                    }
+                    .foregroundColor(accentColor)
+                    .monospacedDigit()
                 if abs(spec.value.wrappedValue - spec.defaultValue) > 0.01 {
-                    Button("Reset") {
+                    Button(action: {
                         spec.value.wrappedValue = spec.defaultValue
                         spec.onChange?(spec.defaultValue)
+                    }) {
+                        Image(systemName: "arrow.counterclockwise")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(.white.opacity(0.75))
+                            .frame(width: 22, height: 22)
+                            .background(Circle().fill(Palette.slateMid))
                     }
-                    .font(.system(size: 12, weight: .bold, design: .rounded))
-                    .foregroundColor(.white.opacity(0.85))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(Palette.slateMid)
-                    .clipShape(Capsule())
                     .buttonStyle(.plain)
                 }
             }
+            Slider(value: spec.value, in: spec.range, step: spec.step)
+                .tint(accentColor)
+                .padding(.leading, 40) // aligns under the title, past the icon badge
+                .onChange(of: spec.value.wrappedValue) { val in
+                    spec.onChange?(val)
+                }
         }
+    }
+}
+
+/// A row that opens a separate sheet (e.g. White balance). Mirrors the
+/// icon-badge + title + trailing-value + chevron pattern used by the
+/// Quick Presets entry row in SettingsScreen.swift.
+private struct ProToolsNavigationRow: View {
+    let spec: ProToolControl.NavigationSpec
+    let accentColor: Color
+
+    var body: some View {
+        Button(action: spec.action) {
+            HStack(spacing: 12) {
+                ProToolsIconBadge(icon: spec.icon, accentColor: accentColor)
+                Text(spec.title)
+                    .font(.system(size: 15, weight: .medium, design: .rounded))
+                    .foregroundColor(.white.opacity(0.92))
+                Spacer()
+                Text(spec.valueLabel)
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundColor(.white.opacity(0.55))
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.35))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
