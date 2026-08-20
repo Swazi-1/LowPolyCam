@@ -440,10 +440,13 @@ final class CameraRecorder: NSObject, ObservableObject {
     func startMotionUpdates() {
         guard motionManager.isDeviceMotionAvailable else { return }
         lastRawRollAngle = nil
-        // Adaptive rate: 6 Hz only when the level-gauge UI is visible.
-        // Otherwise 2 Hz is enough for orientation (photo upright + UI rotation)
-        // and cuts CoreMotion power noticeably on A10 while idle.
-        let hz: Double = settings.showLevelGauge ? 6.0 : 2.0
+        // Adaptive rate: full rate only when the level-gauge UI is visible;
+        // otherwise a slow trickle is enough for orientation (photo upright
+        // + UI rotation). Longevity Mode trims both further — CoreMotion
+        // polling is a small but constant power draw for as long as the
+        // camera is open. See PerformanceProfile.motionUpdateHz.
+        let hz = PerformanceProfile.current(settings: settings, thermalState: thermalState)
+            .motionUpdateHz(gaugeVisible: settings.showLevelGauge)
         motionManager.deviceMotionUpdateInterval = 1.0 / hz
         motionManager.startDeviceMotionUpdates(using: .xArbitraryZVertical, to: .main) { [weak self] motion, _ in
             guard let self = self, let motion = motion else { return }
@@ -496,10 +499,12 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
     }
 
-    /// Call when the level-gauge toggle changes so CoreMotion rate tracks UI.
+    /// Call when the level-gauge toggle (or Longevity Mode) changes so
+    /// CoreMotion rate tracks the UI. See PerformanceProfile.motionUpdateHz.
     func refreshMotionUpdateRate() {
         guard motionManager.isDeviceMotionAvailable else { return }
-        let hz: Double = settings.showLevelGauge ? 6.0 : 2.0
+        let hz = PerformanceProfile.current(settings: settings, thermalState: thermalState)
+            .motionUpdateHz(gaugeVisible: settings.showLevelGauge)
         motionManager.deviceMotionUpdateInterval = 1.0 / hz
     }
 
@@ -629,8 +634,11 @@ final class CameraRecorder: NSObject, ObservableObject {
         refreshTorchState()
     }
 
-    /// Re-apply the low-power idle format (e.g. after toggling Longevity Mode).
+    /// Re-apply every Longevity-Mode-sensitive live setting (idle preview
+    /// format + CoreMotion rate) — call after toggling Longevity Mode.
+    /// See PerformanceProfile.swift.
     func refreshIdleFormatIfNeeded() {
+        refreshMotionUpdateRate()
         guard !isRecording else { return }
         sessionQueue.async {
             self.applyActiveFormat(forRecording: false)
