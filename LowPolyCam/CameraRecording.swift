@@ -91,6 +91,17 @@ extension CameraRecorder {
                 guard self.recordingSessionToken == myToken, !self.stopRequested else { return }
                 self.isRecording = true
                 UIApplication.shared.isIdleTimerDisabled = true
+                self.recordWallStart = Date()
+                self.recordElapsedTimer?.invalidate()
+                let token = myToken
+                self.recordElapsedTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+                    guard let self = self, self.isRecording, self.recordingSessionToken == token,
+                          let start = self.recordWallStart else { return }
+                    self.elapsed = Date().timeIntervalSince(start)
+                }
+                if let timer = self.recordElapsedTimer {
+                    RunLoop.main.add(timer, forMode: .common)
+                }
             }
 
             let beginCapture: () -> Void = {
@@ -145,6 +156,9 @@ extension CameraRecorder {
         // frame under the finger at Stop) are appended before we finalize.
         isRecording = false
         isSaving = true
+        recordElapsedTimer?.invalidate()
+        recordElapsedTimer = nil
+        recordWallStart = nil
         audioLevel = 0
         UIApplication.shared.isIdleTimerDisabled = false
         notice = message
