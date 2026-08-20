@@ -19,6 +19,11 @@ final class CameraRecorder: NSObject, ObservableObject {
     static let recordStartWarmupFrameCeiling = VideoRecordingSystem.recordStartWarmupFrameCeiling
     static let inProgressKey = "inProgressClipName"
 
+    // Used by the stop-recording flow in CameraRecording.swift to guard
+    // against a stale background task finishing after a newer one started.
+    var pendingStopToken: Int = 0
+    var pendingStopBackgroundTask: UIBackgroundTaskIdentifier = .invalid
+
     // MARK: Published state
 
     @Published var isRecording = false
