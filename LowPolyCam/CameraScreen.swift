@@ -10,6 +10,7 @@ struct CameraScreen: View {
     @State private var showSettings = false
     @State private var showPlayer = false
     @State private var showProMenu = false
+    @State private var showWhiteBalanceSheet = false
     @State private var showGallery = false
     @State private var dimmed = false
     @State private var savedBrightness: CGFloat = UIScreen.main.brightness
@@ -157,8 +158,10 @@ struct CameraScreen: View {
                         Spacer(minLength: 0)
                         proToolsDrawer
                             .padding(.horizontal, 14)
-                            // Sit above the bottom HUD (zoom + mode + shutter ~150pt)
-                            .padding(.bottom, 150)
+                            // Sit low, overlapping the shutter area — the scrim
+                            // above already blocks taps to the HUD underneath
+                            // while open, so this is purely about thumb reach.
+                            .padding(.bottom, 40)
                     }
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                     .zIndex(20)
@@ -633,6 +636,7 @@ struct CameraScreen: View {
         [
             .chips(ProToolControl.ChipsSpec(
                 id: "timer",
+                icon: "timer",
                 title: "Timer",
                 items: CountdownTimer.allCases.map { timer in
                     ProToolControl.ChipsSpec.Item(
@@ -645,12 +649,14 @@ struct CameraScreen: View {
             )),
             .toggle(ProToolControl.ToggleSpec(
                 id: "levelMeter",
+                icon: "gyroscope",
                 title: "Level meter",
                 isOn: $settings.showLevelGauge,
                 onChange: { _ in recorder.refreshMotionUpdateRate() }
             )),
             .slider(ProToolControl.SliderSpec(
                 id: "exposure",
+                icon: "plusminus.circle.fill",
                 title: "Exposure",
                 value: $settings.exposureBias,
                 range: -2.0...2.0,
@@ -659,31 +665,31 @@ struct CameraScreen: View {
                 onChange: { recorder.setExposureBias($0) },
                 defaultValue: 0
             )),
-            .chips(ProToolControl.ChipsSpec(
+            .navigation(ProToolControl.NavigationSpec(
                 id: "whiteBalance",
+                icon: settings.whiteBalance.icon,
                 title: "White balance",
-                items: WhiteBalancePreset.allCases.map { preset in
-                    ProToolControl.ChipsSpec.Item(
-                        id: preset.rawValue,
-                        label: preset.label,
-                        selected: settings.whiteBalance == preset,
-                        action: {
-                            settings.whiteBalance = preset
-                            recorder.setWhiteBalance(preset)
-                        }
-                    )
-                },
-                scrollsHorizontally: true
+                valueLabel: settings.whiteBalance.label,
+                action: {
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
+                        showWhiteBalanceSheet = true
+                    }
+                }
             ))
         ]
     }
 
     private var proToolsDrawer: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text("Shoot")
-                    .font(.system(size: 16, weight: .bold, design: .rounded))
-                    .foregroundColor(.white)
+                HStack(spacing: 8) {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(settings.accentColor.color)
+                    Text("Pro Tools")
+                        .font(.system(size: 16, weight: .bold, design: .rounded))
+                        .foregroundColor(.white)
+                }
                 Spacer()
                 Button(action: {
                     withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) { showProMenu = false }
@@ -697,12 +703,18 @@ struct CameraScreen: View {
                 }
                 .buttonStyle(.plain)
             }
+            .padding(.bottom, 6)
 
-            ProToolsControlList(
-                controls: proToolsDrawerControls,
-                accentColor: settings.accentColor.color,
-                hapticsEnabled: settings.hapticFeedbackEnabled
-            )
+            // Capped height + internal scroll so adding more controls later
+            // can never push the drawer (or the close button) off-screen.
+            ScrollView(.vertical, showsIndicators: false) {
+                ProToolsControlList(
+                    controls: proToolsDrawerControls,
+                    accentColor: settings.accentColor.color,
+                    hapticsEnabled: settings.hapticFeedbackEnabled
+                )
+            }
+            .frame(maxHeight: min(UIScreen.main.bounds.height * 0.42, 340))
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 14)
@@ -716,6 +728,63 @@ struct CameraScreen: View {
         )
         .compositingGroup()
         .shadow(color: .black.opacity(0.4), radius: 10, x: 0, y: 4)
+        .sheet(isPresented: $showWhiteBalanceSheet) {
+            whiteBalanceSheet
+        }
+    }
+
+    // MARK: White Balance sheet
+    //
+    // Same "icon badge + title + subtitle + chevron" list pattern as Quick
+    // Presets in SettingsScreen.swift, so picking a white balance preset
+    // feels like the rest of the app instead of a one-off row of chips.
+    private var whiteBalanceSheet: some View {
+        NavigationView {
+            List {
+                ForEach(WhiteBalancePreset.allCases) { preset in
+                    Button(action: {
+                        settings.whiteBalance = preset
+                        recorder.setWhiteBalance(preset)
+                        showWhiteBalanceSheet = false
+                    }) {
+                        HStack(spacing: 12) {
+                            Image(systemName: preset.icon)
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(.white)
+                                .frame(width: 30, height: 30)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                        .fill(settings.accentColor.color)
+                                )
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(preset.label)
+                                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+                                    .foregroundColor(.primary)
+                                Text(preset.detail)
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
+                            if settings.whiteBalance == preset {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 13, weight: .bold))
+                                    .foregroundColor(settings.accentColor.color)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .listStyle(InsetGroupedListStyle())
+            .navigationBarTitle("White Balance", displayMode: .inline)
+            .navigationBarItems(trailing: Button("Cancel") {
+                showWhiteBalanceSheet = false
+            })
+        }
+        .navigationViewStyle(StackNavigationViewStyle())
+        .accentColor(settings.accentColor.color)
     }
 
     // MARK: Bottom HUD Bar (Live Zoom Always Visible)
