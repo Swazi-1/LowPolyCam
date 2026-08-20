@@ -67,10 +67,11 @@ extension CameraRecorder {
                     let stillArea = Int(stillDims.width) * Int(stillDims.height)
                     let currentArea = Int(currentStill.width) * Int(currentStill.height)
                     if stillArea > currentArea + 500_000 {
-                        self.applyUnifiedHardwareConfiguration(to: device, format: stillFormat, targetFPS: 30)
-                        self.lastAppliedFormatKey = nil // force restore after
-                        self.configurePhotoOutput()
-                        didSwapForStill = true
+                        if self.applyUnifiedHardwareConfiguration(to: device, format: stillFormat, targetFPS: 30) {
+                            self.lastAppliedFormatKey = nil // force restore after
+                            self.configurePhotoOutput()
+                            didSwapForStill = true
+                        }
                     }
                 }
             }
@@ -151,7 +152,12 @@ extension CameraRecorder {
                         }
                     }
                     DispatchQueue.main.async { self.isCapturingPhoto = false }
-                    self.activePhotoProcessors.removeValue(forKey: photoSettings.uniqueID)
+                    // The processor is registered on sessionQueue. Remove it on
+                    // that same queue because AVCapturePhotoOutput may invoke this
+                    // completion on a different thread.
+                    self.sessionQueue.async {
+                        self.activePhotoProcessors.removeValue(forKey: photoSettings.uniqueID)
+                    }
 
                     guard let image = image else {
                         DispatchQueue.main.async { self.notice = errorMessage ?? "Photo capture failed" }
@@ -178,11 +184,14 @@ extension CameraRecorder {
         // Prefer the camera's original file bytes when we did not downscale —
         // re-encoding HEIC makes photos look worse than stock Camera and can
         // even increase file size.
-        let resolvedData: Data? = {
-            if let originalData = originalData { return originalData }
-            return PhotoEncoder.encodeHEIC(image, metadata: metadata)
-                ?? PhotoEncoder.encodeJPEG(image, metadata: metadata)
+        let encoded: (data: Data?, isHEIC: Bool) = {
+            if let originalData = originalData { return (originalData, true) }
+            if let data = PhotoEncoder.encodeHEIC(image, metadata: metadata) {
+                return (data, true)
+            }
+            return (PhotoEncoder.encodeJPEG(image, metadata: metadata), false)
         }()
+        let resolvedData = encoded.data
 
         guard destination == .photos else {
             ioQueue.async {
@@ -192,9 +201,12 @@ extension CameraRecorder {
                 }
                 let f = DateFormatter()
                 f.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-                let isHEIC = (originalData != nil) || (PhotoEncoder.encodeHEIC(image, metadata: metadata) != nil)
-                let ext = isHEIC ? "heic" : "jpg"
-                let url = Self.clipsDirectory.appendingPathComponent("LowPolyCam_\(f.string(from: Date())).\(ext)")
+                let ext = encoded.isHEIC ? "heic" : "jpg"
+                // Seconds-only names can collide when two photos finish saving
+                // quickly. A suffix guarantees the later atomic write cannot
+                // silently replace the first photo.
+                let suffix = String(format: "%04X", UInt16.random(in: 0...0xFFFF))
+                let url = Self.clipsDirectory.appendingPathComponent("LowPolyCam_\(f.string(from: Date()))_\(suffix).\(ext)")
                 do {
                     try data.write(to: url, options: .atomic)
                     DispatchQueue.main.async {
@@ -214,12 +226,15 @@ extension CameraRecorder {
             return
         }
 
+        guard let data = resolvedData else {
+            DispatchQueue.main.async { self.notice = "Photo failed to save" }
+            return
+        }
+
         PHPhotoLibrary.shared().performChanges({
             let request = PHAssetCreationRequest.forAsset()
             let options = PHAssetResourceCreationOptions()
-            if let data = resolvedData {
-                request.addResource(with: .photo, data: data, options: options)
-            }
+            request.addResource(with: .photo, data: data, options: options)
         }) { [weak self] success, _ in
             DispatchQueue.main.async {
                 self?.notice = success ? "Photo saved to Photos" : "Could not save photo"
@@ -253,3 +268,5 @@ extension CameraRecorder {
 
 
 }
+
+
