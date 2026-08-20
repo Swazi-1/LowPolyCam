@@ -165,6 +165,7 @@ final class CameraRecorder: NSObject, ObservableObject {
     // Writer state
     var writer: AVAssetWriter?
     var videoIn: AVAssetWriterInput?
+    var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
     var audioIn: AVAssetWriterInput?
     var segmentStart = CMTime.invalid
     var lastVideoPTS = CMTime.invalid
@@ -584,6 +585,7 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     /// Resume after pausePreviewSession().
     func resumePreviewSession() {
+        volumeObserver?.ignoreTemporarily(duration: 1.5)
         sessionQueue.async {
             if !self.session.isRunning { self.session.startRunning() }
             self.applyActiveFormat(forRecording: false)
