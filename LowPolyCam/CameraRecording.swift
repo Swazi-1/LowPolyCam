@@ -6,6 +6,7 @@ import CoreMotion
 import Combine
 import AudioToolbox
 import ImageIO
+import VideoToolbox
 
 extension CameraRecorder {
 
@@ -68,29 +69,12 @@ extension CameraRecorder {
             guard self.recordingSessionToken == myToken, !self.stopRequested else { return }
             self.applyStabilization(forceRecording: true)
 
-            // ALWAYS encode at the active sensor size (passthrough sample
-            // buffers). Live CI downscale on iPhone 7 / iOS 15.8 caused:
-            //  - first clip after launch fails, second works
-            //  - 240 fps slo-mo never saves
-            // Data-saver tiers still pick the smallest available sensor
-            // format via CameraFormatSelector; bitrate follows the tier.
-            if let device = self.cameraInput?.device {
-                let activeDims = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
-                let sensorW = Int(activeDims.width)
-                let sensorH = Int(activeDims.height)
-                if sensorW > 0, sensorH > 0 {
-                    let sensLong = max(sensorW, sensorH)
-                    let sensShort = min(sensorW, sensorH)
-                    if newPlan.width >= newPlan.height {
-                        newPlan.width = sensLong
-                        newPlan.height = sensShort
-                    } else {
-                        newPlan.width = sensShort
-                        newPlan.height = sensLong
-                    }
-                    DebugLog.write("[plan] sensor \(sensorW)x\(sensorH) → encode \(newPlan.width)x\(newPlan.height) @\(newPlan.frameRate)fps")
-                }
-            }
+            // Keep the selected output dimensions. The active camera format is
+            // allowed to stay at a sharp 16:9 preview size and the hardware
+            // pixel-transfer path scales only the frames given to the writer.
+            // Replacing this plan with sensor dimensions was why 480p/360p/
+            // 144p saved as arbitrary 4:3 formats instead of their labels.
+            DebugLog.write("[plan] encode \(newPlan.width)x\(newPlan.height) @\(newPlan.frameRate)fps")
             let transform = Self.transform(width: newPlan.width, height: newPlan.height, isFront: self.isFrontCamera)
 
             DispatchQueue.main.async {
@@ -378,12 +362,33 @@ extension CameraRecorder {
             guard canAddVideo else { throw RecorderError.cannotAddInput }
             w.add(v)
             DebugLog.write("[5] video input added")
-            // NO pixel-buffer adaptor. We only passthrough camera CMSampleBuffers
-            // (420f YUV). Creating an adaptor advertised as BGRA while appending
-            // YUV sample buffers has been observed to put AVAssetWriter into
-            // .failed on iOS 15 / A10 — especially at 240fps.
-            self.pixelBufferAdaptor = nil
-            self.scalePixelBufferPool = nil
+            let pixelAttributes: [String: Any] = [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+                kCVPixelBufferWidthKey as String: plan.width,
+                kCVPixelBufferHeightKey as String: plan.height,
+                kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any]()
+            ]
+            let adaptor = AVAssetWriterInputPixelBufferAdaptor(
+                assetWriterInput: v,
+                sourcePixelBufferAttributes: pixelAttributes
+            )
+            var transfer: VTPixelTransferSession?
+            guard VTPixelTransferSessionCreate(kCFAllocatorDefault, &transfer) == noErr,
+                  let transferSession = transfer else {
+                throw RecorderError.cannotAddInput
+            }
+            // The default transfer mode scales the complete source image to
+            // the complete destination buffer, exactly what our 16:9 tiers
+            // need. Leaving it at the framework default also avoids adding a
+            // crop/clean-aperture rule that could change the preview FOV.
+            var pool: CVPixelBufferPool?
+            let poolStatus = CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, pixelAttributes as CFDictionary, &pool)
+            guard poolStatus == kCVReturnSuccess, let outputPool = pool else {
+                throw RecorderError.cannotAddInput
+            }
+            self.pixelBufferAdaptor = adaptor
+            self.pixelTransferSession = transferSession
+            self.scalePixelBufferPool = outputPool
 
             var a: AVAssetWriterInput?
             if plan.hasAudio, let aSettings = audioSettings(for: plan, writer: w) {
@@ -438,7 +443,9 @@ extension CameraRecorder {
             pendingMidBuffers.removeAll(keepingCapacity: false)
             writer = w
             videoIn = v
-            pixelBufferAdaptor = nil
+            pixelBufferAdaptor = adaptor
+            pixelTransferSession = transferSession
+            scalePixelBufferPool = outputPool
             audioIn = a
             segmentStart = pts
             var endPTS = appendedFirstPTS
@@ -476,6 +483,9 @@ extension CameraRecorder {
             segmentStartInFlight = false
             pendingStartBuffers.removeAll(keepingCapacity: false)
             pendingMidBuffers.removeAll(keepingCapacity: false)
+            pixelBufferAdaptor = nil
+            pixelTransferSession = nil
+            scalePixelBufferPool = nil
             wantsRecording = false
             writerLock.unlock()
             DispatchQueue.main.async {
@@ -492,7 +502,7 @@ extension CameraRecorder {
         writerLock.lock()
         guard let w = writer, let v = videoIn else {
             DebugLog.write("[finish] finishSegment called with no writer/videoIn — nothing to finalize")
-            writer = nil; videoIn = nil; audioIn = nil; pixelBufferAdaptor = nil; scalePixelBufferPool = nil
+            writer = nil; videoIn = nil; audioIn = nil; pixelBufferAdaptor = nil; pixelTransferSession = nil; scalePixelBufferPool = nil
             writerLock.unlock()
             completion?()
             return
@@ -505,7 +515,7 @@ extension CameraRecorder {
         let url = w.outputURL
         let hadFrames = end.isValid && start.isValid && CMTimeCompare(end, start) > 0
 
-        writer = nil; videoIn = nil; audioIn = nil; pixelBufferAdaptor = nil; scalePixelBufferPool = nil
+        writer = nil; videoIn = nil; audioIn = nil; pixelBufferAdaptor = nil; pixelTransferSession = nil; scalePixelBufferPool = nil
         segmentStart = .invalid
         lastVideoDuration = .invalid
         writerLock.unlock()
@@ -635,7 +645,7 @@ extension CameraRecorder {
         let oldUrl = oldWriter.outputURL
         let destination = recordingDestination
 
-        writer = nil; videoIn = nil; audioIn = nil; pixelBufferAdaptor = nil; scalePixelBufferPool = nil
+        writer = nil; videoIn = nil; audioIn = nil; pixelBufferAdaptor = nil; pixelTransferSession = nil; scalePixelBufferPool = nil
         segmentStart = .invalid
         writerLock.unlock()
 
@@ -903,5 +913,3 @@ extension CameraRecorder {
         var errorDescription: String? { "Encoder rejected format settings" }
     }
 }
-
-
