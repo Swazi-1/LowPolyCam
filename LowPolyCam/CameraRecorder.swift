@@ -21,50 +21,50 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     // MARK: Published state
 
-    @Published private(set) var isRecording = false
-    @Published private(set) var isSaving = false
-    @Published private(set) var isSessionRunning = false
-    @Published private(set) var permissionDenied = false
-    @Published private(set) var elapsed: TimeInterval = 0
-    @Published private(set) var clipsThisSession = 0
-    @Published private(set) var droppedFrames = 0
-    @Published private(set) var freeBytes: Int64 = 0
-    @Published private(set) var hasTorch = false
-    @Published private(set) var torchOn = false
+    @Published var isRecording = false
+    @Published var isSaving = false
+    @Published var isSessionRunning = false
+    @Published var permissionDenied = false
+    @Published var elapsed: TimeInterval = 0
+    @Published var clipsThisSession = 0
+    @Published var droppedFrames = 0
+    @Published var freeBytes: Int64 = 0
+    @Published var hasTorch = false
+    @Published var torchOn = false
     /// Front camera has no physical torch. This drives a screen-illumination
     /// "flash" for selfies instead (see CameraScreen's performFrontFlashCapture),
     /// same idea as the stock Camera app's selfie flash.
     @Published var frontFlashEnabled = false
-    @Published private(set) var isFrontCamera = false
-    @Published private(set) var isSwitchingCamera = false
-    @Published private(set) var stabilizationSupported = true
-    @Published private(set) var availableFrameRates: [FrameRate] = FrameRate.allCases
-    @Published private(set) var availableResolutions: [Resolution] = Resolution.allCases
-    @Published private(set) var availableSlowMoRates: [SlowMoFrameRate] = SlowMoFrameRate.allCases
-    @Published private(set) var availableSlowMoResolutions: [Resolution] = [.p1080, .p720]
-    @Published private(set) var isSlowMoSupportedOnCurrentLens = true
-    @Published private(set) var batteryPercent: Int = -1
-    @Published private(set) var batteryCharging = false
-    @Published private(set) var zoomFactor: CGFloat = 1
-    @Published private(set) var maxZoomFactor: CGFloat = 1
-    @Published private(set) var minZoomFactor: CGFloat = 1
-    @Published private(set) var audioLevel: Float = 0
-    @Published private(set) var lastClipThumbnail: UIImage?
-    @Published private(set) var lastClipURL: URL?
+    @Published var isFrontCamera = false
+    @Published var isSwitchingCamera = false
+    @Published var stabilizationSupported = true
+    @Published var availableFrameRates: [FrameRate] = FrameRate.allCases
+    @Published var availableResolutions: [Resolution] = Resolution.allCases
+    @Published var availableSlowMoRates: [SlowMoFrameRate] = SlowMoFrameRate.allCases
+    @Published var availableSlowMoResolutions: [Resolution] = [.p1080, .p720]
+    @Published var isSlowMoSupportedOnCurrentLens = true
+    @Published var batteryPercent: Int = -1
+    @Published var batteryCharging = false
+    @Published var zoomFactor: CGFloat = 1
+    @Published var maxZoomFactor: CGFloat = 1
+    @Published var minZoomFactor: CGFloat = 1
+    @Published var audioLevel: Float = 0
+    @Published var lastClipThumbnail: UIImage?
+    @Published var lastClipURL: URL?
 
     // Photo mode
-    @Published private(set) var isCapturingPhoto = false
-    @Published private(set) var availablePhotoMegapixels: [PhotoMegapixels] = PhotoMegapixels.allCases
-    @Published private(set) var lastPhotoThumbnail: UIImage?
+    @Published var isCapturingPhoto = false
+    @Published var availablePhotoMegapixels: [PhotoMegapixels] = PhotoMegapixels.allCases
+    @Published var lastPhotoThumbnail: UIImage?
 
     // Thermal state
-    @Published private(set) var thermalState: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState
+    @Published var thermalState: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState
 
     // Level Telemetry & Physical Orientation
-    @Published private(set) var physicalOrientation: PhysicalOrientation = .portrait
-    @Published private(set) var uiRotationAngle: Double = 0
-    @Published private(set) var isLevel: Bool = false
-    @Published private(set) var rollAngle: Double = 0
+    @Published var physicalOrientation: PhysicalOrientation = .portrait
+    @Published var uiRotationAngle: Double = 0
+    @Published var isLevel: Bool = false
+    @Published var rollAngle: Double = 0
     @Published var notice: String?
 
     /// Fired the instant the sensor actually captures the photo (from
