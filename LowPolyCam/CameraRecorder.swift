@@ -318,6 +318,29 @@ final class CameraRecorder: NSObject, ObservableObject {
             self, selector: #selector(handleThermalStateChanged),
             name: ProcessInfo.thermalStateDidChangeNotification, object: nil)
         thermalState = ProcessInfo.processInfo.thermalState
+
+        // 🧪 Camera-lifecycle recovery. Without these, an AVCaptureSession
+        // runtime error (common on A10 under thermal/media-services stress)
+        // or a system interruption (phone call, Siri, another app grabbing
+        // the camera) silently leaves the session stopped with no observer
+        // ever finding out — the preview just goes black and stays that way
+        // until the app is killed and relaunched. See handleRuntimeError /
+        // handleSessionWasInterrupted below.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleRuntimeError),
+            name: .AVCaptureSessionRuntimeError, object: session)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleSessionWasInterrupted),
+            name: .AVCaptureSessionWasInterrupted, object: session)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleSessionInterruptionEnded),
+            name: .AVCaptureSessionInterruptionEnded, object: session)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleSessionDidStartRunning),
+            name: .AVCaptureSessionDidStartRunning, object: session)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleSessionDidStopRunning),
+            name: .AVCaptureSessionDidStopRunning, object: session)
     }
 
     // MARK: Thermal State Monitor
@@ -422,6 +445,8 @@ final class CameraRecorder: NSObject, ObservableObject {
         guard let info = notification.userInfo,
               let typeValue = info[AVAudioSessionInterruptionTypeKey] as? UInt,
               let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
+
+        DebugLog.write("🎙️ audio interruption type=\(type == .began ? "began" : "ended") wasRecording=\(isRecording)")
 
         if type == .began {
             // Stop a clean segment rather than leaving a truncated/corrupt file
@@ -554,6 +579,7 @@ final class CameraRecorder: NSObject, ObservableObject {
     // MARK: Lifecycle
 
     func start() {
+        DebugLog.write("===== CameraRecorder.start() called (isConfigured=\(isConfigured)) =====")
         refreshFreeSpace()
         recoverInterruptedRecording()
         loadLastSavedClip()
@@ -573,25 +599,56 @@ final class CameraRecorder: NSObject, ObservableObject {
 
         requestAccess { [weak self] granted in
             guard let self = self else { return }
+            DebugLog.write("start() requestAccess granted=\(granted)")
             guard granted else {
                 DispatchQueue.main.async { self.permissionDenied = true }
                 return
             }
             self.sessionQueue.async {
                 if !self.isConfigured {
+                    DebugLog.write("start() configureSession() beginning")
                     self.configureSession()
                     self.isConfigured = true
+                    DebugLog.write("start() configureSession() done, inputs=\(self.session.inputs.count) outputs=\(self.session.outputs.count)")
                 }
-                if !self.session.isRunning { self.session.startRunning() }
-                DispatchQueue.main.async {
-                    self.isSessionRunning = self.session.isRunning
-                    self.resumeVolumeMonitoring()
-                }
+                self.startRunningWithRetry(attempt: 1)
             }
         }
     }
 
+    /// Kicks off `AVCaptureSession.startRunning()` and confirms it actually
+    /// took effect. `startRunning()` can silently no-op (isRunning stays
+    /// false, no error/notification) right after the app relaunches into an
+    /// interrupted state, or immediately after a media-services reset — the
+    /// old code called it once and just trusted it, which on an iPhone 7
+    /// occasionally left the preview permanently black until force-quit.
+    /// Retrying a couple of times with a short backoff clears that without
+    /// needing the user to do anything.
+    private func startRunningWithRetry(attempt: Int, maxAttempts: Int = 3) {
+        if !session.isRunning {
+            DebugLog.write("start() calling session.startRunning() attempt=\(attempt)")
+            session.startRunning()
+        }
+        let running = session.isRunning
+        DebugLog.write("start() post-startRunning isRunning=\(running) attempt=\(attempt)")
+        DispatchQueue.main.async {
+            self.isSessionRunning = running
+            self.resumeVolumeMonitoring()
+        }
+        guard !running, attempt < maxAttempts else {
+            if !running {
+                DebugLog.write("❌ start() gave up after \(attempt) attempts, session still not running")
+                DispatchQueue.main.async { self.notice = "Camera failed to start" }
+            }
+            return
+        }
+        sessionQueue.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            self?.startRunningWithRetry(attempt: attempt + 1, maxAttempts: maxAttempts)
+        }
+    }
+
     func stop() {
+        DebugLog.write("===== CameraRecorder.stop() called (wasRunning=\(session.isRunning), isRecording=\(isRecording)) =====")
         spaceTimer?.invalidate()
         spaceTimer = nil
         pauseVolumeMonitoring()
@@ -604,6 +661,85 @@ final class CameraRecorder: NSObject, ObservableObject {
             if self.session.isRunning { self.session.stopRunning() }
             DispatchQueue.main.async { self.isSessionRunning = false }
         }
+    }
+
+    // MARK: Runtime error / interruption recovery
+
+    @objc private func handleRuntimeError(_ notification: Notification) {
+        let error = notification.userInfo?[AVCaptureSessionErrorKey] as? NSError
+        let code = (error?.code).map { AVError.Code(rawValue: $0) }
+        DebugLog.write("❌ AVCaptureSessionRuntimeError: \(error?.localizedDescription ?? "unknown") code=\(String(describing: code))")
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            if self.isRecording {
+                self.stopRecording(notice: "Recording stopped (camera error)")
+            }
+        }
+
+        // .mediaServicesWereReset invalidates the whole capture graph — the
+        // existing session/inputs/outputs are dead and must be rebuilt from
+        // scratch, not just restarted. Anything else, a plain restart is
+        // usually enough (this mirrors what AVFoundation's own docs
+        // recommend for runtime-error recovery).
+        let needsFullReconfigure = (code == .mediaServicesWereReset)
+        sessionQueue.async { [weak self] in
+            guard let self = self else { return }
+            if needsFullReconfigure {
+                DebugLog.write("🔧 media services reset — reconfiguring capture session from scratch")
+                if self.session.isRunning { self.session.stopRunning() }
+                self.session.beginConfiguration()
+                self.session.inputs.forEach { self.session.removeInput($0) }
+                self.session.outputs.forEach { self.session.removeOutput($0) }
+                self.session.commitConfiguration()
+                self.cameraInput = nil
+                self.micInput = nil
+                self.isConfigured = false
+                self.configureSession()
+                self.isConfigured = true
+            }
+            self.startRunningWithRetry(attempt: 1)
+        }
+    }
+
+    @objc private func handleSessionWasInterrupted(_ notification: Notification) {
+        var reasonText = "unknown"
+        if let raw = notification.userInfo?[AVCaptureSessionInterruptionReasonKey] as? Int,
+           let reason = AVCaptureSession.InterruptionReason(rawValue: raw) {
+            switch reason {
+            case .videoDeviceNotAvailableInBackground: reasonText = "videoDeviceNotAvailableInBackground"
+            case .audioDeviceInUseByAnotherClient: reasonText = "audioDeviceInUseByAnotherClient"
+            case .videoDeviceInUseByAnotherClient: reasonText = "videoDeviceInUseByAnotherClient"
+            case .videoDeviceNotAvailableWithMultipleForegroundApps: reasonText = "videoDeviceNotAvailableWithMultipleForegroundApps"
+            case .videoDeviceNotAvailableDueToSystemPressure: reasonText = "videoDeviceNotAvailableDueToSystemPressure"
+            @unknown default: reasonText = "unknown(\(raw))"
+            }
+        }
+        DebugLog.write("⚠️ AVCaptureSessionWasInterrupted reason=\(reasonText) isRecording=\(isRecording)")
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.isSessionRunning = false
+            if self.isRecording {
+                self.stopRecording(notice: "Recording stopped (camera interrupted)")
+            } else {
+                self.notice = "Camera interrupted"
+            }
+        }
+    }
+
+    @objc private func handleSessionInterruptionEnded(_ notification: Notification) {
+        DebugLog.write("✅ AVCaptureSessionInterruptionEnded, restarting session")
+        sessionQueue.async { [weak self] in
+            self?.startRunningWithRetry(attempt: 1)
+        }
+    }
+
+    @objc private func handleSessionDidStartRunning(_ notification: Notification) {
+        DebugLog.write("session didStartRunning")
+    }
+
+    @objc private func handleSessionDidStopRunning(_ notification: Notification) {
+        DebugLog.write("session didStopRunning")
     }
 
     /// Fully pause the capture pipeline (sensor + ISP). Call when a sheet
