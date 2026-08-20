@@ -152,6 +152,7 @@ extension CameraRecorder {
         guard isRecording else { return }
 
         let myToken = recordingSessionToken
+        DebugLog.write("===== stopRecording() called token=\(myToken) =====")
 
         if settings.shutterSoundEnabled { SoundPlayer.play(.stop) }
         // Keep sample-buffer delegates attached and keep writing for a short
@@ -205,6 +206,28 @@ extension CameraRecorder {
         ioQueue.asyncAfter(deadline: .now() + hardCeiling) { [weak self] in
             self?.completeStopDrainIfNeeded(force: true)
         }
+
+        // Independent, UI-side safety valve. Everything above assumes the
+        // drain → finishSegment → finishWriting chain actually keeps
+        // running, but if anything in that chain hangs somewhere we didn't
+        // anticipate (not just the finishWriting call itself, which already
+        // has its own watchdog in finishSegment), isSaving could stay true
+        // forever with zero log output — a fully dead Record button with no
+        // trail to diagnose. This fires independently of that whole chain
+        // and force-recovers the UI no matter what got stuck.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8.0) { [weak self] in
+            guard let self = self, self.isSaving, self.recordingSessionToken == myToken else { return }
+            DebugLog.write("❌ stopRecording watchdog: isSaving still true 8s after Stop (token=\(myToken)) — force-recovering UI")
+            self.isSaving = false
+            self.notice = "Recording didn't save · Try again"
+            self.writerLock.lock()
+            self.isStopDraining = false
+            self.wantsRecording = false
+            self.pendingStopToken = 0
+            self.writerLock.unlock()
+            self.stopRequested = true
+            self.refreshFreeSpace()
+        }
     }
 
     /// Finalize the stop drain. `force` is used by the safety timeout.
@@ -217,6 +240,7 @@ extension CameraRecorder {
             writerLock.unlock()
             return
         }
+        DebugLog.write("[stop] completeStopDrainIfNeeded firing force=\(force) token=\(token)")
         // Claim the stop so only one path finalizes.
         pendingStopToken = 0
         pendingStopBackgroundTask = .invalid
@@ -444,6 +468,7 @@ extension CameraRecorder {
     func finishSegment(_ completion: (() -> Void)? = nil) {
         writerLock.lock()
         guard let w = writer, let v = videoIn else {
+            DebugLog.write("[finish] finishSegment called with no writer/videoIn — nothing to finalize")
             writer = nil; videoIn = nil; audioIn = nil; pixelBufferAdaptor = nil; scalePixelBufferPool = nil
             writerLock.unlock()
             completion?()
@@ -502,6 +527,7 @@ extension CameraRecorder {
         v.markAsFinished()
         a?.markAsFinished()
         w.endSession(atSourceTime: end)
+        DebugLog.write("[finish] endSession done, calling finishWriting() status=\(w.status.rawValue)")
 
         // finishWriting's completion handler has no built-in timeout. If it
         // ever stalls (rare, but seen on iOS 15 under thermal/storage
