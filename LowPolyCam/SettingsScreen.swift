@@ -40,6 +40,7 @@ struct SettingsScreen: View {
     @State private var availableFrameRates: [FrameRate] = FrameRate.allCases
     @State private var availableSlowMoRates: [SlowMoFrameRate] = SlowMoFrameRate.allCases
     @State private var availableSlowMoResolutions: [Resolution] = [.p1080, .p720]
+    @State private var availablePhotoMegapixels: [PhotoMegapixels] = PhotoMegapixels.allCases
     @State private var isSlowMoSupported = true
     @State private var stabilizationSupported = true
 
@@ -105,16 +106,31 @@ struct SettingsScreen: View {
         .navigationViewStyle(StackNavigationViewStyle())
         .accentColor(settings.accentColor.color)
         .onAppear {
-            presetHaptic.prepare()
-            freeBytesSnapshot = recorder.freeBytes
-            isFrontSnapshot = recorder.isFrontCamera
-            availableResolutions = recorder.availableResolutions
-            availableFrameRates = recorder.availableFrameRates
-            availableSlowMoRates = recorder.availableSlowMoRates
-            availableSlowMoResolutions = recorder.availableSlowMoResolutions
-            isSlowMoSupported = recorder.isSlowMoSupportedOnCurrentLens
-            stabilizationSupported = recorder.stabilizationSupported
+            syncCapabilitiesFromRecorder()
         }
+        .onChange(of: settings.slowMoResolution) { newRes in
+            // Instantly re-scope FPS chips to the newly selected slow-mo resolution
+            // without waiting for the async format-apply round-trip.
+            let rates = recorder.slowRatesByResolution[newRes] ?? []
+            availableSlowMoRates = SlowMoFrameRate.allCases.filter { rates.contains($0) }
+            if !availableSlowMoRates.contains(settings.slowMoFrameRate) {
+                settings.slowMoFrameRate = availableSlowMoRates.first ?? .fps120
+            }
+            recorder.updateCaptureFormat()
+        }
+    }
+
+    private func syncCapabilitiesFromRecorder() {
+        presetHaptic.prepare()
+        freeBytesSnapshot = recorder.freeBytes
+        isFrontSnapshot = recorder.isFrontCamera
+        availableResolutions = recorder.availableResolutions
+        availableFrameRates = recorder.availableFrameRates
+        availableSlowMoRates = recorder.availableSlowMoRates
+        availableSlowMoResolutions = recorder.availableSlowMoResolutions
+        availablePhotoMegapixels = recorder.availablePhotoMegapixels
+        isSlowMoSupported = recorder.isSlowMoSupportedOnCurrentLens
+        stabilizationSupported = recorder.stabilizationSupported
     }
 
     // MARK: - Summary card
@@ -163,23 +179,28 @@ struct SettingsScreen: View {
         Section(header: sectionHeader("Video", icon: "video.fill"),
                 footer: Text("Swipe chips sideways for more options (e.g. 144p).")) {
             labeledChipRow(title: "Resolution", showMoreHint: true) {
-                chipRow(Resolution.allCases
-                    .filter { $0 != .p144 || availableResolutions.contains(.p144) }
-                    .map { r in
-                        ChipItem(id: r.id, label: r.label,
-                                 enabled: availableResolutions.contains(r),
-                                 selected: settings.resolution == r) {
-                            settings.resolution = r
-                            if let locked = r.lockedFrameRate {
-                                settings.frameRate = locked
-                            }
-                            recorder.updateCaptureFormat()
+                // Front camera: hide unsupported entirely. Rear: show grey/locked.
+                let resItems: [Resolution] = isFrontSnapshot
+                    ? availableResolutions
+                    : Resolution.allCases.filter { $0 != .p144 || availableResolutions.contains(.p144) }
+                chipRow(resItems.map { r in
+                    ChipItem(id: r.id, label: r.label,
+                             enabled: availableResolutions.contains(r),
+                             selected: settings.resolution == r) {
+                        settings.resolution = r
+                        if let locked = r.lockedFrameRate {
+                            settings.frameRate = locked
                         }
-                    })
+                        recorder.updateCaptureFormat()
+                    }
+                })
             }
 
             labeledChipRow(title: "Frame rate") {
-                chipRow(FrameRate.allCases.map { f in
+                let rateItems: [FrameRate] = isFrontSnapshot
+                    ? availableFrameRates.filter { !(settings.resolution == .p2160 && $0 == .fps60) }
+                    : FrameRate.allCases
+                chipRow(rateItems.map { f in
                     let enabled = availableFrameRates.contains(f)
                         && !(settings.resolution == .p2160 && f == .fps60)
                     return ChipItem(id: "fr-\(f.id)", label: f.label,
@@ -312,7 +333,7 @@ struct SettingsScreen: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Selfie camera")
                         .font(.system(size: 15, weight: .bold, design: .rounded))
-                    Text("Standard video only. Unsupported options stay greyed out.")
+                    Text("Only options this lens supports are shown.")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -327,19 +348,20 @@ struct SettingsScreen: View {
     private var resolutionSection: some View {
         Section(header: sectionHeader("Resolution", icon: "rectangle.dashed"),
                 footer: Text("Recording at \(plan.sizeLabel).")) {
-            chipRow(Resolution.allCases
-                .filter { $0 != .p144 || availableResolutions.contains(.p144) }
-                .map { r in
-                    ChipItem(id: r.id, label: r.label,
-                             enabled: availableResolutions.contains(r),
-                             selected: settings.resolution == r) {
-                        settings.resolution = r
-                        if let locked = r.lockedFrameRate {
-                            settings.frameRate = locked
-                        }
-                        recorder.updateCaptureFormat()
+            let resItems: [Resolution] = isFrontSnapshot
+                ? availableResolutions
+                : Resolution.allCases.filter { $0 != .p144 || availableResolutions.contains(.p144) }
+            chipRow(resItems.map { r in
+                ChipItem(id: r.id, label: r.label,
+                         enabled: availableResolutions.contains(r),
+                         selected: settings.resolution == r) {
+                    settings.resolution = r
+                    if let locked = r.lockedFrameRate {
+                        settings.frameRate = locked
                     }
-                })
+                    recorder.updateCaptureFormat()
+                }
+            })
         }
     }
 
@@ -348,7 +370,10 @@ struct SettingsScreen: View {
                 footer: Text(settings.resolution == .p2160
                              ? "4K is limited to 30 fps on this iPhone."
                              : "60 fps looks smoother and uses more space.")) {
-            chipRow(FrameRate.allCases.map { f in
+            let rateItems: [FrameRate] = isFrontSnapshot
+                ? availableFrameRates.filter { !(settings.resolution == .p2160 && $0 == .fps60) }
+                : FrameRate.allCases
+            chipRow(rateItems.map { f in
                 let enabled = availableFrameRates.contains(f)
                     && !(settings.resolution == .p2160 && f == .fps60)
                 return ChipItem(id: "fr-\(f.id)", label: f.label,
@@ -561,7 +586,10 @@ struct SettingsScreen: View {
 
     private var videoAssistSection: some View {
         Section(header: sectionHeader("Capture Assist", icon: "viewfinder")) {
-            assistStabilisation
+            // Hide (not grey) when this lens cannot stabilise (typical for front camera).
+            if stabilizationSupported {
+                assistStabilisation
+            }
             assistGrid
             assistLevel
             assistAutoDim
@@ -592,7 +620,6 @@ struct SettingsScreen: View {
                 .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
         }
         .onChange(of: settings.stabilization) { _ in recorder.updateStabilization() }
-        .disabled(!stabilizationSupported)
     }
 
     private var assistGrid: some View {
@@ -845,7 +872,9 @@ struct SettingsScreen: View {
     private var photoMegapixelsSection: some View {
         Section(header: sectionHeader("Photo Size", icon: "camera.fill"),
                 footer: Text("Captured at full sensor resolution, then saved at the size you pick. Lower MP uses less storage.")) {
-            chipRow(PhotoMegapixels.allCases.map { mp in
+            // Only show sizes this lens can deliver (front camera often maxes ~7 MP).
+            let mpItems = availablePhotoMegapixels.isEmpty ? PhotoMegapixels.allCases : availablePhotoMegapixels
+            chipRow(mpItems.map { mp in
                 ChipItem(id: "mp-\(mp.id)", label: mp.label,
                          selected: settings.photoMegapixels == mp) {
                     settings.photoMegapixels = mp
