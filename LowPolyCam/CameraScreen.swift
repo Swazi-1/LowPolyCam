@@ -478,76 +478,85 @@ struct CameraScreen: View {
     }
 
     private var recordingStatusRow: some View {
-        HStack(spacing: 8) {
-            if recorder.isRecording {
-                Facet(sides: 6)
-                    .fill(Palette.record)
-                    .frame(width: 10, height: 10)
-                    .shadow(color: Palette.record, radius: blink ? 5 : 0)
-                    .opacity(blink ? 0.3 : 1)
-                    .animation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true), value: blink)
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 8) {
+                if recorder.isRecording {
+                    Facet(sides: 6)
+                        .fill(Palette.record)
+                        .frame(width: 10, height: 10)
+                        .shadow(color: Palette.record, radius: blink ? 5 : 0)
+                        .opacity(blink ? 0.3 : 1)
+                        .animation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true), value: blink)
 
-                Text("REC")
-                    .font(.system(size: 12, weight: .black))
-                    .fixedSize()
-                Text(Fmt.duration(recorder.elapsed))
-                    .font(.system(size: 14, weight: .bold, design: .monospaced))
-                    .fixedSize()
-
-                if let limit = settings.maxDuration.seconds {
-                    Text("/ " + Fmt.duration(limit))
-                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.55))
+                    Text("REC")
+                        .font(.system(size: 12, weight: .black))
                         .fixedSize()
-                }
-
-                // Battery while filming — same indicator as idle HUD.
-                Text("·")
-                    .foregroundColor(Palette.slateLight)
-                    .font(.system(size: 11, weight: .bold))
-                    .fixedSize()
-                batteryIndicator
-
-                if recorder.droppedFrames > 0 {
-                    Text("\(recorder.droppedFrames)d")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(settings.accentColor.bright)
+                    Text(Fmt.duration(recorder.elapsed))
+                        .font(.system(size: 14, weight: .bold, design: .monospaced))
                         .fixedSize()
-                }
 
-                // 📊 Opt-in live stats (measured fps / bitrate) — Settings toggle,
-                // off by default. Purely additive to the existing HUD row.
-                // fixedSize() on every element here is load-bearing: without
-                // it SwiftUI wraps "00:00:02" / "100%" / "66d" into vertical
-                // stacks the instant the row runs out of horizontal room,
-                // which is what was corrupting the whole top bar's layout
-                // and making it visibly resize (flicker) on every tick.
-                if settings.showRecordingStats {
+                    if let limit = settings.maxDuration.seconds {
+                        Text("/ " + Fmt.duration(limit))
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.55))
+                            .fixedSize()
+                    }
+
+                    // Battery while filming — same indicator as idle HUD.
                     Text("·")
                         .foregroundColor(Palette.slateLight)
                         .font(.system(size: 11, weight: .bold))
                         .fixedSize()
-                    Text(recorder.recordingStats.measuredFPSLabel)
-                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.68))
-                        .fixedSize()
-                        .lineLimit(1)
-                    Text(recorder.recordingStats.currentBitrateLabel)
-                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.68))
-                        .fixedSize()
-                        .lineLimit(1)
+                    batteryIndicator
+
+                    if recorder.droppedFrames > 0 {
+                        Text("\(recorder.droppedFrames)d")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(settings.accentColor.bright)
+                            .fixedSize()
+                    }
+                } else if recorder.isSaving {
+                    ProgressView().tint(settings.accentColor.bright).scaleEffect(0.7)
+                    Text("Saving…")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(settings.accentColor.bright)
                 }
-            } else if recorder.isSaving {
-                ProgressView().tint(settings.accentColor.bright).scaleEffect(0.7)
-                Text("Saving…")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundColor(settings.accentColor.bright)
+            }
+            .lineLimit(1)
+
+            // 📊 Opt-in live stats (measured fps / bitrate) — Settings toggle,
+            // off by default. Kept on its OWN row under REC/timer/battery
+            // instead of tacked onto that line — cramming it in-line was
+            // forcing the whole pill wider than its screen-edge cap, which
+            // squeezed the flash/settings icons off to the side. A second
+            // row grows the pill down instead of sideways, matching how the
+            // idle-state pill already stacks its two info rows.
+            if recorder.isRecording && settings.showRecordingStats {
+                HStack(spacing: 5) {
+                    HStack(spacing: 3) {
+                        Image(systemName: "speedometer")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundColor(Palette.slateLight)
+                        Text(recorder.recordingStats.measuredFPSLabel)
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.68))
+                    }
+                    Text("·")
+                        .foregroundColor(Palette.slateLight)
+                        .font(.system(size: 11, weight: .bold))
+                    HStack(spacing: 3) {
+                        Image(systemName: "waveform")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundColor(Palette.slateLight)
+                        Text(recorder.recordingStats.currentBitrateLabel)
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.68))
+                    }
+                }
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
             }
         }
-        .lineLimit(1)
-        .fixedSize(horizontal: false, vertical: true)
-        .frame(minHeight: 22)
         .foregroundColor(.white)
         .onAppear { blink = true }
         .onDisappear { blink = false }
