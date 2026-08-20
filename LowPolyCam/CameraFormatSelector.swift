@@ -28,7 +28,14 @@ enum CameraFormatSelector {
         guard baseline > 1 else { return fallback }
 
         guard (try? device.lockForConfiguration()) != nil else { return fallback }
-        defer { device.unlockForConfiguration() }
+        let originalFormat = device.activeFormat
+        // Probing a virtual camera's zoom range requires temporarily selecting
+        // formats, but this helper is only a selector. Always put the hardware
+        // back; applyActiveFormat() performs the one real configuration change.
+        defer {
+            device.activeFormat = originalFormat
+            device.unlockForConfiguration()
+        }
 
         for candidate in ranked {
             device.activeFormat = candidate
@@ -172,3 +179,5 @@ enum CameraFormatSelector {
         return value > 0 ? value : 1
     }
 }
+
+
