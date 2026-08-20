@@ -168,6 +168,15 @@ extension CameraRecorder {
     @objc func didBecomeActive() {
         volumeObserver?.ignoreTemporarily(duration: 1.5)
         sessionQueue.async {
+            // On a cold launch, didBecomeActive can fire on this queue before
+            // start()'s configureSession() has run (both are dispatched to
+            // sessionQueue around the same moment — .onAppear vs. the app
+            // becoming active — with no ordering guarantee between them).
+            // Calling startRunning() on a session with no inputs/outputs yet
+            // — then configureSession() mutating it a moment later while it's
+            // already running — produced the intermittent gray/frozen preview
+            // right after launch. Only (re)start here once setup has happened.
+            guard self.isConfigured else { return }
             if !self.session.isRunning { self.session.startRunning() }
             self.refreshTorchState()
             DispatchQueue.main.async { self.isSessionRunning = self.session.isRunning }
