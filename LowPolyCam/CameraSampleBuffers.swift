@@ -124,6 +124,7 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
                 let drainDone = shouldFinalizeAfterAppend
                 writerLock.unlock()
                 if drainDone {
+                    DebugLog.write("[stop] drain deadline reached in didOutput (appended path), finalizing")
                     completeStopDrainIfNeeded(force: false)
                 }
                 // Encoder is caught up — flush mid-backlog if any (≤60fps only;
@@ -157,10 +158,13 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
                 writerLock.lock()
                 if pendingStopBuffers.count < Self.pendingStopBufferLimit {
                     pendingStopBuffers.append(sampleBuffer)
+                } else {
+                    DebugLog.write("⚠️ pendingStopBuffers at cap (\(Self.pendingStopBufferLimit)) during drain, dropping tail frame")
                 }
                 let drainDone = shouldFinalizeAfterAppend
                 writerLock.unlock()
                 if drainDone {
+                    DebugLog.write("[stop] drain deadline reached in didOutput (buffered path), finalizing")
                     completeStopDrainIfNeeded(force: false)
                 }
             } else {
