@@ -319,42 +319,12 @@ extension CameraRecorder {
             guard canAddVideo else { throw RecorderError.cannotAddInput }
             w.add(v)
             DebugLog.write("[5] video input added")
-            // Adaptor lets us scale camera frames down to the exact selected
-            // resolution (144p/320p/480p). Appending raw sample buffers often
-            // keeps the sensor size (e.g. 960×540 → 540×960 portrait).
-            // Full compatibility flags so CIContext can render into pool buffers
-            // on iOS 15 / A10 (missing flags → silent empty frames → save failure).
-            let srcAttrs: [String: Any] = [
-                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-                kCVPixelBufferWidthKey as String: plan.width,
-                kCVPixelBufferHeightKey as String: plan.height,
-                kCVPixelBufferBytesPerRowAlignmentKey as String: 16,
-                kCVPixelBufferCGImageCompatibilityKey as String: true,
-                kCVPixelBufferCGBitmapContextCompatibilityKey as String: true,
-                kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: Any]
-            ]
-            let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: v, sourcePixelBufferAttributes: srcAttrs)
-
-            // Dedicated scale pool so the first 480p clip after launch has
-            // buffers ready (adaptor.pixelBufferPool is often still nil on
-            // the first append on iOS 15.8).
-            var scalePool: CVPixelBufferPool?
-            let poolAttrs: [String: Any] = [
-                kCVPixelBufferPoolMinimumBufferCountKey as String: 3
-            ]
-            CVPixelBufferPoolCreate(
-                kCFAllocatorDefault,
-                poolAttrs as CFDictionary,
-                srcAttrs as CFDictionary,
-                &scalePool
-            )
-            self.scalePixelBufferPool = scalePool
-            // Touch the pool once so the first real frame is not the first alloc.
-            if let scalePool = scalePool {
-                var warm: CVPixelBuffer?
-                CVPixelBufferPoolCreatePixelBuffer(nil, scalePool, &warm)
-                warm = nil
-            }
+            // NO pixel-buffer adaptor. We only passthrough camera CMSampleBuffers
+            // (420f YUV). Creating an adaptor advertised as BGRA while appending
+            // YUV sample buffers has been observed to put AVAssetWriter into
+            // .failed on iOS 15 / A10 — especially at 240fps.
+            self.pixelBufferAdaptor = nil
+            self.scalePixelBufferPool = nil
 
             var a: AVAssetWriterInput?
             if plan.hasAudio, let aSettings = audioSettings(for: plan, writer: w) {
@@ -382,8 +352,6 @@ extension CameraRecorder {
             // encoded sample, which is what produced the black first frame.
             var appendedFirstPTS = pts
             if let first = firstSampleBuffer, v.isReadyForMoreMediaData {
-                // Assign adaptor before first append so scaling can run.
-                pixelBufferAdaptor = adaptor
                 videoIn = v
                 if appendVideoSample(first, to: v) {
                     let dur = CMSampleBufferGetDuration(first)
@@ -405,7 +373,7 @@ extension CameraRecorder {
             pendingMidBuffers.removeAll(keepingCapacity: false)
             writer = w
             videoIn = v
-            pixelBufferAdaptor = adaptor
+            pixelBufferAdaptor = nil
             audioIn = a
             segmentStart = pts
             var endPTS = appendedFirstPTS
