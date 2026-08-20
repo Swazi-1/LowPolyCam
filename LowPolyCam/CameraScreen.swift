@@ -509,6 +509,20 @@ struct CameraScreen: View {
                         .font(.system(size: 10, weight: .bold))
                         .foregroundColor(settings.accentColor.bright)
                 }
+
+                // 📊 Opt-in live stats (measured fps / bitrate) — Settings toggle,
+                // off by default. Purely additive to the existing HUD row.
+                if settings.showRecordingStats {
+                    Text("·")
+                        .foregroundColor(Palette.slateLight)
+                        .font(.system(size: 11, weight: .bold))
+                    Text(recorder.recordingStats.measuredFPSLabel)
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.68))
+                    Text(recorder.recordingStats.currentBitrateLabel)
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.68))
+                }
             } else if recorder.isSaving {
                 ProgressView().tint(settings.accentColor.bright).scaleEffect(0.7)
                 Text("Saving…")
