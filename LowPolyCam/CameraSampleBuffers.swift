@@ -105,7 +105,7 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
 
         if isVideo {
             if vIn?.isReadyForMoreMediaData == true {
-                vIn?.append(sampleBuffer)
+                _ = appendVideoSample(sampleBuffer, to: vIn)
                 writerLock.lock()
                 lastVideoPTS = Self.endPTS(for: pts, duration: dur, fps: plan?.frameRate ?? 30)
                 let drainDone = shouldFinalizeAfterAppend
@@ -193,6 +193,49 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
     /// if it's invalid (common on some A10 paths), fall back to 1/fps so
     /// endSession does not undershoot and Photos duration stays consistent
     /// with frame count.
+
+    /// Append a camera frame, scaling down when the selected resolution is
+    /// smaller than the active sensor format (144p/320p/480p).
+    @discardableResult
+    func appendVideoSample(_ sampleBuffer: CMSampleBuffer, to input: AVAssetWriterInput?) -> Bool {
+        guard let input = input else { return false }
+        guard let plan = plan,
+              let pb = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+            return input.append(sampleBuffer)
+        }
+        let srcW = CVPixelBufferGetWidth(pb)
+        let srcH = CVPixelBufferGetHeight(pb)
+        let dstW = plan.width
+        let dstH = plan.height
+        // Exact match (or encoder will handle tiny differences) — passthrough.
+        if abs(srcW - dstW) <= 2 && abs(srcH - dstH) <= 2 {
+            return input.append(sampleBuffer)
+        }
+        guard let adaptor = pixelBufferAdaptor,
+              let pool = adaptor.pixelBufferPool else {
+            return input.append(sampleBuffer)
+        }
+        var dst: CVPixelBuffer?
+        let status = CVPixelBufferPoolCreatePixelBuffer(nil, pool, &dst)
+        guard status == kCVReturnSuccess, let dst = dst else {
+            return input.append(sampleBuffer)
+        }
+        CVPixelBufferLockBaseAddress(pb, .readOnly)
+        CVPixelBufferLockBaseAddress(dst, [])
+        defer {
+            CVPixelBufferUnlockBaseAddress(pb, .readOnly)
+            CVPixelBufferUnlockBaseAddress(dst, [])
+        }
+        let ci = CIImage(cvPixelBuffer: pb)
+        let scaleX = CGFloat(dstW) / CGFloat(srcW)
+        let scaleY = CGFloat(dstH) / CGFloat(srcH)
+        let scaled = ci.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
+        let ctx = CIContext(options: [.useSoftwareRenderer: false])
+        ctx.render(scaled, to: dst, bounds: CGRect(x: 0, y: 0, width: dstW, height: dstH), colorSpace: CGColorSpaceCreateDeviceRGB())
+        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        return adaptor.append(dst, withPresentationTime: pts)
+    }
+
     static func endPTS(for pts: CMTime, duration: CMTime, fps: Int) -> CMTime {
         if duration.isValid && duration.isNumeric && duration.seconds > 0 {
             return CMTimeAdd(pts, duration)
