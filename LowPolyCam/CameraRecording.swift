@@ -124,7 +124,8 @@ extension CameraRecorder {
                     if formatChanged {
                         let fps = max(Double(newPlan.frameRate), 1)
                         let rawWarmupFrames = Int((Self.recordStartWarmupSeconds * fps).rounded(.up))
-                        warmup = min(max(rawWarmupFrames, Self.recordStartWarmupFrameFloor), Self.recordStartWarmupFrameCeiling)
+                        let ceiling = Self.recordStartWarmupFrameCeiling(fps: newPlan.frameRate)
+                        warmup = min(max(rawWarmupFrames, Self.recordStartWarmupFrameFloor), ceiling)
                     } else {
                         warmup = 0
                     }
@@ -182,13 +183,15 @@ extension CameraRecorder {
         // Write everything for ~250ms after Stop, then finalize. High motion
         // near Stop used to drop the tail when the encoder input wasn't ready;
         // those frames are buffered below and flushed before finishWriting.
-        // At 240fps the ISP/pipeline has more frames in flight when Stop is
-        // pressed, so give the drain a little more room before the hard
-        // ceiling forces finalize — 0.25s/0.45s was tuned for 30/60fps and
-        // could clip the 240fps tail under load.
+        // At 120/240fps the record button is disabled and shows a spinner for
+        // the entire time isSaving is true — a longer drain window here
+        // directly extends how long the UI looks frozen after Stop. High-fps
+        // clips already drop frames liberally under load by design, so we
+        // shrink the drain window instead of growing it: better a slightly
+        // shorter tail than several extra seconds of an unresponsive button.
         let highFPS = (plan?.frameRate ?? 30) >= 120
-        let drainWindow: CFTimeInterval = highFPS ? 0.35 : 0.25
-        let hardCeiling: Double = highFPS ? 0.6 : 0.45
+        let drainWindow: CFTimeInterval = highFPS ? 0.15 : 0.25
+        let hardCeiling: Double = highFPS ? 0.3 : 0.45
 
         writerLock.lock()
         isStopDraining = true
