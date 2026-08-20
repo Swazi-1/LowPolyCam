@@ -1001,6 +1001,8 @@ struct CameraScreen: View {
                 let isActive = settings.cameraMode == mode
                 Button {
                     guard settings.cameraMode != mode else { return }
+                    let previous = settings.cameraMode
+                    DebugLog.write("modeSelector: \(previous) -> \(mode)")
                     modeHaptic.selectionChanged()
                     withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
                         settings.cameraMode = mode
