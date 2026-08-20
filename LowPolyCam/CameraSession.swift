@@ -45,6 +45,12 @@ extension CameraRecorder {
         configureVideoConnection()
         refreshCapabilitiesThenApplyFormat()
         configurePhotoOutput()
+        // Pre-warm software CIContext on a background queue so the first
+        // 480p/320p/144p recording does not pay lazy-init cost mid-encode
+        // (that first-clip-fails / second-works pattern on iOS 15 / A10).
+        DispatchQueue.global(qos: .utility).async {
+            _ = self.scaleCIContext
+        }
         refreshTorchState()
         resetFocusAndExposureToAuto()
         syncMicInput()
