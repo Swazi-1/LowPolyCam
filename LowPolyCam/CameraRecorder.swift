@@ -175,6 +175,10 @@ final class CameraRecorder: NSObject, ObservableObject {
     /// Software renderer is intentional: Metal CI into non-Metal pool buffers
     /// fails silently on iPhone 7 / iOS 15.8.
     lazy var scaleCIContext: CIContext = CIContext(options: [.useSoftwareRenderer: true])
+    /// Own pool for downscaled frames (144p/320p/480p). Created per segment so
+    /// the first clip after launch is not missing a pool (adaptor.pixelBufferPool
+    /// is often still nil on the first append after startWriting on iOS 15).
+    var scalePixelBufferPool: CVPixelBufferPool?
     var audioIn: AVAssetWriterInput?
     var segmentStart = CMTime.invalid
     var lastVideoPTS = CMTime.invalid
