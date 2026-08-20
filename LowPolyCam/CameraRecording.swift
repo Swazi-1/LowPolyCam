@@ -53,6 +53,10 @@ extension CameraRecorder {
         clipsThisSession = 0
         droppedFrames = 0
         audioLevel = 0
+        // 📊 targetFPS uses the previous plan's frame rate as a placeholder;
+        // it's corrected below the moment newPlan is finalized on sessionQueue.
+        statsTracker.reset(targetFPS: Double(newPlan.frameRate))
+        recordingStats = statsTracker.snapshot
         if settings.shutterSoundEnabled { SoundPlayer.play(.start) }
 
         // Format first (usually a no-op now — idle already matches record),
@@ -117,6 +121,7 @@ extension CameraRecorder {
                     self.clipTransform = transform
                     self.lastElapsedPush = .invalid
                     self.droppedFrameCount = 0
+                    self.statsTracker.reset(targetFPS: Double(newPlan.frameRate)) // 📊 final plan fps
                     // Warmup only needed after a real format switch (AE ramp).
                     // When idle already matched record format, start writing
                     // immediately — no discarded frames / no freeze.
@@ -651,6 +656,11 @@ extension CameraRecorder {
                     return
                 }
                 self.generateThumbnail(for: oldUrl)
+                // 📊 Keep average-bitrate math accurate across segment
+                // rotation on long takes: fold the finished segment's bytes
+                // in before the new segment's file starts growing from 0.
+                let finishedBytes = (try? oldUrl.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+                self.statsTracker.carryOverSegmentBytes(Int64(finishedBytes))
                 self.deliver(oldUrl, to: destination) {
                     DispatchQueue.main.async { self.refreshFreeSpace() }
                 }
