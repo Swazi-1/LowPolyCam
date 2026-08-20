@@ -158,9 +158,6 @@ extension CameraRecorder {
         }
     }
 
-    var pendingStopToken: Int = 0
-    var pendingStopBackgroundTask: UIBackgroundTaskIdentifier = .invalid
-
     /// Finalize the stop drain. `force` is used by the safety timeout.
     func completeStopDrainIfNeeded(force: Bool = false) {
         writerLock.lock()
