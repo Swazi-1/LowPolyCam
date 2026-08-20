@@ -135,11 +135,26 @@ extension CameraRecorder {
         guard cameraInput?.device.uniqueID != targetDevice.uniqueID else { return }
         DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
 
+        // Create and validate the replacement before removing the live input.
+        // If input creation/configuration fails, preserving the old input keeps
+        // the preview usable instead of leaving the session with no camera.
+        guard let input = try? AVCaptureDeviceInput(device: targetDevice) else {
+            DispatchQueue.main.async { self.notice = "Could not switch camera" }
+            return
+        }
+
         session.beginConfiguration()
-        if let old = cameraInput { session.removeInput(old) }
-        if let input = try? AVCaptureDeviceInput(device: targetDevice), session.canAddInput(input) {
+        let old = cameraInput
+        if let old = old { session.removeInput(old) }
+        if session.canAddInput(input) {
             session.addInput(input)
             cameraInput = input
+        } else if let old = old, session.canAddInput(old) {
+            // Restore the existing input if the replacement is rejected.
+            session.addInput(old)
+            DispatchQueue.main.async { self.notice = "Could not switch camera" }
+        } else {
+            DispatchQueue.main.async { self.notice = "Could not switch camera" }
         }
         session.commitConfiguration()
         configureVideoConnection()
@@ -160,13 +175,19 @@ extension CameraRecorder {
         let fullFPS: Double
 
         if isSlow {
+            let selectedRate: SlowMoFrameRate
             if !availableSlowMoRates.contains(settings.slowMoFrameRate) {
                 let fallback = availableSlowMoRates.first ?? .fps120
+                selectedRate = fallback
                 DispatchQueue.main.async {
                     self.settings.slowMoFrameRate = fallback
                 }
+            } else {
+                selectedRate = settings.slowMoFrameRate
             }
-            fullFPS = Double(settings.slowMoFrameRate.value)
+            // Use the validated local value immediately. The published setting
+            // update above is asynchronous because this runs on sessionQueue.
+            fullFPS = Double(selectedRate.value)
             dims = settings.slowMoResolution.captureDimensions
         } else {
             dims = settings.resolution.captureDimensions
@@ -223,7 +244,9 @@ extension CameraRecorder {
                 let newKey = Self.formatKey(device: device, format: fallbackFormat, fps: applyFPS)
                 var changed = false
                 if newKey != lastAppliedFormatKey {
-                    applyUnifiedHardwareConfiguration(to: device, format: fallbackFormat, targetFPS: applyFPS)
+                    guard applyUnifiedHardwareConfiguration(to: device, format: fallbackFormat, targetFPS: applyFPS) else {
+                        return false
+                    }
                     DispatchQueue.main.async {
                         let dDims = CMVideoFormatDescriptionGetDimensions(fallbackFormat.formatDescription)
                         let closestRes: Resolution = dDims.height >= 1080 ? .p1080 : .p720
@@ -248,7 +271,9 @@ extension CameraRecorder {
         let newKey = Self.formatKey(device: device, format: finalFormat, fps: targetFPS)
         var changed = false
         if newKey != lastAppliedFormatKey {
-            applyUnifiedHardwareConfiguration(to: device, format: finalFormat, targetFPS: targetFPS)
+            guard applyUnifiedHardwareConfiguration(to: device, format: finalFormat, targetFPS: targetFPS) else {
+                return false
+            }
             refreshZoomLimits()
             lastAppliedFormatKey = newKey
             changed = true
@@ -258,7 +283,8 @@ extension CameraRecorder {
         return changed
     }
 
-    func applyUnifiedHardwareConfiguration(to device: AVCaptureDevice, format: AVCaptureDevice.Format, targetFPS: Double) {
+    @discardableResult
+    func applyUnifiedHardwareConfiguration(to device: AVCaptureDevice, format: AVCaptureDevice.Format, targetFPS: Double) -> Bool {
         do {
             try device.lockForConfiguration()
             
@@ -337,8 +363,10 @@ extension CameraRecorder {
             device.videoZoomFactor = min(max(desiredRaw, floor), ceiling)
 
             device.unlockForConfiguration()
+            return true
         } catch {
             DispatchQueue.main.async { self.notice = "Camera settings busy" }
+            return false
         }
     }
 
@@ -560,13 +588,18 @@ extension CameraRecorder {
 
             // Minimal swap — same pattern as stock Camera.
             self.session.beginConfiguration()
-            if let old = self.cameraInput { self.session.removeInput(old) }
+            let old = self.cameraInput
+            if let old = old { self.session.removeInput(old) }
             if self.session.canAddInput(input) {
                 self.session.addInput(input)
                 self.cameraInput = input
                 self.position = next
-            } else if let old = self.cameraInput {
+            } else if let old = old, self.session.canAddInput(old) {
+                // Restore the previous camera if the replacement is rejected.
                 self.session.addInput(old)
+                DispatchQueue.main.async { self.notice = "Could not switch camera" }
+            } else {
+                DispatchQueue.main.async { self.notice = "Could not switch camera" }
             }
             self.session.commitConfiguration()
 
@@ -621,3 +654,5 @@ extension CameraRecorder {
 
 
 }
+
+
