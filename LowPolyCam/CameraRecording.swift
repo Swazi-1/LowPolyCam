@@ -220,15 +220,17 @@ extension CameraRecorder {
         stopRequested = true
 
         // Flush any frames that arrived while the writer input was busy.
+        // Route through appendVideoSample so low-res plans still get scaled.
         if let vIn = vIn {
             for sample in buffered {
                 if vIn.isReadyForMoreMediaData {
-                    vIn.append(sample)
-                    let pts = CMSampleBufferGetPresentationTimeStamp(sample)
-                    let dur = CMSampleBufferGetDuration(sample)
-                    writerLock.lock()
-                    lastVideoPTS = Self.endPTS(for: pts, duration: dur, fps: plan?.frameRate ?? 30)
-                    writerLock.unlock()
+                    if appendVideoSample(sample, to: vIn) {
+                        let pts = CMSampleBufferGetPresentationTimeStamp(sample)
+                        let dur = CMSampleBufferGetDuration(sample)
+                        writerLock.lock()
+                        lastVideoPTS = Self.endPTS(for: pts, duration: dur, fps: plan?.frameRate ?? 30)
+                        writerLock.unlock()
+                    }
                 }
             }
         }
@@ -384,7 +386,8 @@ extension CameraRecorder {
                 // (same PTS) — already appended above.
                 if CMTimeCompare(bPTS, pts) == 0 { continue }
                 if CMTimeCompare(bPTS, pts) < 0 { continue }
-                if v.isReadyForMoreMediaData, v.append(buf) {
+                // Route through appendVideoSample so low-res plans still get scaled.
+                if v.isReadyForMoreMediaData, appendVideoSample(buf, to: v) {
                     let bDur = CMSampleBufferGetDuration(buf)
                     endPTS = Self.endPTS(for: bPTS, duration: bDur, fps: plan.frameRate)
                 }
