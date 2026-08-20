@@ -118,6 +118,9 @@ enum CameraFormatSelector {
         var scored: [(format: AVCaptureDevice.Format, score: Int)] = []
         for format in formats {
             let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+            // Prefer formats that can cover the target. Tiny targets (144p/320p)
+            // rarely exist natively — we still pick the smallest available and
+            // the encoder scales down via AVVideoWidth/Height.
             guard Int(dims.width) >= width, Int(dims.height) >= height else { continue }
 
             guard let matchingRange = format.videoSupportedFrameRateRanges.first(where: {
