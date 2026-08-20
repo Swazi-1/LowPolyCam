@@ -7,6 +7,7 @@ import Combine
 import AudioToolbox
 import ImageIO
 import CoreImage
+import VideoToolbox
 
 final class CameraRecorder: NSObject, ObservableObject {
 
@@ -121,6 +122,10 @@ final class CameraRecorder: NSObject, ObservableObject {
     /// not stay permanently dimmed after cooling down.
     var thermalSavedBrightness: CGFloat?
     var cameraInput: AVCaptureDeviceInput?
+    /// The rear-camera photo choice is remembered while the front lens limits
+    /// its available megapixels, then restored when the rear lens returns.
+    var rearPhotoMegapixelsBeforeFront: PhotoMegapixels?
+    var lastCapabilitiesCameraPosition: AVCaptureDevice.Position?
 
     // Tracks the (device, format, fps) that was last actually pushed to the
     // hardware via applyUnifiedHardwareConfiguration. startRecording() and
@@ -180,13 +185,12 @@ final class CameraRecorder: NSObject, ObservableObject {
     var writer: AVAssetWriter?
     var videoIn: AVAssetWriterInput?
     var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
-    /// Shared software CIContext for downscaling camera frames to 144p/320p/480p.
-    /// Software renderer is intentional: Metal CI into non-Metal pool buffers
-    /// fails silently on iPhone 7 / iOS 15.8.
-    lazy var scaleCIContext: CIContext = CIContext(options: [.useSoftwareRenderer: true])
-    /// Own pool for downscaled frames (144p/320p/480p). Created per segment so
-    /// the first clip after launch is not missing a pool (adaptor.pixelBufferPool
-    /// is often still nil on the first append after startWriting on iOS 15).
+    /// Hardware scaler used when the sharp camera preview is larger than the
+    /// selected saved-video tier. VideoToolbox is available on iOS 15.
+    var pixelTransferSession: VTPixelTransferSession?
+    /// Own pool for downscaled video frames. It is created per segment rather
+    /// than relying on adaptor.pixelBufferPool, which can still be nil for the
+    /// first append on iOS 15.
     var scalePixelBufferPool: CVPixelBufferPool?
     var audioIn: AVAssetWriterInput?
     var segmentStart = CMTime.invalid
@@ -805,5 +809,4 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
     }
 }
-
 
