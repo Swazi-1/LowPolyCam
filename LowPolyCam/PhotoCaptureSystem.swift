@@ -12,11 +12,11 @@ final class PhotoCaptureProcessor: NSObject, AVCapturePhotoCaptureDelegate {
 
     private let targetMegapixels: Double
     private let willCapture: () -> Void
-    private let completion: (UIImage?, [String: Any]?, String?) -> Void
+    private let completion: (UIImage?, Data?, [String: Any]?, String?) -> Void
 
     init(targetMegapixels: Double,
          willCapture: @escaping () -> Void,
-         completion: @escaping (UIImage?, [String: Any]?, String?) -> Void) {
+         completion: @escaping (UIImage?, Data?, [String: Any]?, String?) -> Void) {
         self.targetMegapixels = targetMegapixels
         self.willCapture = willCapture
         self.completion = completion
@@ -33,15 +33,28 @@ final class PhotoCaptureProcessor: NSObject, AVCapturePhotoCaptureDelegate {
                      didFinishProcessingPhoto photo: AVCapturePhoto,
                      error: Error?) {
         if let error = error {
-            completion(nil, nil, error.localizedDescription)
+            completion(nil, nil, nil, error.localizedDescription)
             return
         }
         guard let data = photo.fileDataRepresentation(), let image = UIImage(data: data) else {
-            completion(nil, nil, "Could not read photo data")
+            completion(nil, nil, nil, "Could not read photo data")
             return
         }
+        // If no downscale is needed, keep the camera's original bytes
+        // (no second HEIC encode — that is why we looked worse than stock
+        // Camera but sometimes larger).
         let resized = Self.resize(image, toMegapixels: targetMegapixels)
-        completion(resized, photo.metadata, nil)
+        let scaled: UIImage
+        let passThrough: Data?
+        if let cg = image.cgImage, let rcg = resized.cgImage,
+           cg.width == rcg.width && cg.height == rcg.height {
+            scaled = image
+            passThrough = data
+        } else {
+            scaled = resized
+            passThrough = nil
+        }
+        completion(scaled, passThrough, photo.metadata, nil)
     }
 
     /// Downscales while keeping aspect ratio and orientation. Never upscales.
@@ -89,7 +102,7 @@ enum PhotoEncoder {
             return nil
         }
         var properties = metadataMatchingDimensions(metadata, cgImage: cgImage)
-        properties[kCGImageDestinationLossyCompressionQuality as String] = 0.92
+        properties[kCGImageDestinationLossyCompressionQuality as String] = 0.97
         properties[kCGImagePropertyOrientation as String] = image.imageOrientation.cgImagePropertyOrientation.rawValue
         CGImageDestinationAddImage(destination, cgImage, properties as CFDictionary)
         guard CGImageDestinationFinalize(destination) else { return nil }
@@ -104,7 +117,7 @@ enum PhotoEncoder {
             return nil
         }
         var properties = metadataMatchingDimensions(metadata, cgImage: cgImage)
-        properties[kCGImageDestinationLossyCompressionQuality as String] = 0.95
+        properties[kCGImageDestinationLossyCompressionQuality as String] = 0.97
         properties[kCGImagePropertyOrientation as String] = image.imageOrientation.cgImagePropertyOrientation.rawValue
         CGImageDestinationAddImage(destination, cgImage, properties as CFDictionary)
         guard CGImageDestinationFinalize(destination) else { return nil }
