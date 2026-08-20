@@ -312,6 +312,8 @@ extension CameraRecorder {
             let videoSettings = Encoder.videoSettings(for: plan, writer: w)
             DebugLog.write("[3] video settings=\(videoSettings)")
             let v = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
+            // At 240fps, real-time flag still required for camera capture; the
+            // important part is H.264 + moderate bitrate so the A10 keeps up.
             v.expectsMediaDataInRealTime = true
             v.transform = clipTransform
             let canAddVideo = w.canAdd(v)
@@ -359,6 +361,12 @@ extension CameraRecorder {
                     DebugLog.write("[9b] first frame appended at segment start ✅")
                 } else {
                     DebugLog.write("⚠️ first frame append failed, status=\(w.status.rawValue) error=\(w.error?.localizedDescription ?? "nil")")
+                    // If the writer is already dead, bail — publishing a failed
+                    // writer made 240fps "record" for one frame then die.
+                    if w.status == .failed {
+                        w.cancelWriting()
+                        throw w.error ?? RecorderError.cannotAddInput
+                    }
                 }
             } else {
                 DebugLog.write("⚠️ no first sample buffer / input not ready yet, black-frame gap possible")
