@@ -27,7 +27,7 @@ struct ClipGalleryScreen: View {
     @State private var isLoading = true
     @State private var isEditing = false
     @State private var selection: Set<URL> = []
-    @State private var shareItems: [URL]?
+    @State private var shareSheet: ShareWrapper?
     @State private var confirmDeleteAll = false
     @State private var confirmDeleteOld = false
     @State private var confirmDeleteSelection = false
@@ -90,7 +90,7 @@ struct ClipGalleryScreen: View {
                 ClipPlayerView(url: clip.url)
             }
         }
-        .sheet(item: shareBinding) { wrapper in
+        .sheet(item: $shareSheet) { wrapper in
             ShareSheet(items: wrapper.items)
         }
         .confirmationDialog("Delete all clips? This can't be undone.",
@@ -225,7 +225,7 @@ struct ClipGalleryScreen: View {
             Button(role: .destructive) { delete([clip]) } label: {
                 Label("Delete", systemImage: "trash")
             }
-            Button { shareItems = [clip.url] } label: {
+            Button { shareSheet = ShareWrapper(items: [clip.url]) } label: {
                 Label("Share", systemImage: "square.and.arrow.up")
             }
             .tint(Palette.violetDeep)
@@ -270,7 +270,7 @@ struct ClipGalleryScreen: View {
             Spacer()
 
             Button {
-                shareItems = clips.filter { selection.contains($0.url) }.map { $0.url }
+                shareSheet = ShareWrapper(items: clips.filter { selection.contains($0.url) }.map { $0.url })
             } label: {
                 Label("Share", systemImage: "square.and.arrow.up")
             }
@@ -416,12 +416,6 @@ struct ClipGalleryScreen: View {
         let items: [URL]
     }
 
-    private var shareBinding: Binding<ShareWrapper?> {
-        Binding<ShareWrapper?>(
-            get: { shareItems.map { ShareWrapper(items: $0) } },
-            set: { newValue in shareItems = newValue?.items }
-        )
-    }
 }
 
 /// iOS 16+ only modifier, applied conditionally so this still builds on older deployment targets.
@@ -503,3 +497,5 @@ struct PhotoPreviewView: View {
         }
     }
 }
+
+
