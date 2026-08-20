@@ -796,10 +796,9 @@ enum Encoder {
             // 720p@240 ≈ 28 Mbps; 1080p@120 ≈ 20 Mbps; 720p@120 ≈ 12 Mbps.
             let slowMoTargetKbps: Double
             if fps >= 240 {
-                // ~18 Mbps: stock is ~28 Mbps HEVC, but third-party AVAssetWriter
-                // on A10 / iOS 15 drops into .failed at that rate; 18 Mbps stays
-                // real-time and still looks clean for slo-mo.
-                slowMoTargetKbps = 18000
+                // ~12 Mbps keeps A10 H.264 real-time for multi-second takes.
+                // 18 Mbps still died after ~7s (writer .failed → incomplete MOV).
+                slowMoTargetKbps = 12000
             } else if res == .p1080 {
                 slowMoTargetKbps = 20000
             } else {
@@ -874,11 +873,16 @@ enum Encoder {
                 compression[AVVideoExpectedSourceFrameRateKey] = plan.frameRate
             }
             if codec == .h264 {
-                compression[AVVideoProfileLevelKey] = AVVideoProfileLevelH264HighAutoLevel
+                if plan.frameRate >= 240 {
+                    compression[AVVideoProfileLevelKey] = AVVideoProfileLevelH264MainAutoLevel
+                } else {
+                    compression[AVVideoProfileLevelKey] = AVVideoProfileLevelH264HighAutoLevel
+                }
             }
             // Cap keyframe distance at 240fps (2s × 240 = 480 was fine; keep ≤2s).
             if plan.frameRate >= 240 {
-                compression[AVVideoMaxKeyFrameIntervalKey] = min(max(plan.keyFrameInterval, 1), 480)
+                // I-frame every ~0.5s — lighter on the A10 than a 2s GOP.
+                compression[AVVideoMaxKeyFrameIntervalKey] = 120
             }
             return [
                 AVVideoCodecKey: codec,
