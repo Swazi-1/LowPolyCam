@@ -212,15 +212,35 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
         if abs(srcW - dstW) <= 2 && abs(srcH - dstH) <= 2 {
             return input.append(sampleBuffer)
         }
-        guard let adaptor = pixelBufferAdaptor,
-              let pool = adaptor.pixelBufferPool else {
-            return input.append(sampleBuffer)
-        }
+
+        // Must scale. NEVER fall back to input.append(sampleBuffer) when sizes
+        // differ — a full-sensor buffer into a smaller writer puts AVAssetWriter
+        // into .failed and every clip reports "Clip failed to save".
+        guard let adaptor = pixelBufferAdaptor else { return false }
+
         var dst: CVPixelBuffer?
-        let status = CVPixelBufferPoolCreatePixelBuffer(nil, pool, &dst)
-        guard status == kCVReturnSuccess, let dst = dst else {
-            return input.append(sampleBuffer)
+        if let pool = adaptor.pixelBufferPool {
+            let status = CVPixelBufferPoolCreatePixelBuffer(nil, pool, &dst)
+            if status != kCVReturnSuccess { dst = nil }
         }
+        if dst == nil {
+            // Pool not ready yet (can happen on the very first frame) — create
+            // a one-off buffer with the exact encode dimensions.
+            let attrs: [String: Any] = [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+                kCVPixelBufferWidthKey as String: dstW,
+                kCVPixelBufferHeightKey as String: dstH,
+                kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: Any]
+            ]
+            let status = CVPixelBufferCreate(
+                kCFAllocatorDefault, dstW, dstH,
+                kCVPixelFormatType_32BGRA,
+                attrs as CFDictionary, &dst
+            )
+            if status != kCVReturnSuccess { dst = nil }
+        }
+        guard let dst = dst else { return false }
+
         CVPixelBufferLockBaseAddress(pb, .readOnly)
         CVPixelBufferLockBaseAddress(dst, [])
         defer {
@@ -232,7 +252,9 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
         let scaleY = CGFloat(dstH) / CGFloat(srcH)
         let scaled = ci.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
         let ctx = CIContext(options: [.useSoftwareRenderer: false])
-        ctx.render(scaled, to: dst, bounds: CGRect(x: 0, y: 0, width: dstW, height: dstH), colorSpace: CGColorSpaceCreateDeviceRGB())
+        ctx.render(scaled, to: dst,
+                   bounds: CGRect(x: 0, y: 0, width: dstW, height: dstH),
+                   colorSpace: CGColorSpaceCreateDeviceRGB())
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         return adaptor.append(dst, withPresentationTime: pts)
     }
