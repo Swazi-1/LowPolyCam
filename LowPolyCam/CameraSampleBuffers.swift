@@ -7,6 +7,7 @@ import Combine
 import AudioToolbox
 import ImageIO
 import CoreImage
+import VideoToolbox
 
 extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate {
 
@@ -233,12 +234,43 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
     /// endSession does not undershoot and Photos duration stays consistent
     /// with frame count.
 
-    /// Append a camera frame (passthrough CMSampleBuffer → AVAssetWriterInput).
-    /// Plan dimensions are forced to the active sensor size at record start.
+    /// Append a camera frame. Matching formats stay on the zero-copy sample
+    /// path; lower tiers use VideoToolbox's hardware scaler and retain their
+    /// exact selected dimensions in the saved movie.
     @discardableResult
     func appendVideoSample(_ sampleBuffer: CMSampleBuffer, to input: AVAssetWriterInput?) -> Bool {
         guard let input = input, input.isReadyForMoreMediaData else { return false }
-        return input.append(sampleBuffer)
+        guard let plan = plan,
+              let sourceBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+            return input.append(sampleBuffer)
+        }
+
+        let sourceWidth = CVPixelBufferGetWidth(sourceBuffer)
+        let sourceHeight = CVPixelBufferGetHeight(sourceBuffer)
+        guard sourceWidth != plan.width || sourceHeight != plan.height else {
+            return input.append(sampleBuffer)
+        }
+
+        guard let adaptor = pixelBufferAdaptor,
+              let transfer = pixelTransferSession,
+              let pool = scalePixelBufferPool else {
+            DebugLog.write("❌ missing scaler for \(sourceWidth)x\(sourceHeight) → \(plan.width)x\(plan.height)")
+            return false
+        }
+
+        var scaledBuffer: CVPixelBuffer?
+        guard CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &scaledBuffer) == kCVReturnSuccess,
+              let destinationBuffer = scaledBuffer else {
+            DebugLog.write("⚠️ scaler output pool exhausted")
+            return false
+        }
+
+        let transferStatus = VTPixelTransferSessionTransferImage(transfer, from: sourceBuffer, to: destinationBuffer)
+        guard transferStatus == noErr else {
+            DebugLog.write("❌ frame scale failed status=\(transferStatus)")
+            return false
+        }
+        return adaptor.append(destinationBuffer, withPresentationTime: CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
     }
 
     static func endPTS(for pts: CMTime, duration: CMTime, fps: Int) -> CMTime {
