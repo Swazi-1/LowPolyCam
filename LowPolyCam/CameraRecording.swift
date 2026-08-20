@@ -372,9 +372,9 @@ extension CameraRecorder {
                 DebugLog.write("⚠️ no first sample buffer / input not ready yet, black-frame gap possible")
             }
 
-            // Drain frames that arrived while the writer was starting so their
-            // PTS timeline stays contiguous with the first frame. Without this
-            // Photos reports average fps well below the target (e.g. 27.52 vs 30).
+            // Publish writer so live frames can flow. At high fps we discard any
+            // pendingStartBuffers (stale camera pools) — only the synchronous
+            // firstSampleBuffer was appended above.
             writerLock.lock()
             let buffered = pendingStartBuffers
             pendingStartBuffers.removeAll(keepingCapacity: true)
@@ -389,16 +389,16 @@ extension CameraRecorder {
             segmentStartInFlight = false
             writerLock.unlock()
 
-            for buf in buffered {
-                let bPTS = CMSampleBufferGetPresentationTimeStamp(buf)
-                // Skip the seed frame if it was also handed in as firstSampleBuffer
-                // (same PTS) — already appended above.
-                if CMTimeCompare(bPTS, pts) == 0 { continue }
-                if CMTimeCompare(bPTS, pts) < 0 { continue }
-                // Route through appendVideoSample so low-res plans still get scaled.
-                if v.isReadyForMoreMediaData, appendVideoSample(buf, to: v) {
-                    let bDur = CMSampleBufferGetDuration(buf)
-                    endPTS = Self.endPTS(for: bPTS, duration: bDur, fps: plan.frameRate)
+            let highFPS = plan.frameRate >= 120
+            if !highFPS {
+                for buf in buffered {
+                    let bPTS = CMSampleBufferGetPresentationTimeStamp(buf)
+                    if CMTimeCompare(bPTS, pts) == 0 { continue }
+                    if CMTimeCompare(bPTS, pts) < 0 { continue }
+                    if v.isReadyForMoreMediaData, appendVideoSample(buf, to: v) {
+                        let bDur = CMSampleBufferGetDuration(buf)
+                        endPTS = Self.endPTS(for: bPTS, duration: bDur, fps: plan.frameRate)
+                    }
                 }
             }
 
@@ -407,7 +407,11 @@ extension CameraRecorder {
             writerLock.unlock()
 
             DispatchQueue.main.async { self.clipsThisSession += 1 }
-            DebugLog.write("[10] segment fully started ✅ (flushed \(buffered.count) buffered frames)")
+            if highFPS {
+                DebugLog.write("[10] segment fully started ✅ (high-fps: skipped \(buffered.count) stale buffered frames)")
+            } else {
+                DebugLog.write("[10] segment fully started ✅ (flushed \(buffered.count) buffered frames)")
+            }
 
         } catch {
             DebugLog.write("❌ startSegment threw: \(error.localizedDescription) | full: \(error)")
