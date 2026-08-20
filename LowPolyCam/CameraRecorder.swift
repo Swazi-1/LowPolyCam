@@ -36,6 +36,10 @@ final class CameraRecorder: NSObject, ObservableObject {
     @Published var elapsed: TimeInterval = 0
     @Published var clipsThisSession = 0
     @Published var droppedFrames = 0
+    /// 📊 Live recording stats (measured FPS, dropped-frame rate, bitrate).
+    /// Fed from the existing sample-buffer/elapsed path in
+    /// CameraSampleBuffers.swift — see RecordingStatsSystem.swift.
+    @Published var recordingStats = RecordingStatsSnapshot()
     @Published var freeBytes: Int64 = 0
     @Published var hasTorch = false
     @Published var torchOn = false
@@ -242,6 +246,10 @@ final class CameraRecorder: NSObject, ObservableObject {
     var recordWallStart: Date?
     var recordElapsedTimer: Timer?
     var droppedFrameCount = 0
+    /// 📊 Backing tracker for `recordingStats`. Touched only from the same
+    /// places that already touch droppedFrameCount/lastVideoPTS — never
+    /// takes writerLock itself, so it cannot introduce a new deadlock path.
+    let statsTracker = RecordingStatsTracker()
     var recordingDestination: SaveLocation = .files
     /// Destination that was active when the in-progress clip was started.
     /// Stored so recovery after an interruption uses the original location
