@@ -6,6 +6,7 @@ import CoreMotion
 import Combine
 import AudioToolbox
 import ImageIO
+import CoreImage
 
 extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate {
 
@@ -209,13 +210,16 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
         let dstW = plan.width
         let dstH = plan.height
         // Exact match (or encoder will handle tiny differences) — passthrough.
+        // Camera delivers 420f YUV; writer accepts that for same-size frames.
         if abs(srcW - dstW) <= 2 && abs(srcH - dstH) <= 2 {
             return input.append(sampleBuffer)
         }
 
-        // Must scale. NEVER fall back to input.append(sampleBuffer) when sizes
-        // differ — a full-sensor buffer into a smaller writer puts AVAssetWriter
-        // into .failed and every clip reports "Clip failed to save".
+        // Must scale to plan size. NEVER input.append() a mismatched buffer —
+        // that puts AVAssetWriter into .failed ("Clip failed to save").
+        // iPhone 7 / iOS 15: use software CIContext + fully-compatible BGRA
+        // buffers. Metal CIContext into a pool buffer without Metal flags
+        // silently fails on A10 and yields an empty encode.
         guard let adaptor = pixelBufferAdaptor else { return false }
 
         var dst: CVPixelBuffer?
@@ -224,12 +228,13 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
             if status != kCVReturnSuccess { dst = nil }
         }
         if dst == nil {
-            // Pool not ready yet (can happen on the very first frame) — create
-            // a one-off buffer with the exact encode dimensions.
             let attrs: [String: Any] = [
                 kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
                 kCVPixelBufferWidthKey as String: dstW,
                 kCVPixelBufferHeightKey as String: dstH,
+                kCVPixelBufferBytesPerRowAlignmentKey as String: 16,
+                kCVPixelBufferCGImageCompatibilityKey as String: true,
+                kCVPixelBufferCGBitmapContextCompatibilityKey as String: true,
                 kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: Any]
             ]
             let status = CVPixelBufferCreate(
@@ -241,22 +246,21 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
         }
         guard let dst = dst else { return false }
 
-        CVPixelBufferLockBaseAddress(pb, .readOnly)
-        CVPixelBufferLockBaseAddress(dst, [])
-        defer {
-            CVPixelBufferUnlockBaseAddress(pb, .readOnly)
-            CVPixelBufferUnlockBaseAddress(dst, [])
-        }
+        // Software renderer is reliable on A10 / iOS 15.8 (Metal path into
+        // non-Metal-backed pool buffers was a common silent failure).
+        let ctx = scaleCIContext
         let ci = CIImage(cvPixelBuffer: pb)
-        let scaleX = CGFloat(dstW) / CGFloat(srcW)
-        let scaleY = CGFloat(dstH) / CGFloat(srcH)
+        let scaleX = CGFloat(dstW) / CGFloat(max(srcW, 1))
+        let scaleY = CGFloat(dstH) / CGFloat(max(srcH, 1))
         let scaled = ci.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
-        let ctx = CIContext(options: [.useSoftwareRenderer: false])
+        // sRGB is the safe colour space for BGRA → H.264/HEVC on iOS 15.
+        let colour = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
         ctx.render(scaled, to: dst,
                    bounds: CGRect(x: 0, y: 0, width: dstW, height: dstH),
-                   colorSpace: CGColorSpaceCreateDeviceRGB())
+                   colorSpace: colour)
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-        return adaptor.append(dst, withPresentationTime: pts)
+        let ok = adaptor.append(dst, withPresentationTime: pts)
+        return ok
     }
 
     static func endPTS(for pts: CMTime, duration: CMTime, fps: Int) -> CMTime {
