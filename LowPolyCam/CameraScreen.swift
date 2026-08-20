@@ -548,7 +548,14 @@ struct CameraScreen: View {
                         Image(systemName: "waveform")
                             .font(.system(size: 9, weight: .semibold))
                             .foregroundColor(Palette.slateLight)
-                        Text(recorder.recordingStats.currentBitrateLabel)
+                        // Real on-disk bitrate is unavailable for the first
+                        // few seconds of every clip (AVAssetWriter only
+                        // flushes bytes at each movie-fragment boundary), so
+                        // fall back to the configured target bitrate instead
+                        // of showing a bare "--" the whole time.
+                        Text(recorder.recordingStats.currentBitrateBps > 0
+                             ? recorder.recordingStats.currentBitrateLabel
+                             : RecordingStatsSnapshot.formatBitrate(Double(plan.videoBitrate)) + "*")
                             .font(.system(size: 10, weight: .semibold, design: .monospaced))
                             .foregroundColor(.white.opacity(0.68))
                     }
