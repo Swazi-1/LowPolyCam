@@ -182,16 +182,24 @@ extension CameraRecorder {
         // Write everything for ~250ms after Stop, then finalize. High motion
         // near Stop used to drop the tail when the encoder input wasn't ready;
         // those frames are buffered below and flushed before finishWriting.
+        // At 240fps the ISP/pipeline has more frames in flight when Stop is
+        // pressed, so give the drain a little more room before the hard
+        // ceiling forces finalize — 0.25s/0.45s was tuned for 30/60fps and
+        // could clip the 240fps tail under load.
+        let highFPS = (plan?.frameRate ?? 30) >= 120
+        let drainWindow: CFTimeInterval = highFPS ? 0.35 : 0.25
+        let hardCeiling: Double = highFPS ? 0.6 : 0.45
+
         writerLock.lock()
         isStopDraining = true
-        stopDrainDeadlineHost = CACurrentMediaTime() + 0.25
+        stopDrainDeadlineHost = CACurrentMediaTime() + drainWindow
         pendingStopBuffers.removeAll(keepingCapacity: true)
         pendingStopToken = myToken
         pendingStopBackgroundTask = task
         writerLock.unlock()
 
         // Hard ceiling so we never hang if the camera stalls.
-        ioQueue.asyncAfter(deadline: .now() + 0.45) { [weak self] in
+        ioQueue.asyncAfter(deadline: .now() + hardCeiling) { [weak self] in
             self?.completeStopDrainIfNeeded(force: true)
         }
     }
@@ -491,29 +499,64 @@ extension CameraRecorder {
         v.markAsFinished()
         a?.markAsFinished()
         w.endSession(atSourceTime: end)
-        w.finishWriting {
-            UserDefaults.standard.removeObject(forKey: Self.inProgressKey)
-            UserDefaults.standard.removeObject(forKey: Self.inProgressDestinationKey)
 
-            if w.status == .completed {
-                self.generateThumbnail(for: url)
-                self.deliver(url, to: destination) {
-                    DispatchQueue.main.async { self.refreshFreeSpace() }
-                    completion?()
+        // finishWriting's completion handler has no built-in timeout. If it
+        // ever stalls (rare, but seen on iOS 15 under thermal/storage
+        // pressure with high-fps H.264 writes), isSaving stayed true forever
+        // — Record stayed disabled and the UI looked hung ("stuck saving"),
+        // which after a while reads the same as "the recording never saved."
+        // This watchdog guarantees completion fires exactly once either way.
+        var didFinish = false
+        let finishLock = NSLock()
+        func finishOnce(_ body: @escaping () -> Void) {
+            finishLock.lock()
+            guard !didFinish else { finishLock.unlock(); return }
+            didFinish = true
+            finishLock.unlock()
+            body()
+        }
+
+        ioQueue.asyncAfter(deadline: .now() + 5.0) {
+            finishOnce {
+                DebugLog.write("❌ finishWriting watchdog fired (no callback within 5s), status=\(w.status.rawValue)")
+                let bytes = fileByteSize(url)
+                DebugLog.write("   fileBytes=\(bytes)")
+                UserDefaults.standard.removeObject(forKey: Self.inProgressKey)
+                UserDefaults.standard.removeObject(forKey: Self.inProgressDestinationKey)
+                try? FileManager.default.removeItem(at: url)
+                DispatchQueue.main.async {
+                    self.notice = "Clip failed to save"
+                    self.refreshFreeSpace()
                 }
-                return
+                completion?()
             }
+        }
 
-            // finishWriting failed — file is not a valid Photos asset (3302).
-            let err = w.error?.localizedDescription ?? "status=\(w.status.rawValue)"
-            let bytes = fileByteSize(url)
-            DebugLog.write("❌ finishWriting not completed: \(err) fileBytes=\(bytes)")
-            try? FileManager.default.removeItem(at: url)
-            DispatchQueue.main.async {
-                self.notice = "Clip failed to save"
-                self.refreshFreeSpace()
+        w.finishWriting {
+            finishOnce {
+                UserDefaults.standard.removeObject(forKey: Self.inProgressKey)
+                UserDefaults.standard.removeObject(forKey: Self.inProgressDestinationKey)
+
+                if w.status == .completed {
+                    self.generateThumbnail(for: url)
+                    self.deliver(url, to: destination) {
+                        DispatchQueue.main.async { self.refreshFreeSpace() }
+                        completion?()
+                    }
+                    return
+                }
+
+                // finishWriting failed — file is not a valid Photos asset (3302).
+                let err = w.error?.localizedDescription ?? "status=\(w.status.rawValue)"
+                let bytes = fileByteSize(url)
+                DebugLog.write("❌ finishWriting not completed: \(err) fileBytes=\(bytes)")
+                try? FileManager.default.removeItem(at: url)
+                DispatchQueue.main.async {
+                    self.notice = "Clip failed to save"
+                    self.refreshFreeSpace()
+                }
+                completion?()
             }
-            completion?()
         }
     }
 
