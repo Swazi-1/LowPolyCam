@@ -407,19 +407,36 @@ extension CameraRecorder {
                 throw w.error ?? RecorderError.cannotAddInput
             }
             DebugLog.write("[8] startWriting() OK status=\(w.status.rawValue)")
-            w.startSession(atSourceTime: pts)
-            DebugLog.write("[9] startSession OK at pts=\(CMTimeGetSeconds(pts))")
+            // At 120/240fps a writer can take long enough to initialize that
+            // the first trigger frame is already old by the time it is ready.
+            // Starting the movie at that old PTS and then appending a much
+            // newer frame creates a hole in the media timeline; Photos divides
+            // frame count by that hole and reports e.g. 198/213 fps. Keep only
+            // the newest startup frame and make it the first frame/timestamp.
+            let highFPS = plan.frameRate >= 120
+            var firstFrame = firstSampleBuffer
+            if highFPS {
+                writerLock.lock()
+                if let latest = pendingStartBuffers.last {
+                    firstFrame = latest
+                }
+                writerLock.unlock()
+            }
+            let startPTS = firstFrame.map { CMSampleBufferGetPresentationTimeStamp($0) } ?? pts
+            w.startSession(atSourceTime: startPTS)
+            DebugLog.write("[9] startSession OK at pts=\(CMTimeGetSeconds(startPTS))")
 
-            // Append the actual frame that triggered this segment right now,
-            // synchronously, before anything else can touch the writer. Without
-            // this the session's declared start time (pts) has no matching
-            // encoded sample, which is what produced the black first frame.
-            var appendedFirstPTS = pts
-            if let first = firstSampleBuffer, v.isReadyForMoreMediaData {
+            // Append the selected first frame synchronously before publishing
+            // the writer. This guarantees the session's declared start time
+            // has a matching encoded sample and avoids a black first frame.
+            var appendedFirstPTS = startPTS
+            var appendedFirstFrame = false
+            if let first = firstFrame, v.isReadyForMoreMediaData {
                 videoIn = v
                 if appendVideoSample(first, to: v) {
                     let dur = CMSampleBufferGetDuration(first)
-                    appendedFirstPTS = Self.endPTS(for: pts, duration: dur, fps: plan.frameRate)
+                    appendedFirstPTS = Self.endPTS(for: startPTS, duration: dur, fps: plan.frameRate)
+                    appendedFirstFrame = true
                     DebugLog.write("[9b] first frame appended at segment start ✅")
                 } else {
                     DebugLog.write("⚠️ first frame append failed, status=\(w.status.rawValue) error=\(w.error?.localizedDescription ?? "nil")")
@@ -434,9 +451,9 @@ extension CameraRecorder {
                 DebugLog.write("⚠️ no first sample buffer / input not ready yet, black-frame gap possible")
             }
 
-            // Publish writer so live frames can flow. At high fps we discard any
-            // pendingStartBuffers (stale camera pools) — only the synchronous
-            // firstSampleBuffer was appended above.
+            // Publish writer so live frames can flow. At high FPS, discard the
+            // one now-stale startup buffer—only the synchronous latest frame
+            // selected above is appended.
             writerLock.lock()
             let buffered = pendingStartBuffers
             pendingStartBuffers.removeAll(keepingCapacity: true)
@@ -447,18 +464,26 @@ extension CameraRecorder {
             pixelTransferSession = transferSession
             scalePixelBufferPool = outputPool
             audioIn = a
-            segmentStart = pts
+            segmentStart = startPTS
             var endPTS = appendedFirstPTS
-            if !recordStartPTS.isValid { recordStartPTS = pts }
+            let isFirstSegment = !recordStartPTS.isValid
+            if isFirstSegment { recordStartPTS = startPTS }
             segmentStartInFlight = false
             writerLock.unlock()
 
-            let highFPS = plan.frameRate >= 120
+            // The live FPS indicator must measure encoded media, not the
+            // time spent waiting for AE, dispatching queues, and constructing
+            // AVAssetWriter. Reset it at the actual first written frame.
+            if isFirstSegment, appendedFirstFrame {
+                statsTracker.reset(targetFPS: Double(plan.frameRate))
+                statsTracker.recordAppendedFrame()
+            }
+
             if !highFPS {
                 for buf in buffered {
                     let bPTS = CMSampleBufferGetPresentationTimeStamp(buf)
-                    if CMTimeCompare(bPTS, pts) == 0 { continue }
-                    if CMTimeCompare(bPTS, pts) < 0 { continue }
+                    if CMTimeCompare(bPTS, startPTS) == 0 { continue }
+                    if CMTimeCompare(bPTS, startPTS) < 0 { continue }
                     if v.isReadyForMoreMediaData, appendVideoSample(buf, to: v) {
                         let bDur = CMSampleBufferGetDuration(buf)
                         endPTS = Self.endPTS(for: bPTS, duration: bDur, fps: plan.frameRate)
