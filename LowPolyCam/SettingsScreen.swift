@@ -583,18 +583,68 @@ struct SettingsScreen: View {
     }
 
     // MARK: - Assist (mode-specific)
+    //
+    // Each mode's Capture Assist section picks a subset of `assistToggles`
+    // (declared below) plus the `assistGrid` picker. To add a new Assist
+    // toggle: add one `SettingsToggleSpec` to `assistToggles`, then list its
+    // `id` in whichever mode section(s) should show it — no new `some View`
+    // property required. See SettingsRowKit.swift for how the group renders.
+
+    /// Every Capture Assist toggle, keyed by id. Mode sections below select
+    /// a subset by id via `assistToggleGroup(ids:)`.
+    private var assistToggles: [SettingsToggleSpec] {
+        [
+            SettingsToggleSpec(
+                id: "stabilisation",
+                title: "Stabilisation",
+                icon: "hand.raised.fill",
+                isOn: $settings.stabilization,
+                onChange: { _ in recorder.updateStabilization() },
+                // Hide (not grey) when this lens cannot stabilise (typical for front camera).
+                isVisible: stabilizationSupported
+            ),
+            SettingsToggleSpec(
+                id: "levelMeter",
+                title: "Level meter",
+                icon: "gyroscope",
+                isOn: $settings.showLevelGauge
+            ),
+            SettingsToggleSpec(
+                id: "autoDim",
+                title: "Auto-dim when filming",
+                icon: "moon.stars.fill",
+                isOn: $settings.autoDimOnRecord
+            ),
+            SettingsToggleSpec(
+                id: "longevity",
+                title: "Longevity Mode",
+                icon: "leaf.fill",
+                isOn: $settings.longevityMode,
+                onChange: { _ in recorder.refreshIdleFormatIfNeeded() }
+            ),
+            // 📊 Opt-in live stats readout (measured fps / bitrate) shown in
+            // the recording HUD. Off by default — purely additive.
+            SettingsToggleSpec(
+                id: "recordingStats",
+                title: "Live recording stats",
+                icon: "waveform.path.ecg",
+                isOn: $settings.showRecordingStats
+            )
+        ]
+    }
+
+    /// Renders the subset of `assistToggles` matching `ids`, in `ids` order.
+    private func assistToggleGroup(ids: [String]) -> some View {
+        let bySpecId = Dictionary(uniqueKeysWithValues: assistToggles.map { ($0.id, $0) })
+        let ordered = ids.compactMap { bySpecId[$0] }
+        return SettingsToggleGroup(specs: ordered, accentColor: settings.accentColor.color)
+    }
 
     private var videoAssistSection: some View {
         Section(header: sectionHeader("Capture Assist", icon: "viewfinder")) {
-            // Hide (not grey) when this lens cannot stabilise (typical for front camera).
-            if stabilizationSupported {
-                assistStabilisation
-            }
+            assistToggleGroup(ids: ["stabilisation"])
             assistGrid
-            assistLevel
-            assistAutoDim
-            assistLongevity
-            assistRecordingStats
+            assistToggleGroup(ids: ["levelMeter", "autoDim", "longevity", "recordingStats"])
         }
     }
 
@@ -602,9 +652,7 @@ struct SettingsScreen: View {
         Section(header: sectionHeader("Capture Assist", icon: "viewfinder"),
                 footer: Text("Video-only options (split, HEVC presets) are hidden in Slow-Mo.")) {
             assistGrid
-            assistLevel
-            assistLongevity
-            assistRecordingStats
+            assistToggleGroup(ids: ["levelMeter", "longevity", "recordingStats"])
         }
     }
 
@@ -612,60 +660,18 @@ struct SettingsScreen: View {
         Section(header: sectionHeader("Capture Assist", icon: "viewfinder"),
                 footer: Text("Video settings are hidden while you are in Photo mode.")) {
             assistGrid
-            assistLevel
+            assistToggleGroup(ids: ["levelMeter"])
         }
-    }
-
-    private var assistStabilisation: some View {
-        Toggle(isOn: $settings.stabilization) {
-            Label("Stabilisation", systemImage: "hand.raised.fill")
-                .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
-        }
-        .onChange(of: settings.stabilization) { _ in recorder.updateStabilization() }
     }
 
     private var assistGrid: some View {
-        Picker(selection: $settings.gridStyle) {
-            ForEach(GridStyle.allCases) { style in
-                Text(style.label).tag(style)
-            }
-        } label: {
-            Label("Grid overlay", systemImage: "grid")
-                .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
-        }
-    }
-
-    private var assistLevel: some View {
-        Toggle(isOn: $settings.showLevelGauge) {
-            Label("Level meter", systemImage: "gyroscope")
-                .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
-        }
-    }
-
-    private var assistAutoDim: some View {
-        Toggle(isOn: $settings.autoDimOnRecord) {
-            Label("Auto-dim when filming", systemImage: "moon.stars.fill")
-                .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
-        }
-    }
-
-    /// 📊 Opt-in live stats readout (measured fps / bitrate) shown in the
-    /// recording HUD. Off by default — purely additive to the settings list.
-    private var assistRecordingStats: some View {
-        Toggle(isOn: $settings.showRecordingStats) {
-            Label("Live recording stats", systemImage: "waveform.path.ecg")
-                .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
-        }
-    }
-
-    private var assistLongevity: some View {
-        Toggle(isOn: $settings.longevityMode) {
-            Label("Longevity Mode", systemImage: "leaf.fill")
-                .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
-        }
-        .onChange(of: settings.longevityMode) { _ in
-            recorder.refreshIdleFormatIfNeeded()
-        }
+        SettingsPickerRow(
+            title: "Grid overlay",
+            icon: "grid",
+            accentColor: settings.accentColor.color,
+            selection: $settings.gridStyle,
+            label: { Text($0.label) }
+        )
     }
 
     // MARK: - Output (mode-specific)
