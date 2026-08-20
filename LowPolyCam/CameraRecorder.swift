@@ -356,6 +356,9 @@ final class CameraRecorder: NSObject, ObservableObject {
             notice = "Phone is hot · Cooling down"
 
         case .serious:
+            // Keep this separate from the critical-state flag below. A later
+            // .critical notification must still apply the stronger preview
+            // throttle and 30% brightness cap.
             if !appliedThermalMitigation {
                 if thermalSavedBrightness == nil {
                     thermalSavedBrightness = UIScreen.main.brightness
@@ -367,7 +370,10 @@ final class CameraRecorder: NSObject, ObservableObject {
             }
 
         case .nominal, .fair:
-            if appliedThermalMitigation {
+            // Serious heat only dims the screen; it does not set the critical
+            // preview-throttle flag. Restore whenever we own a saved brightness
+            // snapshot so a serious-only event cannot leave the display dimmed.
+            if appliedThermalMitigation || thermalSavedBrightness != nil {
                 appliedThermalMitigation = false
                 // Restore pre-thermal brightness (if we were the ones who dimmed it).
                 if let saved = thermalSavedBrightness {
@@ -647,3 +653,5 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
     }
 }
+
+
