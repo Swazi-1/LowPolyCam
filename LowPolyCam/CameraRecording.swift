@@ -311,6 +311,15 @@ extension CameraRecorder {
             guard canAddVideo else { throw RecorderError.cannotAddInput }
             w.add(v)
             DebugLog.write("[5] video input added")
+            // Adaptor lets us scale camera frames down to the exact selected
+            // resolution (144p/320p/480p). Appending raw sample buffers often
+            // keeps the sensor size (e.g. 960×540 → 540×960 portrait).
+            let srcAttrs: [String: Any] = [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+                kCVPixelBufferWidthKey as String: plan.width,
+                kCVPixelBufferHeightKey as String: plan.height
+            ]
+            let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: v, sourcePixelBufferAttributes: srcAttrs)
 
             var a: AVAssetWriterInput?
             if plan.hasAudio, let aSettings = audioSettings(for: plan, writer: w) {
@@ -338,7 +347,10 @@ extension CameraRecorder {
             // encoded sample, which is what produced the black first frame.
             var appendedFirstPTS = pts
             if let first = firstSampleBuffer, v.isReadyForMoreMediaData {
-                if v.append(first) {
+                // Assign adaptor before first append so scaling can run.
+                pixelBufferAdaptor = adaptor
+                videoIn = v
+                if appendVideoSample(first, to: v) {
                     let dur = CMSampleBufferGetDuration(first)
                     appendedFirstPTS = Self.endPTS(for: pts, duration: dur, fps: plan.frameRate)
                     DebugLog.write("[9b] first frame appended at segment start ✅")
@@ -358,6 +370,7 @@ extension CameraRecorder {
             pendingMidBuffers.removeAll(keepingCapacity: false)
             writer = w
             videoIn = v
+            pixelBufferAdaptor = adaptor
             audioIn = a
             segmentStart = pts
             var endPTS = appendedFirstPTS
@@ -404,7 +417,7 @@ extension CameraRecorder {
     func finishSegment(_ completion: (() -> Void)? = nil) {
         writerLock.lock()
         guard let w = writer, let v = videoIn else {
-            writer = nil; videoIn = nil; audioIn = nil
+            writer = nil; videoIn = nil; audioIn = nil; pixelBufferAdaptor = nil
             writerLock.unlock()
             completion?()
             return
@@ -416,7 +429,7 @@ extension CameraRecorder {
         let destination = recordingDestination
         let url = w.outputURL
 
-        writer = nil; videoIn = nil; audioIn = nil
+        writer = nil; videoIn = nil; audioIn = nil; pixelBufferAdaptor = nil
         segmentStart = .invalid
         lastVideoDuration = .invalid
         writerLock.unlock()
@@ -465,7 +478,7 @@ extension CameraRecorder {
         let oldUrl = oldWriter.outputURL
         let destination = recordingDestination
 
-        writer = nil; videoIn = nil; audioIn = nil
+        writer = nil; videoIn = nil; audioIn = nil; pixelBufferAdaptor = nil
         segmentStart = .invalid
         writerLock.unlock()
 
