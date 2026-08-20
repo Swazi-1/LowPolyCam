@@ -460,6 +460,8 @@ extension CameraRecorder {
             UserDefaults.standard.removeObject(forKey: Self.inProgressDestinationKey)
 
             guard w.status == .completed else {
+                let err = w.error?.localizedDescription ?? "status=\(w.status.rawValue)"
+                DebugLog.write("❌ finishWriting not completed: \(err)")
                 DispatchQueue.main.async {
                     self.notice = "Clip failed to save"
                     self.refreshFreeSpace()
