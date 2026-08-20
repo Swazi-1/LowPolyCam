@@ -147,7 +147,7 @@ extension CameraRecorder {
         }
     }
 
-    @objc private func willResignActive() {
+    @objc func willResignActive() {
         setTorch(on: false)
         if isRecording {
             stopRecording(notice: "Recording stopped (app backgrounded)")
@@ -165,7 +165,7 @@ extension CameraRecorder {
         }
     }
 
-    @objc private func didBecomeActive() {
+    @objc func didBecomeActive() {
         sessionQueue.async {
             if !self.session.isRunning { self.session.startRunning() }
             self.refreshTorchState()
@@ -307,7 +307,7 @@ extension CameraRecorder {
         }
     }
 
-    @objc private func subjectAreaDidChange() {
+    @objc func subjectAreaDidChange() {
         resetFocusAndExposureToAuto()
     }
 
