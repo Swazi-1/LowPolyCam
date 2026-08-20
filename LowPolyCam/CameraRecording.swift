@@ -194,6 +194,8 @@ extension CameraRecorder {
         let drainWindow: CFTimeInterval = highFPS ? 0.15 : 0.25
         let hardCeiling: Double = highFPS ? 0.3 : 0.45
 
+        DebugLog.write("[stop] draining token=\(myToken) drainWindow=\(drainWindow) hardCeiling=\(hardCeiling) highFPS=\(highFPS)")
+
         writerLock.lock()
         isStopDraining = true
         stopDrainDeadlineHost = CACurrentMediaTime() + drainWindow
@@ -202,9 +204,19 @@ extension CameraRecorder {
         pendingStopBackgroundTask = task
         writerLock.unlock()
 
-        // Hard ceiling so we never hang if the camera stalls.
-        ioQueue.asyncAfter(deadline: .now() + hardCeiling) { [weak self] in
-            self?.completeStopDrainIfNeeded(force: true)
+        // Hard ceiling so we never hang if the camera stalls. This used to
+        // run on ioQueue, but at 240fps ioQueue can itself be backed up
+        // (segment start/rotate + append bookkeeping all funnel through it),
+        // which delayed this asyncAfter block past its deadline and left
+        // the drain permanently open — isSaving stuck true, Record dead,
+        // and nothing after "stopRecording() called" ever hit the log.
+        // A dedicated timer on the main queue can't be blocked by that
+        // congestion, so the drain always terminates on schedule.
+        DispatchQueue.main.asyncAfter(deadline: .now() + hardCeiling) { [weak self] in
+            DebugLog.write("[stop] hard ceiling reached token=\(myToken), forcing drain completion")
+            self?.ioQueue.async {
+                self?.completeStopDrainIfNeeded(force: true)
+            }
         }
 
         // Independent, UI-side safety valve. Everything above assumes the
@@ -215,9 +227,9 @@ extension CameraRecorder {
         // forever with zero log output — a fully dead Record button with no
         // trail to diagnose. This fires independently of that whole chain
         // and force-recovers the UI no matter what got stuck.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 8.0) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) { [weak self] in
             guard let self = self, self.isSaving, self.recordingSessionToken == myToken else { return }
-            DebugLog.write("❌ stopRecording watchdog: isSaving still true 8s after Stop (token=\(myToken)) — force-recovering UI")
+            DebugLog.write("❌ stopRecording watchdog: isSaving still true 4s after Stop (token=\(myToken)) — force-recovering UI")
             self.isSaving = false
             self.notice = "Recording didn't save · Try again"
             self.writerLock.lock()
@@ -237,10 +249,12 @@ extension CameraRecorder {
         var task = pendingStopBackgroundTask
         let pastDeadline = CACurrentMediaTime() >= stopDrainDeadlineHost
         guard token != 0, token == recordingSessionToken, (force || pastDeadline) else {
+            let reason = token == 0 ? "already claimed" : (token != recordingSessionToken ? "stale token" : "before deadline")
             writerLock.unlock()
+            DebugLog.write("[stop] completeStopDrainIfNeeded skipped (\(reason)) force=\(force) token=\(token) currentToken=\(recordingSessionToken)")
             return
         }
-        DebugLog.write("[stop] completeStopDrainIfNeeded firing force=\(force) token=\(token)")
+        DebugLog.write("[stop] completeStopDrainIfNeeded firing force=\(force) token=\(token) bufferedStopFrames=\(pendingStopBuffers.count)")
         // Claim the stop so only one path finalizes.
         pendingStopToken = 0
         pendingStopBackgroundTask = .invalid
@@ -280,8 +294,10 @@ extension CameraRecorder {
             self.applyStabilization()
         }
 
+        DebugLog.write("[stop] dispatching finishSegment to ioQueue token=\(token)")
         ioQueue.async {
             guard token == self.recordingSessionToken else {
+                DebugLog.write("[stop] finishSegment skipped, stale token=\(token) currentToken=\(self.recordingSessionToken)")
                 DispatchQueue.main.async { self.isSaving = false }
                 if task != .invalid {
                     UIApplication.shared.endBackgroundTask(task)
@@ -290,6 +306,7 @@ extension CameraRecorder {
                 return
             }
             self.finishSegment {
+                DebugLog.write("[stop] finishSegment completion fired, isSaving -> false token=\(token)")
                 DispatchQueue.main.async { self.isSaving = false }
                 if task != .invalid {
                     UIApplication.shared.endBackgroundTask(task)
@@ -466,6 +483,7 @@ extension CameraRecorder {
 
 
     func finishSegment(_ completion: (() -> Void)? = nil) {
+        DebugLog.write("[finish] finishSegment entered")
         writerLock.lock()
         guard let w = writer, let v = videoIn else {
             DebugLog.write("[finish] finishSegment called with no writer/videoIn — nothing to finalize")
