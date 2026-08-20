@@ -572,53 +572,65 @@ extension CameraRecorder {
         // session). Guard is the single source of truth — no dead branches.
         guard !isRecording, !isSwitchingCamera else { return }
 
-        // Brief UI lock only for the actual input swap (stock Camera feel).
-        DispatchQueue.main.async {
-            self.volumeObserver?.ignoreTemporarily(duration: 0.4)
-            self.isSwitchingCamera = true
-        }
-        setTorch(on: false)
-        sessionQueue.async {
-            let next: AVCaptureDevice.Position = (self.position == .back) ? .front : .back
-            guard let device = Self.camera(at: next, mode: self.settings.cameraMode, preferPhysical: self.wantsPhysicalWideLens),
-                  let input = try? AVCaptureDeviceInput(device: device) else {
-                DispatchQueue.main.async { self.isSwitchingCamera = false }
-                return
-            }
-
-            // Minimal swap — same pattern as stock Camera.
-            self.session.beginConfiguration()
-            let old = self.cameraInput
-            if let old = old { self.session.removeInput(old) }
-            if self.session.canAddInput(input) {
-                self.session.addInput(input)
-                self.cameraInput = input
-                self.position = next
-            } else if let old = old, self.session.canAddInput(old) {
-                // Restore the previous camera if the replacement is rejected.
-                self.session.addInput(old)
-                DispatchQueue.main.async { self.notice = "Could not switch camera" }
-            } else {
-                DispatchQueue.main.async { self.notice = "Could not switch camera" }
-            }
-            self.session.commitConfiguration()
-
-            self.configureVideoConnection()
-            self.refreshTorchState()
-
-            // Unlock UI immediately after the input swap so the flip feels
-            // sub-second. Format + capability scan run after the user can
-            // already interact again (like the stock Camera app).
+        let finishFlipUI: () -> Void = {
             DispatchQueue.main.async {
-                self.isFrontCamera = (next == .front)
+                // Use the actual position: input replacement can fail and the
+                // previous camera is restored in that case.
+                self.isFrontCamera = (self.position == .front)
                 self.isSwitchingCamera = false
-                self.volumeObserver?.ignoreTemporarily(duration: 0.5)
+                // Restarting samples the current system volume and ignores the
+                // initial KVO noise, so a camera-input swap cannot be mistaken
+                // for a volume-button shutter press.
+                self.resumeVolumeMonitoring()
             }
+        }
 
-            // Capability scan + format apply after UI is free (refreshCapabilities
-            // itself calls applyActiveFormat). Avoids multi-second blocked flips.
-            self.refreshCapabilitiesThenApplyFormat()
-            self.resetFocusAndExposureToAuto()
+        let beginFlip: () -> Void = {
+            // The volume observer can receive a KVO change while AVFoundation
+            // swaps camera inputs. Fully stop it for the transaction rather
+            // than merely ignoring a fixed time window.
+            self.volumeObserver?.stop()
+            self.isSwitchingCamera = true
+            self.setTorch(on: false)
+            self.sessionQueue.async {
+                let next: AVCaptureDevice.Position = (self.position == .back) ? .front : .back
+                guard let device = Self.camera(at: next, mode: self.settings.cameraMode, preferPhysical: self.wantsPhysicalWideLens),
+                      let input = try? AVCaptureDeviceInput(device: device) else {
+                    finishFlipUI()
+                    return
+                }
+
+                // Minimal swap — same pattern as stock Camera.
+                self.session.beginConfiguration()
+                let old = self.cameraInput
+                if let old = old { self.session.removeInput(old) }
+                if self.session.canAddInput(input) {
+                    self.session.addInput(input)
+                    self.cameraInput = input
+                    self.position = next
+                } else if let old = old, self.session.canAddInput(old) {
+                    // Restore the previous camera if the replacement is rejected.
+                    self.session.addInput(old)
+                    DispatchQueue.main.async { self.notice = "Could not switch camera" }
+                } else {
+                    DispatchQueue.main.async { self.notice = "Could not switch camera" }
+                }
+                self.session.commitConfiguration()
+
+                self.configureVideoConnection()
+                self.refreshTorchState()
+
+                // Capability scan + format apply before volume shutter resumes.
+                self.refreshCapabilitiesThenApplyFormat()
+                self.resetFocusAndExposureToAuto()
+                finishFlipUI()
+            }
+        }
+
+        if Thread.isMainThread {
+            beginFlip()
+        } else {
+            DispatchQueue.main.async(execute: beginFlip)
         }
     }
 
