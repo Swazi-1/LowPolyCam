@@ -29,8 +29,7 @@ extension CameraRecorder {
 
         if settings.saveLocation == .photos { ensurePhotosAccess() }
 
-        let newPlan = Encoder.plan(for: settings)
-        let transform = Self.transform(width: newPlan.width, height: newPlan.height, isFront: isFrontCamera)
+        var newPlan = Encoder.plan(for: settings)
 
         stopRequested = false
         writerLock.lock()
@@ -64,6 +63,29 @@ extension CameraRecorder {
             let formatChanged = self.applyActiveFormat(forRecording: true)
             guard self.recordingSessionToken == myToken, !self.stopRequested else { return }
             self.applyStabilization(forceRecording: true)
+
+            // The requested resolution (e.g. 1080p Slow-Mo) isn't always what the
+            // sensor can actually deliver at the requested fps — on hardware that
+            // can't hit e.g. 1080p240, applyActiveFormat above silently falls back
+            // to a lower-res sensor format. If the encoder is still told to write
+            // the originally-requested (higher) dimensions, it upscales the lower
+            // native sensor image into the bigger frame, which looks soft/noisy
+            // despite a high bitrate. Read back what the sensor actually locked to
+            // and make the encoder match it exactly — no upscale.
+            if let device = self.cameraInput?.device {
+                let activeDims = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
+                let sensorW = Int(activeDims.width)
+                let sensorH = Int(activeDims.height)
+                if sensorW > 0, sensorH > 0 {
+                    let requestedIsPortrait = newPlan.height > newPlan.width
+                    let (outW, outH) = requestedIsPortrait ? (sensorH, sensorW) : (sensorW, sensorH)
+                    if outW != newPlan.width || outH != newPlan.height {
+                        newPlan.width = outW
+                        newPlan.height = outH
+                    }
+                }
+            }
+            let transform = Self.transform(width: newPlan.width, height: newPlan.height, isFront: self.isFrontCamera)
 
             DispatchQueue.main.async {
                 guard self.recordingSessionToken == myToken, !self.stopRequested else { return }
