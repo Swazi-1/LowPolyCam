@@ -901,7 +901,20 @@ struct CameraScreen: View {
                     .frame(width: 66, height: 66)
 
                 if recorder.isSaving || recorder.isCapturingPhoto {
+                    // At 120/240fps finishWriting has a lot more to flush than at
+                    // 30/60fps (no movie fragments at 240fps, far more frames
+                    // encoded), so this spinner can sit here for a couple of
+                    // seconds on a long slow-mo clip. A bare spinner in that case
+                    // reads as the app being stuck — the ring animation makes it
+                    // clear something is still actively happening.
                     ProgressView().tint(settings.accentColor.bright).scaleEffect(1.25)
+                        .overlay(
+                            Circle()
+                                .stroke(settings.accentColor.bright.opacity(0.35), lineWidth: 2)
+                                .frame(width: 60, height: 60)
+                                .rotationEffect(.degrees(blink ? 360 : 0))
+                                .animation(.linear(duration: 1.1).repeatForever(autoreverses: false), value: blink)
+                        )
                 } else if recorder.isRecording {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(
