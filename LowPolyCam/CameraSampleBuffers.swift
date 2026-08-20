@@ -123,7 +123,8 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
                     if !backlog.isEmpty, let vIn = vIn {
                         var leftover: [CMSampleBuffer] = []
                         for buf in backlog {
-                            if vIn.isReadyForMoreMediaData, vIn.append(buf) {
+                            // Route through appendVideoSample so low-res plans still get scaled.
+                            if vIn.isReadyForMoreMediaData, appendVideoSample(buf, to: vIn) {
                                 let bPTS = CMSampleBufferGetPresentationTimeStamp(buf)
                                 let bDur = CMSampleBufferGetDuration(buf)
                                 writerLock.lock()
