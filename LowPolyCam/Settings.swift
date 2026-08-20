@@ -463,7 +463,24 @@ enum WhiteBalancePreset: String, CaseIterable, Identifiable {
 }
 
 // MARK: - Stored settings
-
+//
+// HOW TO ADD A NEW SETTING
+// --------------------------
+// 1. Add an `@Published var yourSetting: T` below, with a `didSet` that
+//    writes it to `store` (UserDefaults) under a unique key — copy the
+//    pattern of any existing property.
+// 2. Load its initial value from `store` in `init()` below, with a sensible
+//    default for first launch.
+// 3. Expose it in the UI:
+//    - Settings screen: add one `SettingsToggleSpec` (for a Bool) to the
+//      relevant array in SettingsScreen.swift, e.g. `assistToggles`, or use
+//      `SettingsPickerRow` directly for a `CaseIterable` enum setting.
+//      See SettingsRowKit.swift for both.
+//    - Pro Tools drawer: add one `ProToolControl` case (`.toggle`, `.chips`,
+//      or `.slider`) to `proToolsDrawerControls` in CameraScreen.swift.
+//      See ProToolsControls.swift.
+// No other file needs to change — both UIs render from these declarative
+// lists rather than needing a new hand-built row per setting.
 final class AppSettings: ObservableObject {
 
     static let shared = AppSettings()
