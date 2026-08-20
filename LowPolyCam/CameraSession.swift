@@ -350,7 +350,8 @@ extension CameraRecorder {
 
         var rates = Set<FrameRate>()
         var widestPixels = 0
-        var slowRates = Set<SlowMoFrameRate>()
+        // Per-resolution slow-mo FPS support (key fix for Bug 2).
+        var slowByRes: [Resolution: Set<SlowMoFrameRate>] = [:]
         var slowResolutions = Set<Resolution>()
 
         for format in device.formats {
@@ -368,23 +369,29 @@ extension CameraRecorder {
                     }
                 }
             }
+
+            // Map each high-FPS format to the resolutions it can actually deliver.
+            // A format whose active dimensions are only 720p must not advertise
+            // 240 fps as available for 1080p.
+            var ratesForThisFormat = Set<SlowMoFrameRate>()
             for range in format.videoSupportedFrameRateRanges {
-                if range.maxFrameRate >= 119.0 {
-                    slowRates.insert(.fps120)
-                    if h >= 1080 { slowResolutions.insert(.p1080) }
-                    if h >= 720 { slowResolutions.insert(.p720) }
-                    if h >= 480 { slowResolutions.insert(.p480) }
-                    slowResolutions.insert(.p320)
-                    slowResolutions.insert(.p144)
-                }
-                if range.maxFrameRate >= 239.0 {
-                    slowRates.insert(.fps240)
-                    if h >= 1080 { slowResolutions.insert(.p1080) }
-                    if h >= 720 { slowResolutions.insert(.p720) }
-                    if h >= 480 { slowResolutions.insert(.p480) }
-                    slowResolutions.insert(.p320)
-                    slowResolutions.insert(.p144)
-                }
+                if range.maxFrameRate >= 119.0 { ratesForThisFormat.insert(.fps120) }
+                if range.maxFrameRate >= 239.0 { ratesForThisFormat.insert(.fps240) }
+            }
+            guard !ratesForThisFormat.isEmpty else { continue }
+
+            // Resolutions this format can cover (sensor height threshold).
+            var resForFormat: [Resolution] = []
+            if h >= 1080 { resForFormat.append(.p1080) }
+            if h >= 720 { resForFormat.append(.p720) }
+            if h >= 480 { resForFormat.append(.p480) }
+            // Lower tiers are always reachable via downscale from a higher format.
+            resForFormat.append(.p320)
+            resForFormat.append(.p144)
+
+            for res in resForFormat {
+                slowResolutions.insert(res)
+                slowByRes[res, default: []].formUnion(ratesForThisFormat)
             }
         }
 
@@ -399,26 +406,40 @@ extension CameraRecorder {
             }
         }
         // Slow-mo never uses 4K on this device class
-        let supportedSlowRates = SlowMoFrameRate.allCases.filter { slowRates.contains($0) }
         let supportedSlowRes = Resolution.allCases.filter {
             $0 != .p2160 && slowResolutions.contains($0)
         }
 
-        // Publish capability lists on main without blocking the session queue
-        // (main.sync here previously risked deadlocks / hitches on A10).
-        // Named finalRates to avoid shadowing `var rates = Set<FrameRate>()` above.
+        // Scope available FPS to the currently selected slow-mo resolution.
+        let selectedSlowRes = settings.slowMoResolution
+        let ratesForSelected = slowByRes[selectedSlowRes] ?? []
+        let supportedSlowRates = SlowMoFrameRate.allCases.filter { ratesForSelected.contains($0) }
+
+        // Max still-photo megapixels for this lens (front is often ~7 MP).
+        let maxStillPixels: Int = device.formats.map { format in
+            let d = format.highResolutionStillImageDimensions
+            return Int(d.width) * Int(d.height)
+        }.max() ?? 0
+        let maxMP = Double(maxStillPixels) / 1_000_000.0
+        // Allow a small tolerance so e.g. 11.9 MP still counts as 12 MP.
+        let supportedPhotoMP = PhotoMegapixels.allCases.filter { $0.megapixels <= maxMP + 0.5 }
+
         let finalRates = supportedRates.isEmpty ? [FrameRate.fps30] : supportedRates
         let resolutions = supportedResolutions.isEmpty ? [Resolution.p720] : supportedResolutions
         let slowRatesOut = supportedSlowRates
         let slowResOut = supportedSlowRes.isEmpty ? [Resolution.p720] : supportedSlowRes
-        let slowSupported = !supportedSlowRates.isEmpty
+        let slowSupported = !slowByRes.isEmpty
+        let photoMPOut = supportedPhotoMP.isEmpty ? [PhotoMegapixels.mp2] : supportedPhotoMP
+        let slowByResOut = slowByRes
 
         DispatchQueue.main.async {
             self.availableFrameRates = finalRates
             self.availableResolutions = resolutions
             self.availableSlowMoRates = slowRatesOut
             self.availableSlowMoResolutions = slowResOut
+            self.slowRatesByResolution = slowByResOut
             self.isSlowMoSupportedOnCurrentLens = slowSupported
+            self.availablePhotoMegapixels = photoMPOut
 
             if !self.availableFrameRates.contains(self.settings.frameRate) {
                 let fallback: FrameRate = self.availableFrameRates.contains(.fps30)
@@ -434,12 +455,25 @@ extension CameraRecorder {
                 self.settings.frameRate = .fps30
             }
 
+            if !self.availablePhotoMegapixels.contains(self.settings.photoMegapixels) {
+                self.settings.photoMegapixels = self.availablePhotoMegapixels.max(by: { $0.megapixels < $1.megapixels }) ?? .mp2
+            }
+
             if self.settings.cameraMode == .slowMo {
                 if !self.isSlowMoSupportedOnCurrentLens {
                     self.notice = "Slow-Mo unavailable on front camera"
                     self.settings.cameraMode = .video
-                } else if !self.availableSlowMoRates.contains(self.settings.slowMoFrameRate) {
-                    self.settings.slowMoFrameRate = self.availableSlowMoRates.first ?? .fps120
+                } else {
+                    if !self.availableSlowMoResolutions.contains(self.settings.slowMoResolution) {
+                        self.settings.slowMoResolution = self.availableSlowMoResolutions.first ?? .p720
+                    }
+                    // Re-scope FPS to (possibly updated) resolution.
+                    let scoped = self.slowRatesByResolution[self.settings.slowMoResolution] ?? []
+                    let scopedList = SlowMoFrameRate.allCases.filter { scoped.contains($0) }
+                    self.availableSlowMoRates = scopedList
+                    if !scopedList.contains(self.settings.slowMoFrameRate) {
+                        self.settings.slowMoFrameRate = scopedList.first ?? .fps120
+                    }
                 }
             }
         }
