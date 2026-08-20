@@ -101,8 +101,8 @@ enum Resolution: String, CaseIterable, Identifiable {
         case .p1080: return (1920, 1080)
         case .p720:  return (1280, 720)
         case .p480:  return (848, 480)
-        case .p320:  return (640, 360)   // closest common low format; encoder scales to 568x320
-        case .p144:  return (640, 360)   // native 144p formats are rare on A10
+        case .p320:  return (568, 320)
+        case .p144:  return (256, 144)
         }
     }
 
@@ -857,7 +857,7 @@ enum Encoder {
                 AVVideoCodecKey: codec,
                 AVVideoWidthKey: plan.width,
                 AVVideoHeightKey: plan.height,
-                AVVideoScalingModeKey: AVVideoScalingModeResizeAspect,
+                AVVideoScalingModeKey: AVVideoScalingModeResize,
                 AVVideoCompressionPropertiesKey: compression
             ]
         }
