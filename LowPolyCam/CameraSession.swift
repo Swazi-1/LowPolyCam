@@ -395,7 +395,15 @@ extension CameraRecorder {
             }
         }
 
-        let supportedRates = FrameRate.allCases.filter { rates.contains($0) }
+        var supportedRates = FrameRate.allCases.filter { rates.contains($0) }
+        // iPhone 7-class front camera: native video is 30 fps only at 720p/1080p.
+        // Formats that advertise 60 fps typically rely on frame duplication, not
+        // true sensor capture — hide 60 fps entirely on the front lens.
+        let isFront = (device.position == .front)
+        if isFront {
+            supportedRates = supportedRates.filter { $0 == .fps30 }
+            if supportedRates.isEmpty { supportedRates = [.fps30] }
+        }
         let canDo1080 = widestPixels >= 1920 * 1080
         let canDo4K = widestPixels >= 3840 * 2160
         let supportedResolutions = Resolution.allCases.filter { res in
@@ -452,6 +460,10 @@ extension CameraRecorder {
             }
             // 4K locks to 30 fps
             if self.settings.resolution == .p2160, self.settings.frameRate != .fps30 {
+                self.settings.frameRate = .fps30
+            }
+            // Front camera never records at 60 fps
+            if isFront, self.settings.frameRate == .fps60 {
                 self.settings.frameRate = .fps30
             }
 
@@ -524,10 +536,10 @@ extension CameraRecorder {
         // session). Guard is the single source of truth — no dead branches.
         guard !isRecording, !isSwitchingCamera else { return }
 
+        // Brief UI lock only for the actual input swap (stock Camera feel).
         DispatchQueue.main.async {
-            self.volumeObserver?.ignoreTemporarily(duration: 2.0)
+            self.volumeObserver?.ignoreTemporarily(duration: 0.4)
             self.isSwitchingCamera = true
-            self.volumeObserver?.ignoreTemporarily(duration: 0.6)
         }
         setTorch(on: false)
         sessionQueue.async {
@@ -538,8 +550,7 @@ extension CameraRecorder {
                 return
             }
 
-            // Minimal swap — same pattern as stock Camera. Avoid full capability
-            // scan on the critical path (that was costing multi-second flips).
+            // Minimal swap — same pattern as stock Camera.
             self.session.beginConfiguration()
             if let old = self.cameraInput { self.session.removeInput(old) }
             if self.session.canAddInput(input) {
@@ -552,17 +563,19 @@ extension CameraRecorder {
             self.session.commitConfiguration()
 
             self.configureVideoConnection()
-            // Light format apply only (no full device.formats walk).
-            self.applyActiveFormat(forRecording: false)
             self.refreshTorchState()
 
+            // Unlock UI immediately after the input swap so the flip feels
+            // sub-second. Format + capability scan run after the user can
+            // already interact again (like the stock Camera app).
             DispatchQueue.main.async {
                 self.isFrontCamera = (next == .front)
                 self.isSwitchingCamera = false
-                self.volumeObserver?.ignoreTemporarily(duration: 2.0)
+                self.volumeObserver?.ignoreTemporarily(duration: 0.5)
             }
 
-            // Capabilities (front may lack 60 fps / slo-mo) update after UI unlocks.
+            // Capability scan + format apply after UI is free (refreshCapabilities
+            // itself calls applyActiveFormat). Avoids multi-second blocked flips.
             self.refreshCapabilitiesThenApplyFormat()
             self.resetFocusAndExposureToAuto()
         }
