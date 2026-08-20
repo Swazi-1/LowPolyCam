@@ -220,6 +220,8 @@ final class CameraRecorder: NSObject, ObservableObject {
     var clipTransform = CGAffineTransform.identity
     var freeBytesSnapshot: Int64 = .max
     var lastElapsedPush = CMTime.invalid
+    var recordWallStart: Date?
+    var recordElapsedTimer: Timer?
     var droppedFrameCount = 0
     var recordingDestination: SaveLocation = .files
     /// Destination that was active when the in-progress clip was started.
