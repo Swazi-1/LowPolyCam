@@ -99,6 +99,17 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
             }
         }
 
+        // Writer failed mid-record (encoder overload on A10) — stop and salvage.
+        if let w = currentWriter, w.status == .failed {
+            DebugLog.write("❌ writer failed mid-record: \(w.error?.localizedDescription ?? "?")")
+            DispatchQueue.main.async {
+                if self.isRecording {
+                    self.stopRecording(notice: nil)
+                }
+            }
+            return
+        }
+
         guard let currentWriter = currentWriter, currentWriter.status == .writing,
               segStart.isValid, CMTimeCompare(pts, segStart) >= 0 else {
             return
