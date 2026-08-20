@@ -204,9 +204,12 @@ struct CameraScreen: View {
                 leaveDim()
             }
         }
-        // Auto-Dim Battery Saver (dims to black after 10s of recording)
+        // Auto-Dim Battery Saver (dims after N seconds of recording — sooner
+        // under Longevity Mode, since the screen is one of the biggest power
+        // draws during a long take). See PerformanceProfile.autoDimDelaySeconds.
         .onChange(of: recorder.elapsed) { sec in
-            if settings.autoDimOnRecord && recorder.isRecording && !dimmed && sec >= 10 {
+            let delay = PerformanceProfile.current(settings: settings).autoDimDelaySeconds
+            if settings.autoDimOnRecord && recorder.isRecording && !dimmed && sec >= delay {
                 enterDim()
             }
         }
