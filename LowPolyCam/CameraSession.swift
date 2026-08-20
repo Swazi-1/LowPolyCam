@@ -49,12 +49,6 @@ extension CameraRecorder {
         configureVideoConnection()
         refreshCapabilitiesThenApplyFormat()
         configurePhotoOutput()
-        // Pre-warm software CIContext on a background queue so the first
-        // 480p/320p/144p recording does not pay lazy-init cost mid-encode
-        // (that first-clip-fails / second-works pattern on iOS 15 / A10).
-        DispatchQueue.global(qos: .utility).async {
-            _ = self.scaleCIContext
-        }
         refreshTorchState()
         resetFocusAndExposureToAuto()
         syncMicInput()
@@ -216,7 +210,11 @@ extension CameraRecorder {
         // critical thermal, and (gently) constrained hardware all feed into
         // it. See PerformanceProfile.swift.
         let targetFPS: Double
-        if forRecording {
+        // Slow-Mo must run at its final high frame rate before the user taps
+        // Record. Letting idle preview fall back to 30 fps forced a second
+        // sensor renegotiation at record start, which produced the brief
+        // flicker and unreliable first high-speed segment on iPhone 7.
+        if forRecording || isSlow {
             targetFPS = fullFPS
         } else {
             let profile = PerformanceProfile.current(settings: settings, thermalState: thermalState)
@@ -488,6 +486,8 @@ extension CameraRecorder {
         let photoMPOut = supportedPhotoMP.isEmpty ? [PhotoMegapixels.mp2] : supportedPhotoMP
         let slowByResOut = slowByRes
 
+        let previousPosition = lastCapabilitiesCameraPosition
+        lastCapabilitiesCameraPosition = device.position
         DispatchQueue.main.async {
             self.availableFrameRates = finalRates
             self.availableResolutions = resolutions
@@ -515,7 +515,18 @@ extension CameraRecorder {
                 self.settings.frameRate = .fps30
             }
 
-            if !self.availablePhotoMegapixels.contains(self.settings.photoMegapixels) {
+            // Front iPhone cameras have a smaller still sensor. Do not let
+            // that temporary 8MP limit overwrite the user's rear-camera
+            // choice (normally 12MP) when switching lenses.
+            if previousPosition == .back && isFront {
+                self.rearPhotoMegapixelsBeforeFront = self.settings.photoMegapixels
+            }
+            if previousPosition == .front && !isFront,
+               let saved = self.rearPhotoMegapixelsBeforeFront,
+               self.availablePhotoMegapixels.contains(saved) {
+                self.settings.photoMegapixels = saved
+                self.rearPhotoMegapixelsBeforeFront = nil
+            } else if !self.availablePhotoMegapixels.contains(self.settings.photoMegapixels) {
                 self.settings.photoMegapixels = self.availablePhotoMegapixels.max(by: { $0.megapixels < $1.megapixels }) ?? .mp2
             }
 
@@ -683,5 +694,4 @@ extension CameraRecorder {
 
 
 }
-
 
