@@ -86,7 +86,7 @@ enum Resolution: String, CaseIterable, Identifiable {
         case .p1080: return (1920, 1080)
         case .p720: return (1280, 720)
         case .p480: return (848, 480)
-        case .p320: return (568, 320)
+        case .p320: return (576, 320)
         case .p144: return (256, 144)
         }
     }
@@ -101,7 +101,7 @@ enum Resolution: String, CaseIterable, Identifiable {
         case .p1080: return (1920, 1080)
         case .p720:  return (1280, 720)
         case .p480:  return (848, 480)
-        case .p320:  return (568, 320)
+        case .p320:  return (576, 320)
         case .p144:  return (256, 144)
         }
     }
@@ -833,7 +833,9 @@ enum Encoder {
             audioBitrate: aKbps * 1000,
             keyFrameInterval: gopSeconds * fps,
             frameRate: fps,
-            codec: settings.useHEVC ? .hevc : .h264,
+            // H.264 for sub-720p: HEVC + unusual sizes (848×480 / 576×320 / 256×144)
+            // is unreliable on A10 / iOS 15 and was a source of "Clip failed to save".
+            codec: (settings.useHEVC && px.h >= 720) ? .hevc : .h264,
             hasAudio: settings.recordAudio,
             saveLocation: settings.saveLocation,
             splitInterval: settings.splitInterval
