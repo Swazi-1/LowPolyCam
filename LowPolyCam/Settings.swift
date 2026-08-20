@@ -64,7 +64,7 @@ enum DeviceTier {
 
 // MARK: - Resolution
 
-enum Resolution: String, CaseIterable, Identifiable {
+enum Resolution: String, CaseIterable, Identifiable, SettingStorable {
     case p2160, p1080, p720, p480, p320, p144
 
     var id: String { rawValue }
@@ -119,7 +119,7 @@ enum Resolution: String, CaseIterable, Identifiable {
 
 // MARK: - Camera Mode
 
-enum CameraMode: String, CaseIterable, Identifiable {
+enum CameraMode: String, CaseIterable, Identifiable, SettingStorable {
     case video = "VIDEO"
     case photo = "PHOTO"
     case slowMo = "SLO-MO"
@@ -130,7 +130,7 @@ enum CameraMode: String, CaseIterable, Identifiable {
 
 // MARK: - Photo Megapixels
 
-enum PhotoMegapixels: Double, CaseIterable, Identifiable {
+enum PhotoMegapixels: Double, CaseIterable, Identifiable, SettingStorable {
     case mp2 = 2
     case mp4 = 4
     case mp8 = 8
@@ -147,7 +147,7 @@ enum PhotoMegapixels: Double, CaseIterable, Identifiable {
 
 // MARK: - Frame rate
 
-enum FrameRate: Int, CaseIterable, Identifiable {
+enum FrameRate: Int, CaseIterable, Identifiable, SettingStorable {
     case fps30 = 30
     case fps60 = 60
 
@@ -166,7 +166,7 @@ enum FrameRate: Int, CaseIterable, Identifiable {
 
 // MARK: - Slow-Mo Frame Rate
 
-enum SlowMoFrameRate: Int, CaseIterable, Identifiable {
+enum SlowMoFrameRate: Int, CaseIterable, Identifiable, SettingStorable {
     case fps120 = 120
     case fps240 = 240
 
@@ -193,7 +193,7 @@ enum SlowMoFrameRate: Int, CaseIterable, Identifiable {
 
 // MARK: - Quality
 
-enum Quality: String, CaseIterable, Identifiable {
+enum Quality: String, CaseIterable, Identifiable, SettingStorable {
     case high, medium, low, ultraLow
 
     var id: String { rawValue }
@@ -219,7 +219,7 @@ enum Quality: String, CaseIterable, Identifiable {
 
 // MARK: - Where clips end up
 
-enum SaveLocation: String, CaseIterable, Identifiable {
+enum SaveLocation: String, CaseIterable, Identifiable, SettingStorable {
     case photos, files
 
     var id: String { rawValue }
@@ -241,7 +241,7 @@ enum SaveLocation: String, CaseIterable, Identifiable {
 
 // MARK: - File Splitting
 
-enum SplitInterval: String, CaseIterable, Identifiable {
+enum SplitInterval: String, CaseIterable, Identifiable, SettingStorable {
     case off, oneHour, fourHours
 
     var id: String { rawValue }
@@ -273,7 +273,7 @@ enum SplitInterval: String, CaseIterable, Identifiable {
 
 // MARK: - Countdown Timer
 
-enum CountdownTimer: Int, CaseIterable, Identifiable {
+enum CountdownTimer: Int, CaseIterable, Identifiable, SettingStorable {
     case off = 0
     case three = 3
     case ten = 10
@@ -291,7 +291,7 @@ enum CountdownTimer: Int, CaseIterable, Identifiable {
 
 // MARK: - Max Recording Duration
 
-enum MaxDuration: Int, CaseIterable, Identifiable {
+enum MaxDuration: Int, CaseIterable, Identifiable, SettingStorable {
     case off = 0
     case fifteen = 15
     case thirty = 30
@@ -328,7 +328,7 @@ enum MaxDuration: Int, CaseIterable, Identifiable {
 
 // MARK: - Grid Style
 
-enum GridStyle: String, CaseIterable, Identifiable {
+enum GridStyle: String, CaseIterable, Identifiable, SettingStorable {
     case off, thirds, crosshair, square
 
     var id: String { rawValue }
@@ -426,7 +426,7 @@ struct CapturePreset: Identifiable {
 
 // MARK: - White Balance Presets
 
-enum WhiteBalancePreset: String, CaseIterable, Identifiable {
+enum WhiteBalancePreset: String, CaseIterable, Identifiable, SettingStorable {
     case auto, daylight, indoor, fluorescent, cloudy
 
     var id: String { rawValue }
@@ -477,19 +477,22 @@ enum WhiteBalancePreset: String, CaseIterable, Identifiable {
 //
 // HOW TO ADD A NEW SETTING
 // --------------------------
-// 1. Add an `@Published var yourSetting: T` below, with a `didSet` that
-//    writes it to `store` (UserDefaults) under a unique key — copy the
-//    pattern of any existing property.
-// 2. Load its initial value from `store` in `init()` below, with a sensible
-//    default for first launch.
+// 1. If it's backed by a new enum, make it `RawRepresentable` with a
+//    String/Int/Double raw value and add `SettingStorable` to its
+//    conformance list (see e.g. `enum Quality: String, ..., SettingStorable`
+//    above). Bool/Int/Float/Double/String settings need nothing extra.
+// 2. Add ONE line below:
+//        @Setting("yourSetting") var yourSetting: T = defaultValue
+//    That's it for persistence — no `didSet`, no separate init-loader line.
+//    See SettingStorage.swift for how `@Setting` works.
 // 3. Expose it in the UI:
 //    - Settings screen: add one `SettingsToggleSpec` (for a Bool) to the
 //      relevant array in SettingsScreen.swift, e.g. `assistToggles`, or use
 //      `SettingsPickerRow` directly for a `CaseIterable` enum setting.
 //      See SettingsRowKit.swift for both.
 //    - Pro Tools drawer: add one `ProToolControl` case (`.toggle`, `.chips`,
-//      or `.slider`) to `proToolsDrawerControls` in CameraScreen.swift.
-//      See ProToolsControls.swift.
+//      `.slider`, or `.navigation`) to `proToolsDrawerControls` in
+//      CameraScreen.swift. See ProToolsControls.swift.
 // No other file needs to change — both UIs render from these declarative
 // lists rather than needing a new hand-built row per setting.
 final class AppSettings: ObservableObject {
@@ -498,99 +501,49 @@ final class AppSettings: ObservableObject {
 
     private let store = UserDefaults.standard
 
-    @Published var cameraMode: CameraMode {
-        didSet { store.set(cameraMode.rawValue, forKey: "cameraMode") }
-    }
-    @Published var slowMoFrameRate: SlowMoFrameRate {
-        didSet { store.set(slowMoFrameRate.rawValue, forKey: "slowMoFrameRate") }
-    }
-    @Published var slowMoResolution: Resolution {
-        didSet { store.set(slowMoResolution.rawValue, forKey: "slowMoResolution") }
-    }
-    @Published var resolution: Resolution {
-        didSet { store.set(resolution.rawValue, forKey: "resolution") }
-    }
-    @Published var quality: Quality {
-        didSet { store.set(quality.rawValue, forKey: "quality") }
-    }
-    @Published var frameRate: FrameRate {
-        didSet { store.set(frameRate.rawValue, forKey: "frameRate") }
-    }
-    @Published var saveLocation: SaveLocation {
-        didSet { store.set(saveLocation.rawValue, forKey: "saveLocation") }
-    }
-    @Published var splitInterval: SplitInterval {
-        didSet { store.set(splitInterval.rawValue, forKey: "splitInterval") }
-    }
-    @Published var countdownTimer: CountdownTimer {
-        didSet { store.set(countdownTimer.rawValue, forKey: "countdownTimer") }
-    }
-    @Published var maxDuration: MaxDuration {
-        didSet { store.set(maxDuration.rawValue, forKey: "maxDuration") }
-    }
-    @Published var gridStyle: GridStyle {
-        didSet { store.set(gridStyle.rawValue, forKey: "gridStyle") }
-    }
-    @Published var showLevelGauge: Bool {
-        didSet { store.set(showLevelGauge, forKey: "showLevelGauge") }
-    }
-    @Published var exposureBias: Float {
-        didSet { store.set(exposureBias, forKey: "exposureBias") }
-    }
-    @Published var whiteBalance: WhiteBalancePreset {
-        didSet { store.set(whiteBalance.rawValue, forKey: "whiteBalance") }
-    }
-    @Published var torchBrightness: Float {
-        didSet { store.set(torchBrightness, forKey: "torchBrightness") }
-    }
-    @Published var lowTorch: Bool {
-        didSet { store.set(lowTorch, forKey: "lowTorch") }
-    }
-    @Published var recordAudio: Bool {
-        didSet { store.set(recordAudio, forKey: "recordAudio") }
-    }
-    @Published var stabilization: Bool {
-        didSet { store.set(stabilization, forKey: "stabilization") }
-    }
-    @Published var useHEVC: Bool {
-        didSet { store.set(useHEVC, forKey: "useHEVC") }
-    }
-    @Published var showGrid: Bool {
-        didSet { store.set(showGrid, forKey: "showGrid") }
-    }
-    @Published var autoDimOnRecord: Bool {
-        didSet { store.set(autoDimOnRecord, forKey: "autoDimOnRecord") }
-    }
+    // First-launch defaults: 1080p · 30 fps · High · Photos · split/auto-stop off,
+    // stabilisation on, grid/level/dim/longevity off, sounds & haptics on.
+    @Setting("cameraMode") var cameraMode: CameraMode = .video
+    @Setting("slowMoFrameRate") var slowMoFrameRate: SlowMoFrameRate = .fps120
+    @Setting("slowMoResolution") var slowMoResolution: Resolution = .p1080
+    @Setting("resolution") var resolution: Resolution = .p1080
+    @Setting("quality") var quality: Quality = .high
+    @Setting("frameRate") var frameRate: FrameRate = .fps30
+    @Setting("saveLocation") var saveLocation: SaveLocation = .photos
+    @Setting("splitInterval") var splitInterval: SplitInterval = .off
+    @Setting("countdownTimer") var countdownTimer: CountdownTimer = .off
+    @Setting("maxDuration") var maxDuration: MaxDuration = .off
+    @Setting("gridStyle") var gridStyle: GridStyle = .off
+    @Setting("showLevelGauge") var showLevelGauge: Bool = false
+    @Setting("exposureBias") var exposureBias: Float = 0.0
+    @Setting("whiteBalance") var whiteBalance: WhiteBalancePreset = .auto
+    @Setting("torchBrightness") var torchBrightness: Float = 1.0
+    @Setting("lowTorch") var lowTorch: Bool = false
+    // Always on — mute option removed, but this can still be flipped back on
+    // at runtime by CameraSession as a safety net (see setupAudioIfNeeded).
+    @Setting("recordAudio") var recordAudio: Bool = true
+    @Setting("stabilization") var stabilization: Bool = true
+    @Setting("useHEVC") var useHEVC: Bool = true
+    @Setting("autoDimOnRecord") var autoDimOnRecord: Bool = false
     /// 📊 Opt-in live stats readout (measured fps / bitrate / drop rate)
     /// during recording. Off by default so the HUD layout for everyone
     /// else stays exactly as it was.
-    @Published var showRecordingStats: Bool {
-        didSet { store.set(showRecordingStats, forKey: "showRecordingStats") }
-    }
-    @Published var accentColor: AccentColor {
-        didSet { store.set(accentColor.rawValue, forKey: "accentColor") }
-    }
-    @Published var shutterSoundEnabled: Bool {
-        didSet { store.set(shutterSoundEnabled, forKey: "shutterSoundEnabled") }
-    }
-    @Published var photoMegapixels: PhotoMegapixels {
-        didSet { store.set(photoMegapixels.rawValue, forKey: "photoMegapixels") }
-    }
-    @Published var saveSelfiesUnmirrored: Bool {
-        didSet { store.set(saveSelfiesUnmirrored, forKey: "saveSelfiesUnmirrored") }
-    }
-    @Published var captureFlashConfirmation: Bool {
-        didSet { store.set(captureFlashConfirmation, forKey: "captureFlashConfirmation") }
-    }
-    @Published var hapticFeedbackEnabled: Bool {
-        didSet { store.set(hapticFeedbackEnabled, forKey: "hapticFeedbackEnabled") }
-    }
+    @Setting("showRecordingStats") var showRecordingStats: Bool = false
+    // Default appearance is Dial Lavender. A legacy "mint" value (Lens Mint,
+    // now removed) simply fails to parse and falls back to this default —
+    // no special-case migration code needed.
+    @Setting("accentColor") var accentColor: AccentColor = .violet
+    @Setting("shutterSoundEnabled") var shutterSoundEnabled: Bool = true
+    @Setting("photoMegapixels") var photoMegapixels: PhotoMegapixels = .mp12
+    @Setting("saveSelfiesUnmirrored") var saveSelfiesUnmirrored: Bool = false
+    // Screen-flash confirmation removed from Settings UI; key kept only so
+    // upgrading users' old value still applies (see CameraScreen.swift).
+    @Setting("captureFlashConfirmation") var captureFlashConfirmation: Bool = false
+    @Setting("hapticFeedbackEnabled") var hapticFeedbackEnabled: Bool = true
     /// Longevity Mode prioritises battery life, lower heat, and smaller files
     /// on older devices (especially iPhone 7 / A10). When enabled it gently
     /// steers the encoder toward safer settings and strengthens auto-dim.
-    @Published var longevityMode: Bool {
-        didSet { store.set(longevityMode, forKey: "longevityMode") }
-    }
+    @Setting("longevityMode") var longevityMode: Bool = false
 
     /// Applies a capture preset. Forces video mode for recording-oriented presets.
     func applyPreset(_ preset: CapturePreset) {
@@ -599,67 +552,24 @@ final class AppSettings: ObservableObject {
         quality = preset.quality
         frameRate = preset.frameRate
         useHEVC = preset.useHEVC
-        // Audio is always on — no silent recordings
-        recordAudio = true
     }
 
     private init() {
-        cameraMode       = CameraMode(rawValue: store.string(forKey: "cameraMode") ?? "") ?? .video
-        slowMoFrameRate  = SlowMoFrameRate(rawValue: store.integer(forKey: "slowMoFrameRate")) ?? .fps120
-        slowMoResolution = Resolution(rawValue: store.string(forKey: "slowMoResolution") ?? "") ?? .p1080
-        // First-launch defaults: 1080p · 30 fps · High · Photos · split/auto-stop off,
-        // stabilisation on, grid/level/dim/longevity off, sounds & haptics on.
-        resolution       = Resolution(rawValue: store.string(forKey: "resolution") ?? "") ?? .p1080
-        quality          = Quality(rawValue: store.string(forKey: "quality") ?? "") ?? .high
-        frameRate        = FrameRate(rawValue: store.integer(forKey: "frameRate")) ?? .fps30
-        saveLocation     = SaveLocation(rawValue: store.string(forKey: "saveLocation") ?? "") ?? .photos
-        splitInterval    = SplitInterval(rawValue: store.string(forKey: "splitInterval") ?? "") ?? .off
-        countdownTimer   = CountdownTimer(rawValue: store.integer(forKey: "countdownTimer")) ?? .off
-        maxDuration      = MaxDuration(rawValue: store.integer(forKey: "maxDuration")) ?? .off
-        // Migrate old showGrid bool → gridStyle if gridStyle not yet stored
-        if let raw = store.string(forKey: "gridStyle"), let style = GridStyle(rawValue: raw) {
-            gridStyle = style
-        } else if store.object(forKey: "showGrid") as? Bool == true {
+        // One-off migration: `gridStyle` replaced the old plain `showGrid`
+        // bool. Only needed here because it seeds a *different* setting's
+        // key than the one it reads — @Setting can't express that generically.
+        // Guarded so it only ever fires once: after this runs, "gridStyle"
+        // exists in `store` and this block is skipped on every later launch.
+        if store.string(forKey: "gridStyle") == nil,
+           store.object(forKey: "showGrid") as? Bool == true {
             gridStyle = .thirds
-        } else {
-            gridStyle = .off
         }
-        showLevelGauge   = store.object(forKey: "showLevelGauge") as? Bool ?? false
-        exposureBias     = store.object(forKey: "exposureBias") as? Float ?? 0.0
-        whiteBalance     = WhiteBalancePreset(rawValue: store.string(forKey: "whiteBalance") ?? "") ?? .auto
-        torchBrightness  = store.object(forKey: "torchBrightness") as? Float ?? 1.0
-        lowTorch         = store.object(forKey: "lowTorch") as? Bool ?? false
-        // Always record audio — mute option removed
-        recordAudio      = true
-        store.set(true, forKey: "recordAudio")
-        stabilization    = store.object(forKey: "stabilization") as? Bool ?? true
-        useHEVC          = store.object(forKey: "useHEVC") as? Bool ?? true
-        showGrid         = store.object(forKey: "showGrid") as? Bool ?? false
-        autoDimOnRecord  = store.object(forKey: "autoDimOnRecord") as? Bool ?? false
-        showRecordingStats = store.object(forKey: "showRecordingStats") as? Bool ?? false
-        // Default appearance is Dial Lavender. Legacy "mint" installs map to violet
-        // (Lens Mint was removed).
-        if let raw = store.string(forKey: "accentColor"), raw != "mint",
-           let parsed = AccentColor(rawValue: raw) {
-            accentColor = parsed
-        } else {
-            accentColor = .violet
-            store.set(AccentColor.violet.rawValue, forKey: "accentColor")
-        }
-        shutterSoundEnabled = store.object(forKey: "shutterSoundEnabled") as? Bool ?? true
-        photoMegapixels  = PhotoMegapixels(rawValue: store.object(forKey: "photoMegapixels") as? Double ?? 12.0) ?? .mp12
-        saveSelfiesUnmirrored    = store.object(forKey: "saveSelfiesUnmirrored") as? Bool ?? false
-        // Screen-flash confirmation removed from Settings; keep key for migration only.
-        captureFlashConfirmation = store.object(forKey: "captureFlashConfirmation") as? Bool ?? false
-        hapticFeedbackEnabled    = store.object(forKey: "hapticFeedbackEnabled") as? Bool ?? true
-        // Longevity defaults OFF on first launch (user can enable for long sessions).
-        longevityMode            = store.object(forKey: "longevityMode") as? Bool ?? false
     }
 }
 
 // MARK: - Accent Colour
 
-enum AccentColor: String, CaseIterable, Identifiable {
+enum AccentColor: String, CaseIterable, Identifiable, SettingStorable {
     case violet, amber, red, ice, aurora, coral
 
     var id: String { rawValue }
