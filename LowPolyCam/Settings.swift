@@ -59,6 +59,8 @@ enum PhysicalOrientation {
 // MARK: - Resolution
 
 enum Resolution: String, CaseIterable, Identifiable, SettingStorable {
+    // Keep the persisted `p320` identifier for existing installs, but expose
+    // the standard 360p tier rather than the old non-standard 320p one.
     case p2160, p1080, p720, p480, p320, p144
 
     var id: String { rawValue }
@@ -69,7 +71,7 @@ enum Resolution: String, CaseIterable, Identifiable, SettingStorable {
         case .p1080: return "1080p"
         case .p720: return "720p"
         case .p480: return "480p"
-        case .p320: return "320p"
+        case .p320: return "360p"
         case .p144: return "144p"
         }
     }
@@ -79,23 +81,25 @@ enum Resolution: String, CaseIterable, Identifiable, SettingStorable {
         case .p2160: return (3840, 2160)
         case .p1080: return (1920, 1080)
         case .p720: return (1280, 720)
-        case .p480: return (848, 480)
-        case .p320: return (576, 320)
+        // Standard 16:9 phone/video tiers. Every dimension is even, which is
+        // required by the H.264/HEVC 4:2:0 encoder on iOS 15.
+        case .p480: return (854, 480)
+        case .p320: return (640, 360)
         case .p144: return (256, 144)
         }
     }
 
-    /// Sensor / activeFormat dimensions to request. On iPhone 7 (A10) lower
-    /// target resolutions should also drive a lower capture format when the
-    /// hardware supports it, otherwise "Data Saver" modes still run the ISP
-    /// at 720p and only scale in the encoder (wasted heat and power).
+    /// Preferred 16:9 source dimensions used to select the camera format.
+    /// The recording pipeline may deliberately use a larger matching source
+    /// format for a clean, unzoomed live preview, then hardware-scale only the
+    /// saved low-resolution movie.
     var captureDimensions: (w: Int, h: Int) {
         switch self {
         case .p2160: return (3840, 2160)
         case .p1080: return (1920, 1080)
         case .p720:  return (1280, 720)
-        case .p480:  return (848, 480)
-        case .p320:  return (576, 320)
+        case .p480:  return (854, 480)
+        case .p320:  return (640, 360)
         case .p144:  return (256, 144)
         }
     }
