@@ -9,60 +9,14 @@ import ImageIO
 
 final class CameraRecorder: NSObject, ObservableObject {
 
-    // MARK: Debug file logger
-    // Writes to a plain text file inside the app's Documents folder so it
-    // can be pulled off-device via the Files app (On My iPhone > LowPolyCam)
-    // without needing Xcode/a Mac. Call DebugLog.write(...) anywhere.
-    enum DebugLog {
-        static let url: URL = {
-            let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            return dir.appendingPathComponent("recording_debug_log.txt")
-        }()
-
-        private static let dateFormatter: ISO8601DateFormatter = {
-            let f = ISO8601DateFormatter()
-            return f
-        }()
-
-        static func write(_ message: String) {
-            // Reuse formatter; append on a utility queue so the hot path
-            // (segment start/stop) never blocks on disk open/seek/close.
-            let stamp = dateFormatter.string(from: Date())
-            let line = "[\(stamp)] \(message)\n"
-            print(line, terminator: "")
-            guard let data = line.data(using: .utf8) else { return }
-            DispatchQueue.global(qos: .utility).async {
-                if FileManager.default.fileExists(atPath: url.path) {
-                    if let handle = try? FileHandle(forWritingTo: url) {
-                        handle.seekToEndOfFile()
-                        handle.write(data)
-                        try? handle.close()
-                    }
-                } else {
-                    try? data.write(to: url)
-                }
-            }
-        }
-
-        static func reset() {
-            try? FileManager.default.removeItem(at: url)
-        }
-    }
-
     // MARK: Tunables
 
-    static let fragmentSeconds: Double = 4
-    static let reserveBytes: Int64 = 300 * 1024 * 1024
-
-    // How long (in seconds) after a fresh record start to silently discard
-    // video frames before letting any reach the writer, to cover the AE/AGC
-    // brightness ramp on the newly-applied recording format. Frame count is
-    // derived from this and the actual recording fps (see startRecording()),
-    // clamped to a sane range so a bad fps read can't discard too much or
-    // too little.
-    static let recordStartWarmupSeconds: Double = 0.15
-    static let recordStartWarmupFrameFloor = 2
-    static let recordStartWarmupFrameCeiling = 14
+    // Recording tunables — owned by VideoRecordingSystem (shared Video + Slow-Mo).
+    static let fragmentSeconds: Double = VideoRecordingSystem.fragmentSeconds
+    static let reserveBytes: Int64 = VideoRecordingSystem.reserveBytes
+    static let recordStartWarmupSeconds: Double = VideoRecordingSystem.recordStartWarmupSeconds
+    static let recordStartWarmupFrameFloor = VideoRecordingSystem.recordStartWarmupFrameFloor
+    static let recordStartWarmupFrameCeiling = VideoRecordingSystem.recordStartWarmupFrameCeiling
     private static let inProgressKey = "inProgressClipName"
 
     // MARK: Published state
@@ -842,15 +796,16 @@ final class CameraRecorder: NSObject, ObservableObject {
             targetFPS = min(fullFPS, idleFPSCap)
         }
 
-        // Keep the live preview on a smooth low-power video format (e.g. 1080p).
-        // Full 12MP stills on iOS 15 are obtained by a brief format swap only
-        // inside capturePhoto() — see bestPhotoStillFormat usage there.
-        var format = isSlow
-            ? Self.bestSlowMoAwareFormat(for: device, width: dims.w, height: dims.h, fps: targetFPS)
-            : Self.bestFormat(for: device, width: dims.w, height: dims.h, fps: targetFPS)
+        // Route format selection through the mode-specific policy so Video,
+        // Slow-Mo, and Photo stay on separate code paths.
+        // Photo live preview stays on a smooth video-sized format; full 12MP
+        // stills use a brief swap inside capturePhoto().
+        let policy = CaptureModePolicy(cameraMode: settings.cameraMode)
+        let request = CaptureFormatRequest(width: dims.w, height: dims.h, fps: targetFPS, policy: policy)
+        var format = CaptureModeFormatRouter.selectFormat(device: device, request: request)
 
         if format == nil && targetFPS == 60 {
-            format = Self.bestFormat(for: device, width: dims.w, height: dims.h, fps: 30)
+            format = CameraFormatSelector.bestVideoFormat(for: device, width: dims.w, height: dims.h, fps: 30)
             if format != nil {
                 DispatchQueue.main.async {
                     self.settings.frameRate = .fps30
@@ -860,7 +815,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
 
         guard let finalFormat = format else {
-            if isSlow, let fallbackFormat = Self.bestSlowMoFormat(for: device, fps: fullFPS) {
+            if isSlow, let fallbackFormat = CameraFormatSelector.bestSlowMoFormat(for: device, fps: fullFPS) {
                 let applyFPS = forRecording ? fullFPS : min(fullFPS, 30.0)
                 let newKey = Self.formatKey(device: device, format: fallbackFormat, fps: applyFPS)
                 if newKey != lastAppliedFormatKey {
@@ -962,7 +917,7 @@ final class CameraRecorder: NSObject, ObservableObject {
             // 4. Zoom — preserve the user's current factor across format switches
             // (idle ↔ record). Forcing baseline every time was the main cause
             // of the visible jump/flicker when pressing Record.
-            let baseline = Self.wideAngleBaseline(for: device)
+            let baseline = CameraFormatSelector.wideAngleBaseline(for: device)
             let ceiling = device.activeFormat.videoMaxZoomFactor
             let floor = device.minAvailableVideoZoomFactor
             let desiredRaw: CGFloat
@@ -977,160 +932,6 @@ final class CameraRecorder: NSObject, ObservableObject {
         } catch {
             DispatchQueue.main.async { self.notice = "Camera settings busy" }
         }
-    }
-
-    private static func bestSlowMoFormat(for device: AVCaptureDevice, fps: Double) -> AVCaptureDevice.Format? {
-        var best: AVCaptureDevice.Format?
-        var maxArea = 0
-        for format in device.formats {
-            let supportsFPS = format.videoSupportedFrameRateRanges.contains {
-                $0.maxFrameRate >= (fps - 1.0)
-            }
-            guard supportsFPS else { continue }
-            let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
-            let area = Int(dims.width) * Int(dims.height)
-            if area > maxArea {
-                maxArea = area
-                best = format
-            }
-        }
-        return best
-    }
-
-    private static func scoredCandidates(in formats: [AVCaptureDevice.Format], width: Int, height: Int, fps: Double) -> [AVCaptureDevice.Format] {
-        var scored: [(format: AVCaptureDevice.Format, score: Int)] = []
-        for format in formats {
-            let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
-            guard Int(dims.width) >= width, Int(dims.height) >= height else { continue }
-
-            // Prefer a range that solidly covers the target fps.
-            guard let matchingRange = format.videoSupportedFrameRateRanges.first(where: {
-                $0.minFrameRate <= (fps + 0.5) && (fps - 0.5) <= $0.maxFrameRate
-            }) else { continue }
-
-            let areaDelta = Int(dims.width) * Int(dims.height) - width * height
-
-            // Prefer formats whose max rate is close to the target (more stable
-            // fixed-rate capture on older silicon than a wide 1–60 range).
-            //
-            // Formats whose maxFrameRate falls even slightly short of the
-            // target (e.g. 59.5 when asking for 60) used to score identically
-            // to an exact 60fps format here, because slack was clamped to 0 in
-            // both directions. That let a shortfall format win purely on
-            // resolution/binning and get picked — the actual cause of clips
-            // landing at 59.44/58fps etc. instead of a true 60. A shortfall
-            // format can never actually deliver the requested rate, so it must
-            // always lose to any format that can, regardless of other scoring.
-            let rateDelta = matchingRange.maxFrameRate - fps
-            let rateScore: Int
-            if rateDelta < -0.05 {
-                // Genuinely can't hit the target fps — heavily disqualify.
-                rateScore = 100_000_000 + Int((-rateDelta * 1_000).rounded())
-            } else {
-                // Tight match (exact or within ~0.1) scores best. Large slack
-                // (e.g. a 1-240 range when we want 60) is still usable but
-                // less preferred because the sensor may not lock as cleanly.
-                let slack = abs(rateDelta)
-                if slack < 0.15 {
-                    rateScore = 0
-                } else {
-                    rateScore = Int((slack * 10_000).rounded())
-                }
-            }
-
-            // Prefer non-binned / non-HDR for predictable encode on A10.
-            let binnedScore = format.isVideoBinned ? 1_000_000 : 0
-            let isHDR = format.supportedColorSpaces.contains(.HLG_BT2020)
-            let colorScore = isHDR ? 10_000_000 : 0
-
-            // Slight preference for formats whose minFrameDuration is already
-            // very close to 1/target — these lock more cleanly to a fixed rate.
-            let idealDur = CMTime(value: 1, timescale: CMTimeScale(max(1, Int(fps.rounded()))))
-            let minDurDelta = abs(CMTimeGetSeconds(matchingRange.minFrameDuration) - CMTimeGetSeconds(idealDur))
-            let durScore = Int((minDurDelta * 50_000).rounded())
-
-            let score = areaDelta + rateScore + binnedScore + colorScore + durScore
-            scored.append((format, score))
-        }
-        return scored.sorted { $0.score < $1.score }.map { $0.format }
-    }
-
-    private static func bestFormat(for device: AVCaptureDevice, width: Int, height: Int, fps: Double) -> AVCaptureDevice.Format? {
-        scoredCandidates(in: device.formats, width: width, height: height, fps: fps).first
-    }
-
-    /// Picks a format optimised for full-resolution stills on iOS 15 / iPhone 7.
-    /// High-res stills inherit the active format's aspect ratio / FOV, so a 16:9
-    /// 1080p video format only yields ~9MP (4032×2268). Prefer formats whose
-    /// highResolutionStillImageDimensions are the full 4:3 sensor
-    /// (4032×3024 ≈ 12MP), while keeping the live preview near maxPreviewHeight
-    /// so the viewfinder stays smooth and low-power on A10.
-    private static func bestPhotoStillFormat(for device: AVCaptureDevice, maxPreviewHeight: Int, fps: Double) -> AVCaptureDevice.Format? {
-        struct Candidate {
-            let format: AVCaptureDevice.Format
-            let stillArea: Int
-            let previewH: Int
-            let previewArea: Int
-            let isBinned: Bool
-        }
-        var candidates: [Candidate] = []
-        for format in device.formats {
-            let supportsFPS = format.videoSupportedFrameRateRanges.contains {
-                $0.minFrameRate - 0.5 <= fps && fps <= $0.maxFrameRate + 0.5
-            }
-            guard supportsFPS else { continue }
-
-            let still = format.highResolutionStillImageDimensions
-            let stillArea = Int(still.width) * Int(still.height)
-            guard stillArea > 0 else { continue }
-
-            let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
-            candidates.append(Candidate(
-                format: format,
-                stillArea: stillArea,
-                previewH: Int(dims.height),
-                previewArea: Int(dims.width) * Int(dims.height),
-                isBinned: format.isVideoBinned
-            ))
-        }
-        guard !candidates.isEmpty else {
-            return bestFormat(for: device, width: 1280, height: min(maxPreviewHeight, 720), fps: fps)
-        }
-
-        // 1) Max still megapixels
-        // 2) Prefer preview height ≤ maxPreviewHeight (idle heat)
-        // 3) Prefer smaller preview area among those
-        // 4) Prefer non-binned
-        candidates.sort { a, b in
-            if a.stillArea != b.stillArea { return a.stillArea > b.stillArea }
-            let aOver = a.previewH > maxPreviewHeight
-            let bOver = b.previewH > maxPreviewHeight
-            if aOver != bOver { return !aOver && bOver }
-            if a.previewArea != b.previewArea { return a.previewArea < b.previewArea }
-            if a.isBinned != b.isBinned { return !a.isBinned && b.isBinned }
-            return false
-        }
-        return candidates.first?.format
-    }
-
-    private static func bestSlowMoAwareFormat(for device: AVCaptureDevice, width: Int, height: Int, fps: Double) -> AVCaptureDevice.Format? {
-        let ranked = scoredCandidates(in: device.formats, width: width, height: height, fps: fps)
-        guard let fallback = ranked.first else { return nil }
-        guard ranked.count > 1 else { return fallback }
-
-        let baseline = wideAngleBaseline(for: device)
-        guard baseline > 1 else { return fallback }
-
-        guard (try? device.lockForConfiguration()) != nil else { return fallback }
-        defer { device.unlockForConfiguration() }
-
-        for candidate in ranked {
-            device.activeFormat = candidate
-            if device.minAvailableVideoZoomFactor <= baseline * 1.05 {
-                return candidate
-            }
-        }
-        return fallback
     }
 
     func updateCaptureFormat() {
@@ -1537,24 +1338,10 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     // MARK: Zoom
 
-    private static func wideAngleBaseline(for device: AVCaptureDevice) -> CGFloat {
-        let constituents = device.constituentDevices
-        guard !constituents.isEmpty,
-              let wideIndex = constituents.firstIndex(where: {
-                  $0.deviceType == .builtInWideAngleCamera
-              }),
-              wideIndex > 0 else { return 1 }
-
-        let switchOvers = device.virtualDeviceSwitchOverVideoZoomFactors
-        guard wideIndex - 1 < switchOvers.count else { return 1 }
-        let value = CGFloat(switchOvers[wideIndex - 1].doubleValue)
-        return value > 0 ? value : 1
-    }
-
     private func refreshZoomLimits() {
         guard let device = cameraInput?.device else { return }
 
-        let baseline = Self.wideAngleBaseline(for: device)
+        let baseline = CameraFormatSelector.wideAngleBaseline(for: device)
         let rawCeiling = min(device.activeFormat.videoMaxZoomFactor, baseline * 8)
         let rawFloor = device.minAvailableVideoZoomFactor
 
@@ -1729,7 +1516,7 @@ final class CameraRecorder: NSObject, ObservableObject {
             if #available(iOS 16.0, *) {
                 // iOS 16+ uses maxPhotoDimensions; no format swap needed.
             } else if let device = self.cameraInput?.device {
-                let stillFormat = Self.bestPhotoStillFormat(for: device, maxPreviewHeight: 1080, fps: 30)
+                let stillFormat = CameraFormatSelector.bestPhotoStillFormat(for: device, maxPreviewHeight: 1080, fps: 30)
                 if let stillFormat = stillFormat {
                     let stillDims = stillFormat.highResolutionStillImageDimensions
                     let currentStill = device.activeFormat.highResolutionStillImageDimensions
@@ -1846,8 +1633,8 @@ final class CameraRecorder: NSObject, ObservableObject {
 
         guard destination == .photos else {
             ioQueue.async {
-                let heicData = Self.encodeHEIC(image, metadata: metadata)
-                let data = heicData ?? Self.encodeJPEG(image, metadata: metadata)
+                let heicData = PhotoEncoder.encodeHEIC(image, metadata: metadata)
+                let data = heicData ?? PhotoEncoder.encodeJPEG(image, metadata: metadata)
                 guard let data = data else {
                     DispatchQueue.main.async { self.notice = "Photo failed to save" }
                     return
@@ -1878,9 +1665,9 @@ final class CameraRecorder: NSObject, ObservableObject {
         PHPhotoLibrary.shared().performChanges({
             let request = PHAssetCreationRequest.forAsset()
             let options = PHAssetResourceCreationOptions()
-            if let heicData = Self.encodeHEIC(image, metadata: metadata) {
+            if let heicData = PhotoEncoder.encodeHEIC(image, metadata: metadata) {
                 request.addResource(with: .photo, data: heicData, options: options)
-            } else if let jpegData = Self.encodeJPEG(image, metadata: metadata) {
+            } else if let jpegData = PhotoEncoder.encodeJPEG(image, metadata: metadata) {
                 request.addResource(with: .photo, data: jpegData, options: options)
             }
         }) { [weak self] success, _ in
@@ -1888,57 +1675,6 @@ final class CameraRecorder: NSObject, ObservableObject {
                 self?.notice = success ? "Photo saved to Photos" : "Could not save photo"
             }
         }
-    }
-
-    /// Encodes as HEIC (what the native Camera app uses) at near-lossless
-    /// quality, preserving the image's orientation plus the original EXIF /
-    /// TIFF / lens capture metadata (ISO, shutter speed, aperture, focal
-    /// length, device model, etc.) so it shows up in the Photos "ⓘ" panel.
-    /// Falls back to nil on devices/simulators without HEIC encoder support
-    /// so callers can use JPEG instead.
-    private static func encodeHEIC(_ image: UIImage, metadata: [String: Any]?) -> Data? {
-        guard let cgImage = image.cgImage else { return nil }
-        let data = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(data, "public.heic" as CFString, 1, nil) else {
-            return nil
-        }
-        var properties = Self.metadataMatchingDimensions(metadata, cgImage: cgImage)
-        properties[kCGImageDestinationLossyCompressionQuality as String] = 0.92
-        properties[kCGImagePropertyOrientation as String] = image.imageOrientation.cgImagePropertyOrientation.rawValue
-        CGImageDestinationAddImage(destination, cgImage, properties as CFDictionary)
-        guard CGImageDestinationFinalize(destination) else { return nil }
-        return data as Data
-    }
-
-    /// JPEG fallback path that still carries the original capture metadata.
-    private static func encodeJPEG(_ image: UIImage, metadata: [String: Any]?) -> Data? {
-        guard let cgImage = image.cgImage else { return nil }
-        let data = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil) else {
-            return nil
-        }
-        var properties = Self.metadataMatchingDimensions(metadata, cgImage: cgImage)
-        properties[kCGImageDestinationLossyCompressionQuality as String] = 0.95
-        properties[kCGImagePropertyOrientation as String] = image.imageOrientation.cgImagePropertyOrientation.rawValue
-        CGImageDestinationAddImage(destination, cgImage, properties as CFDictionary)
-        guard CGImageDestinationFinalize(destination) else { return nil }
-        return data as Data
-    }
-
-    /// Copies the original capture metadata (ISO, shutter speed, lens, GPS,
-    /// device model, etc.) but corrects the pixel-dimension fields so they
-    /// match the (possibly downscaled) output image, since a mismatch there
-    /// can confuse readers of the file.
-    private static func metadataMatchingDimensions(_ metadata: [String: Any]?, cgImage: CGImage) -> [String: Any] {
-        var properties = metadata ?? [:]
-        if var exif = properties[kCGImagePropertyExifDictionary as String] as? [String: Any] {
-            exif[kCGImagePropertyExifPixelXDimension as String] = cgImage.width
-            exif[kCGImagePropertyExifPixelYDimension as String] = cgImage.height
-            properties[kCGImagePropertyExifDictionary as String] = exif
-        }
-        properties[kCGImagePropertyPixelWidth as String] = cgImage.width
-        properties[kCGImagePropertyPixelHeight as String] = cgImage.height
-        return properties
     }
 
     /// Standard QuickTime metadata (make, model, software, creation date) so
@@ -2717,81 +2453,6 @@ extension UIImage.Orientation {
         case .rightMirrored: return .rightMirrored
         @unknown default: return .up
         }
-    }
-}
-
-// MARK: - Photo Capture Processor
-
-/// Handles a single AVCapturePhotoOutput capture, decoding the delivered
-/// image and downscaling it to the requested megapixel target while
-/// preserving the original aspect ratio, EXIF orientation, and camera
-/// metadata (ISO, shutter speed, lens, focal length, aperture, etc.) so it
-/// still shows up in the Photos app's "ⓘ" info panel.
-final class PhotoCaptureProcessor: NSObject, AVCapturePhotoCaptureDelegate {
-
-    private let targetMegapixels: Double
-    private let willCapture: () -> Void
-    private let completion: (UIImage?, [String: Any]?, String?) -> Void
-
-    init(targetMegapixels: Double,
-         willCapture: @escaping () -> Void,
-         completion: @escaping (UIImage?, [String: Any]?, String?) -> Void) {
-        self.targetMegapixels = targetMegapixels
-        self.willCapture = willCapture
-        self.completion = completion
-    }
-
-    /// Fires right as the sensor captures the frame — this is when we play
-    /// our shutter sound / trigger our screen-flash overlay, so they land
-    /// exactly on the real capture moment instead of on button-tap.
-    func photoOutput(_ output: AVCapturePhotoOutput, willCapturePhotoFor resolvedSettings: AVCaptureResolvedPhotoSettings) {
-        willCapture()
-    }
-
-    func photoOutput(_ output: AVCapturePhotoOutput,
-                     didFinishProcessingPhoto photo: AVCapturePhoto,
-                     error: Error?) {
-        if let error = error {
-            completion(nil, nil, error.localizedDescription)
-            return
-        }
-        guard let data = photo.fileDataRepresentation(), let image = UIImage(data: data) else {
-            completion(nil, nil, "Could not read photo data")
-            return
-        }
-        // photo.metadata carries the real capture info from the sensor
-        // (ISO, exposure time, aperture, focal length, lens/device model).
-        let resized = Self.resize(image, toMegapixels: targetMegapixels)
-        completion(resized, photo.metadata, nil)
-    }
-
-    /// Downscales while keeping aspect ratio and orientation. Never upscales.
-    private static func resize(_ image: UIImage, toMegapixels targetMP: Double) -> UIImage {
-        guard let cg = image.cgImage else { return image }
-        let currentPixels = Double(cg.width * cg.height)
-        let targetPixels = targetMP * 1_000_000
-        guard targetPixels > 0, currentPixels > targetPixels * 1.02 else { return image }
-
-        let scale = (targetPixels / currentPixels).squareRoot()
-        let newWidth = max(1, Int((Double(cg.width) * scale).rounded()))
-        let newHeight = max(1, Int((Double(cg.height) * scale).rounded()))
-
-        let colorSpace = cg.colorSpace ?? CGColorSpaceCreateDeviceRGB()
-        var bitmapInfo = cg.bitmapInfo.rawValue
-        // Normalize to a context-compatible alpha layout.
-        bitmapInfo = (bitmapInfo & ~CGBitmapInfo.alphaInfoMask.rawValue) | CGImageAlphaInfo.premultipliedLast.rawValue
-
-        guard let context = CGContext(data: nil,
-                                       width: newWidth,
-                                       height: newHeight,
-                                       bitsPerComponent: 8,
-                                       bytesPerRow: 0,
-                                       space: colorSpace,
-                                       bitmapInfo: bitmapInfo) else { return image }
-        context.interpolationQuality = .high
-        context.draw(cg, in: CGRect(x: 0, y: 0, width: newWidth, height: newHeight))
-        guard let scaledCG = context.makeImage() else { return image }
-        return UIImage(cgImage: scaledCG, scale: 1, orientation: image.imageOrientation)
     }
 }
 
