@@ -64,25 +64,32 @@ extension CameraRecorder {
             guard self.recordingSessionToken == myToken, !self.stopRequested else { return }
             self.applyStabilization(forceRecording: true)
 
-            // The requested resolution (e.g. 1080p Slow-Mo) isn't always what the
-            // sensor can actually deliver at the requested fps — on hardware that
-            // can't hit e.g. 1080p240, applyActiveFormat above silently falls back
-            // to a lower-res sensor format. If the encoder is still told to write
-            // the originally-requested (higher) dimensions, it upscales the lower
-            // native sensor image into the bigger frame, which looks soft/noisy
-            // despite a high bitrate. Read back what the sensor actually locked to
-            // and make the encoder match it exactly — no upscale.
+            // Only shrink the encode plan when the sensor locked to something
+            // *smaller* than requested (e.g. 1080p240 unavailable → 720p240).
+            // Never expand to full sensor size — that broke Data Saver modes
+            // (144p/320p) by writing 352×288 / 960×540 instead of 256×144 / 568×320.
+            // Downscale is handled in appendVideoSample.
             if let device = self.cameraInput?.device {
                 let activeDims = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
                 let sensorW = Int(activeDims.width)
                 let sensorH = Int(activeDims.height)
                 if sensorW > 0, sensorH > 0 {
-                    let requestedIsPortrait = newPlan.height > newPlan.width
-                    let (outW, outH) = requestedIsPortrait ? (sensorH, sensorW) : (sensorW, sensorH)
-                    if outW != newPlan.width || outH != newPlan.height {
-                        newPlan.width = outW
-                        newPlan.height = outH
+                    // Sensor buffers are landscape; plan is landscape (w ≥ h).
+                    let sensLong = max(sensorW, sensorH)
+                    let sensShort = min(sensorW, sensorH)
+                    let planLong = max(newPlan.width, newPlan.height)
+                    let planShort = min(newPlan.width, newPlan.height)
+                    if sensLong < planLong - 2 || sensShort < planShort - 2 {
+                        // Keep landscape orientation of the plan.
+                        if newPlan.width >= newPlan.height {
+                            newPlan.width = sensLong
+                            newPlan.height = sensShort
+                        } else {
+                            newPlan.width = sensShort
+                            newPlan.height = sensLong
+                        }
                     }
+                    // else: keep requested plan size; appendVideoSample scales down.
                 }
             }
             let transform = Self.transform(width: newPlan.width, height: newPlan.height, isFront: self.isFrontCamera)
