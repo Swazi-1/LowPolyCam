@@ -223,7 +223,12 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
         guard let adaptor = pixelBufferAdaptor else { return false }
 
         var dst: CVPixelBuffer?
-        if let pool = adaptor.pixelBufferPool {
+        // Prefer our own pre-created pool (ready on first frame of first clip).
+        if let pool = scalePixelBufferPool {
+            let status = CVPixelBufferPoolCreatePixelBuffer(nil, pool, &dst)
+            if status != kCVReturnSuccess { dst = nil }
+        }
+        if dst == nil, let pool = adaptor.pixelBufferPool {
             let status = CVPixelBufferPoolCreatePixelBuffer(nil, pool, &dst)
             if status != kCVReturnSuccess { dst = nil }
         }
