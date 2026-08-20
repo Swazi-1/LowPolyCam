@@ -848,9 +848,11 @@ enum Encoder {
                 if settings.useHEVC && px.h >= 720 { return AVVideoCodecType.hevc }
                 return AVVideoCodecType.h264
             }(),
-            // 240fps on A10: skip audio track — dual video+AAC encode at 240
-            // was a common finishWriting failure mode. 120fps keeps audio.
-            hasAudio: (isSlow && fps >= 240) ? false : settings.recordAudio,
+            // 240fps on A10: audio previously caused finishWriting failures when
+            // combined with the video track — restored per user request. If audio
+            // dropouts/failures reappear at 240fps specifically, this is the first
+            // place to look (see DebugLog "[7] audio input REJECTED" entries).
+            hasAudio: settings.recordAudio,
             saveLocation: settings.saveLocation,
             splitInterval: settings.splitInterval
         )
