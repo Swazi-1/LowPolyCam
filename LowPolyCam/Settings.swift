@@ -209,10 +209,10 @@ enum Quality: String, CaseIterable, Identifiable {
 
     var detail: String {
         switch self {
-        case .high: return "Best video quality, most storage space"
-        case .medium: return "Great everyday quality, balanced file size"
-        case .low: return "Good quality, less storage space"
-        case .ultraLow: return "Smallest files, for filming all day"
+        case .high: return "Matches iOS Camera quality (largest files)"
+        case .medium: return "Slightly below iOS Camera, balanced size"
+        case .low: return "Noticeably smaller files, still clear"
+        case .ultraLow: return "Smallest usable files for long shoots"
         }
     }
 }
@@ -726,12 +726,13 @@ enum Encoder {
     // bitrate. With that race fixed, bitrate can go back up to real
     // quality levels without reintroducing the frame-drop symptom.
     private static let videoKbps: [Resolution: [Quality: Int]] = [
-        .p2160: [.high: 40000, .medium: 20000, .low: 10000, .ultraLow: 4000],
-        .p1080: [.high: 16000, .medium: 8000,  .low: 4000,  .ultraLow: 1500],
-        .p720:  [.high: 8000,  .medium: 4000,  .low: 2000,  .ultraLow: 800],
-        .p480:  [.high: 3000,  .medium: 1500,  .low: 800,   .ultraLow: 300],
-        .p320:  [.high: 1200,  .medium: 700,   .low: 350,   .ultraLow: 150],
-        .p144:  [.high: 400,   .medium: 250,   .low: 150,   .ultraLow: 80]
+        // High ≈ stock iOS Camera HEVC. Medium ~70%. Low ~45%. Data Saver ~22% (still usable).
+        .p2160: [.high: 45000, .medium: 32000, .low: 20000, .ultraLow: 10000],
+        .p1080: [.high: 17000, .medium: 12000, .low: 7500,  .ultraLow: 3500],
+        .p720:  [.high: 10000, .medium: 7000,  .low: 4500,  .ultraLow: 2000],
+        .p480:  [.high: 4000,  .medium: 2800,  .low: 1600,  .ultraLow: 800],
+        .p320:  [.high: 1800,  .medium: 1200,  .low: 700,   .ultraLow: 350],
+        .p144:  [.high: 600,   .medium: 400,   .low: 250,   .ultraLow: 120],
     ]
 
     private static let audioKbps: [Quality: Int] = [
@@ -788,42 +789,25 @@ enum Encoder {
         // 720p@240≈170MB/min, 1080p@120≈130MB/min, 720p@120≈65MB/min) —
         // matching them keeps the encoder comfortably real-time on A10.
         if isSlow {
-            // Slow-mo ceilings: high enough for acceptable per-frame quality
-            // on A10, still under the point where VideoDataOutput + HEVC
-            // starts discarding frames (which tanks fps in Photos).
-            // Apple stock is roughly 720p240≈23 Mbps, 1080p120≈17 Mbps,
-            // 720p120≈9 Mbps — we sit a bit under that for headroom, and
-            // scale with the user's Quality preset so High is clearly
-            // better than Data Saver.
-            let qualityBoost: Double
-            switch settings.quality {
-            case .high:     qualityBoost = 1.00
-            case .medium:   qualityBoost = 0.85
-            case .low:      qualityBoost = 0.70
-            case .ultraLow: qualityBoost = 0.55
-            }
-            let slowMoCeilingKbps: Double
+            // Slow-mo uses a single iOS-Camera-matched rate (no Quality tiers).
+            // Measured stock Camera ~720p@240 ≈ 28 Mbps; 1080p@120 ≈ 20 Mbps;
+            // 720p@120 ≈ 12 Mbps. 1080p@240 is not offered (locked in UI).
+            let slowMoTargetKbps: Double
             if fps >= 240 {
-                // Was 20000 — still landing at ~210fps of 240 target after
-                // the buffering fix (i.e. encoder-bound, not a transient
-                // stall). Trading some per-frame bit density for the A10
-                // encoder actually keeping up in real time.
-                slowMoCeilingKbps = 14000 * qualityBoost   // up to ~14 Mbps @ High
+                slowMoTargetKbps = 28000   // ~28 Mbps — matches stock 720p240
             } else if res == .p1080 {
-                slowMoCeilingKbps = 18000 * qualityBoost   // up to ~18 Mbps @ High 1080p120
+                slowMoTargetKbps = 20000   // ~20 Mbps — 1080p120
             } else {
-                slowMoCeilingKbps = 10000 * qualityBoost   // up to ~10 Mbps @ High 720p120
+                slowMoTargetKbps = 12000   // ~12 Mbps — 720p120
             }
-            // Floor so even Data Saver is not unusably blocky.
-            let floorKbps: Double = fps >= 240 ? 7000 : (res == .p1080 ? 8000 : 4500)
-            kbps = min(max(kbps, floorKbps), slowMoCeilingKbps)
+            kbps = slowMoTargetKbps
         }
 
         // Longevity Mode: gentle bitrate cut for normal video. For slow-mo
         // we cut less — per-frame bits are already scarce at 120/240 fps and
         // a hard 0.78× made footage look muddy.
-        if settings.longevityMode {
-            kbps *= isSlow ? 0.90 : 0.78
+        if settings.longevityMode && !isSlow {
+            kbps *= 0.78
         }
 
         // GOP length. Slow-mo needs more frequent I-frames so motion stays
