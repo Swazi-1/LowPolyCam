@@ -1,5 +1,6 @@
 import Foundation
 import CoreMedia
+import QuartzCore // CACurrentMediaTime()
 
 /// 📊 Reusable recording stats system — live FPS, dropped-frame rate,
 /// measured bitrate, and duration for the active take.
