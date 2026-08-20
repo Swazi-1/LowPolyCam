@@ -90,17 +90,21 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
                 writerLock.lock()
                 var droppedForStats = false // 📊 set inside lock, reported after unlock
                 if segmentStartInFlight {
-                    // At 120/240fps, do NOT retain camera sample buffers for later
-                    // append. The capture pool recycles pixel data; flushing 12–14
-                    // stale buffers at segment start was poisoning AVAssetWriter
-                    // (log: flush 14 frames → writer dead within ~3s → incomplete MOV).
+                    // At 120/240fps, never retain a backlog. Flushing 12–14
+                    // stale buffers at segment start poisoned AVAssetWriter on
+                    // iOS 15/A10, but one newest buffer is safe and prevents
+                    // a large first-timestamp gap.
                     let highFPS = (plan?.frameRate ?? 30) >= 120
                     if highFPS {
-                        // writerLock is already held. Calling countDroppedFrame()
-                        // here would try to take the same NSLock again, deadlocking
-                        // the capture queue and subsequently the Stop button.
-                        droppedFrameCount += 1
-                        droppedForStats = true
+                        // Writer setup takes long enough to lose dozens of 240fps
+                        // frames. Keep exactly the newest one—not a backlog—so
+                        // startSegment can begin the movie timeline from a frame
+                        // near the moment the writer becomes ready. Retaining a
+                        // whole high-speed backlog used to destabilize iOS 15/A10;
+                        // one latest buffer avoids that while eliminating the
+                        // large initial PTS gap that Photos read as ~200 fps.
+                        pendingStartBuffers.removeAll(keepingCapacity: true)
+                        pendingStartBuffers.append(sampleBuffer)
                     } else if pendingStartBuffers.count < Self.pendingStartBufferLimit {
                         pendingStartBuffers.append(sampleBuffer)
                     } else {
