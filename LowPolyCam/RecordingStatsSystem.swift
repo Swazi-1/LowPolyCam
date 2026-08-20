@@ -140,7 +140,15 @@ final class RecordingStatsTracker {
         let dt = now - lastByteSampleHostTime
         if dt >= Self.minSampleInterval {
             let byteDelta = max(0, currentFileBytes - lastByteSampleBytes)
-            snapshot.currentBitrateBps = (Double(byteDelta) * 8.0) / dt
+            // AVAssetWriter only flushes bytes to disk at each movie-fragment
+            // boundary (4s in this app — see VideoRecordingSystem.fragmentSeconds),
+            // so most 0.25s sample ticks see byteDelta == 0 even though the
+            // encoder is running fine. Only overwrite currentBitrateBps when
+            // we actually observed new bytes on disk; otherwise keep showing
+            // the last real reading instead of flashing to "--" every tick.
+            if byteDelta > 0 {
+                snapshot.currentBitrateBps = (Double(byteDelta) * 8.0) / dt
+            }
             lastByteSampleHostTime = now
             lastByteSampleBytes = currentFileBytes
         }
