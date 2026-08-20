@@ -323,10 +323,16 @@ extension CameraRecorder {
             // Adaptor lets us scale camera frames down to the exact selected
             // resolution (144p/320p/480p). Appending raw sample buffers often
             // keeps the sensor size (e.g. 960×540 → 540×960 portrait).
+            // Full compatibility flags so CIContext can render into pool buffers
+            // on iOS 15 / A10 (missing flags → silent empty frames → save failure).
             let srcAttrs: [String: Any] = [
                 kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
                 kCVPixelBufferWidthKey as String: plan.width,
-                kCVPixelBufferHeightKey as String: plan.height
+                kCVPixelBufferHeightKey as String: plan.height,
+                kCVPixelBufferBytesPerRowAlignmentKey as String: 16,
+                kCVPixelBufferCGImageCompatibilityKey as String: true,
+                kCVPixelBufferCGBitmapContextCompatibilityKey as String: true,
+                kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: Any]
             ]
             let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: v, sourcePixelBufferAttributes: srcAttrs)
 
