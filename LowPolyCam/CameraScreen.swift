@@ -489,39 +489,54 @@ struct CameraScreen: View {
 
                 Text("REC")
                     .font(.system(size: 12, weight: .black))
+                    .fixedSize()
                 Text(Fmt.duration(recorder.elapsed))
                     .font(.system(size: 14, weight: .bold, design: .monospaced))
+                    .fixedSize()
 
                 if let limit = settings.maxDuration.seconds {
                     Text("/ " + Fmt.duration(limit))
                         .font(.system(size: 11, weight: .semibold, design: .monospaced))
                         .foregroundColor(.white.opacity(0.55))
+                        .fixedSize()
                 }
 
                 // Battery while filming — same indicator as idle HUD.
                 Text("·")
                     .foregroundColor(Palette.slateLight)
                     .font(.system(size: 11, weight: .bold))
+                    .fixedSize()
                 batteryIndicator
 
                 if recorder.droppedFrames > 0 {
                     Text("\(recorder.droppedFrames)d")
                         .font(.system(size: 10, weight: .bold))
                         .foregroundColor(settings.accentColor.bright)
+                        .fixedSize()
                 }
 
                 // 📊 Opt-in live stats (measured fps / bitrate) — Settings toggle,
                 // off by default. Purely additive to the existing HUD row.
+                // fixedSize() on every element here is load-bearing: without
+                // it SwiftUI wraps "00:00:02" / "100%" / "66d" into vertical
+                // stacks the instant the row runs out of horizontal room,
+                // which is what was corrupting the whole top bar's layout
+                // and making it visibly resize (flicker) on every tick.
                 if settings.showRecordingStats {
                     Text("·")
                         .foregroundColor(Palette.slateLight)
                         .font(.system(size: 11, weight: .bold))
+                        .fixedSize()
                     Text(recorder.recordingStats.measuredFPSLabel)
                         .font(.system(size: 10, weight: .semibold, design: .monospaced))
                         .foregroundColor(.white.opacity(0.68))
+                        .fixedSize()
+                        .lineLimit(1)
                     Text(recorder.recordingStats.currentBitrateLabel)
                         .font(.system(size: 10, weight: .semibold, design: .monospaced))
                         .foregroundColor(.white.opacity(0.68))
+                        .fixedSize()
+                        .lineLimit(1)
                 }
             } else if recorder.isSaving {
                 ProgressView().tint(settings.accentColor.bright).scaleEffect(0.7)
@@ -530,6 +545,9 @@ struct CameraScreen: View {
                     .foregroundColor(settings.accentColor.bright)
             }
         }
+        .lineLimit(1)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(minHeight: 22)
         .foregroundColor(.white)
         .onAppear { blink = true }
         .onDisappear { blink = false }
