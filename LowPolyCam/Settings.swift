@@ -52,15 +52,9 @@ enum PhysicalOrientation {
     }
 }
 
-// MARK: - Device check (used to warn about memory-heavy settings on older hardware)
-
-enum DeviceTier {
-    /// True on iPhone 7 / 7 Plus (A10, 2GB RAM) where 4K recording is more
-    /// likely to hit memory pressure during long sessions.
-    static var isLowMemoryDevice: Bool {
-        ProcessInfo.processInfo.physicalMemory <= 2_500_000_000
-    }
-}
+// Device tier / low-memory check now lives in PerformanceProfile.swift
+// (`PerformanceProfile.DeviceTier`) — this file's old copy was unused
+// dead code and has been removed.
 
 // MARK: - Resolution
 
@@ -753,9 +747,12 @@ enum Encoder {
 
         // Longevity Mode: gentle bitrate cut for normal video. For slow-mo
         // we cut less — per-frame bits are already scarce at 120/240 fps and
-        // a hard 0.78× made footage look muddy.
-        if settings.longevityMode && !isSlow {
-            kbps *= 0.78
+        // a hard 0.78× made footage look muddy. See PerformanceProfile.swift
+        // for the actual multiplier — this is the one place all of Longevity
+        // Mode's throttling knobs live now, not just this bitrate cut.
+        let profile = PerformanceProfile.current(settings: settings)
+        if !isSlow {
+            kbps *= profile.videoBitrateMultiplier
         }
 
         // GOP length. Slow-mo needs more frequent I-frames so motion stays
@@ -766,8 +763,8 @@ enum Encoder {
         if isSlow {
             gopSeconds = min(gopSeconds, 2)   // ≤2 s between I-frames
         }
-        if settings.longevityMode && !isSlow {
-            gopSeconds = max(gopSeconds, 6)
+        if !isSlow {
+            gopSeconds = max(gopSeconds, profile.minKeyFrameSeconds)
         }
         let aKbps = settings.recordAudio ? (audioKbps[settings.quality] ?? 32) : 0
 
