@@ -432,47 +432,95 @@ extension CameraRecorder {
         let start = segmentStart
         let destination = recordingDestination
         let url = w.outputURL
+        let hadFrames = end.isValid && start.isValid && CMTimeCompare(end, start) > 0
 
         writer = nil; videoIn = nil; audioIn = nil; pixelBufferAdaptor = nil; scalePixelBufferPool = nil
         segmentStart = .invalid
         lastVideoDuration = .invalid
         writerLock.unlock()
 
-        guard w.status == .writing else {
-            let err = w.error?.localizedDescription ?? "status=\(w.status.rawValue)"
-            DebugLog.write("❌ finishSegment writer not writing: \(err)")
-            w.cancelWriting()
-            DispatchQueue.main.async {
-                self.notice = "Clip failed to save"
-                self.refreshFreeSpace()
-            }
-            completion?()
-            return
+        // Salvage path: if writer already failed/cancelled but the file has
+        // real bytes, still try to deliver it (intermittent A10 encoder failures
+        // often leave a playable partial MOV).
+        func fileByteSize(_ u: URL) -> Int {
+            (try? u.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
         }
-
-        v.markAsFinished()
-        a?.markAsFinished()
-        if end.isValid, start.isValid, CMTimeCompare(end, start) > 0 {
-            w.endSession(atSourceTime: end)
-        }
-        w.finishWriting {
+        func salvageOrFail(_ reason: String) {
+            let bytes = fileByteSize(url)
+            DebugLog.write("❌ finishSegment \(reason) fileBytes=\(bytes)")
             UserDefaults.standard.removeObject(forKey: Self.inProgressKey)
             UserDefaults.standard.removeObject(forKey: Self.inProgressDestinationKey)
-
-            guard w.status == .completed else {
-                let err = w.error?.localizedDescription ?? "status=\(w.status.rawValue)"
-                DebugLog.write("❌ finishWriting not completed: \(err)")
+            if bytes > 50_000 {
+                // ≥ ~50 KB — treat as a real clip and deliver.
+                self.generateThumbnail(for: url)
+                self.deliver(url, to: destination) {
+                    DispatchQueue.main.async { self.refreshFreeSpace() }
+                    completion?()
+                }
+            } else {
+                try? FileManager.default.removeItem(at: url)
                 DispatchQueue.main.async {
                     self.notice = "Clip failed to save"
                     self.refreshFreeSpace()
                 }
                 completion?()
+            }
+        }
+
+        guard w.status == .writing else {
+            let err = w.error?.localizedDescription ?? "status=\(w.status.rawValue)"
+            // cancelWriting if still possible; then try salvage.
+            if w.status == .failed || w.status == .cancelled {
+                // already terminal
+            } else {
+                w.cancelWriting()
+            }
+            salvageOrFail("writer not writing: \(err)")
+            return
+        }
+
+        if !hadFrames {
+            DebugLog.write("⚠️ finishSegment: no video frames written")
+            w.cancelWriting()
+            salvageOrFail("no frames")
+            return
+        }
+
+        v.markAsFinished()
+        a?.markAsFinished()
+        w.endSession(atSourceTime: end)
+        w.finishWriting {
+            UserDefaults.standard.removeObject(forKey: Self.inProgressKey)
+            UserDefaults.standard.removeObject(forKey: Self.inProgressDestinationKey)
+
+            if w.status == .completed {
+                self.generateThumbnail(for: url)
+                self.deliver(url, to: destination) {
+                    DispatchQueue.main.async { self.refreshFreeSpace() }
+                    completion?()
+                }
                 return
             }
 
-            self.generateThumbnail(for: url)
-            self.deliver(url, to: destination) {
-                DispatchQueue.main.async { self.refreshFreeSpace() }
+            // finishWriting reported failure — salvage if the file is usable.
+            let err = w.error?.localizedDescription ?? "status=\(w.status.rawValue)"
+            let bytes = fileByteSize(url)
+            DebugLog.write("❌ finishWriting not completed: \(err) fileBytes=\(bytes)")
+            if bytes > 50_000 {
+                self.generateThumbnail(for: url)
+                self.deliver(url, to: destination) {
+                    DispatchQueue.main.async {
+                        self.notice = "Saved (recovered)"
+                        self.refreshFreeSpace()
+                    }
+                    completion?()
+                }
+            } else {
+                try? FileManager.default.removeItem(at: url)
+                DispatchQueue.main.async {
+                    self.notice = "Clip failed to save"
+                    self.refreshFreeSpace()
+                }
                 completion?()
             }
         }
@@ -616,27 +664,37 @@ extension CameraRecorder {
             return
         }
 
-        PHPhotoLibrary.shared().performChanges {
-            let request = PHAssetCreationRequest.forAsset()
-            let options = PHAssetResourceCreationOptions()
-            // Keep the source file until we know Photos accepted it, then
-            // delete it ourselves. Using shouldMoveFile=true is risky if the
-            // library later fails to import (file would be gone).
-            options.shouldMoveFile = false
-            request.addResource(with: .video, fileURL: url, options: options)
-        } completionHandler: { [weak self] success, error in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
+        func attemptSave(isRetry: Bool) {
+            PHPhotoLibrary.shared().performChanges {
+                let request = PHAssetCreationRequest.forAsset()
+                let options = PHAssetResourceCreationOptions()
+                options.shouldMoveFile = false
+                request.addResource(with: .video, fileURL: url, options: options)
+            } completionHandler: { [weak self] success, error in
                 if success {
-                    self.notice = "Saved to Photos"
-                    // Keep the local copy so Recorded Clips gallery can list it.
-                    // User can delete from the gallery when they want the space.
-                } else {
-                    self.notice = "Saved to Files (Photos refused)"
+                    DispatchQueue.main.async {
+                        self?.notice = "Saved to Photos"
+                    }
+                    done()
+                    return
                 }
+                // One retry after a short delay — intermittent Photos import
+                // failures are common under thermal/storage pressure on iOS 15.
+                if !isRetry {
+                    DebugLog.write("⚠️ Photos save failed, retrying once: \(error?.localizedDescription ?? "?")")
+                    DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.6) {
+                        attemptSave(isRetry: true)
+                    }
+                    return
+                }
+                DebugLog.write("❌ Photos save failed after retry: \(error?.localizedDescription ?? "?")")
+                DispatchQueue.main.async {
+                    self?.notice = "Saved to Files (Photos refused)"
+                }
+                done()
             }
-            done()
         }
+        attemptSave(isRetry: false)
     }
 
     /// After a successful Photos import, remove local video clips from the
