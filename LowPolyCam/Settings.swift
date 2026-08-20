@@ -451,6 +451,17 @@ enum WhiteBalancePreset: String, CaseIterable, Identifiable {
         }
     }
 
+    /// One-line description shown under the label in the White Balance sheet.
+    var detail: String {
+        switch self {
+        case .auto: return "Matches white balance to the scene automatically"
+        case .daylight: return "Best for outdoor daylight"
+        case .indoor: return "Warms up indoor / tungsten lighting"
+        case .fluorescent: return "Cools down office / fluorescent lighting"
+        case .cloudy: return "Golden, warm tone for overcast or sunset"
+        }
+    }
+
     var kelvin: (temp: Float, tint: Float)? {
         switch self {
         case .auto: return nil
