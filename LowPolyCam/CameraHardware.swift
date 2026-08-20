@@ -166,6 +166,7 @@ extension CameraRecorder {
     }
 
     @objc func didBecomeActive() {
+        volumeObserver?.ignoreTemporarily(duration: 1.5)
         sessionQueue.async {
             if !self.session.isRunning { self.session.startRunning() }
             self.refreshTorchState()
