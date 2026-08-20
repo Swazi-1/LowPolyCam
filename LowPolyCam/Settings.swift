@@ -796,7 +796,9 @@ enum Encoder {
             // 720p@240 ≈ 28 Mbps; 1080p@120 ≈ 20 Mbps; 720p@120 ≈ 12 Mbps.
             let slowMoTargetKbps: Double
             if fps >= 240 {
-                slowMoTargetKbps = 28000
+                // ~22 Mbps keeps A10 H.264 real-time at 720p240 (28 Mbps HEVC
+                // was over budget and failed to finish writing on device).
+                slowMoTargetKbps = 22000
             } else if res == .p1080 {
                 slowMoTargetKbps = 20000
             } else {
@@ -833,9 +835,13 @@ enum Encoder {
             audioBitrate: aKbps * 1000,
             keyFrameInterval: gopSeconds * fps,
             frameRate: fps,
-            // H.264 for sub-720p: HEVC + unusual sizes (848×480 / 576×320 / 256×144)
-            // is unreliable on A10 / iOS 15 and was a source of "Clip failed to save".
-            codec: (settings.useHEVC && px.h >= 720) ? .hevc : .h264,
+            // H.264 for sub-720p and for 240fps slow-mo: HEVC at those loads is
+            // unreliable on A10 / iOS 15 and caused "Clip failed to save".
+            codec: {
+                if isSlow && fps >= 240 { return AVVideoCodecType.h264 }
+                if settings.useHEVC && px.h >= 720 { return AVVideoCodecType.hevc }
+                return AVVideoCodecType.h264
+            }(),
             hasAudio: settings.recordAudio,
             saveLocation: settings.saveLocation,
             splitInterval: settings.splitInterval
