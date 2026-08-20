@@ -641,11 +641,23 @@ extension CameraRecorder {
                 oldWriter.endSession(atSourceTime: oldEnd)
             }
             oldWriter.finishWriting {
+                guard oldWriter.status == .completed else {
+                    DebugLog.write("❌ rotated segment failed to finish: \(oldWriter.error?.localizedDescription ?? "status=\(oldWriter.status.rawValue)")")
+                    try? FileManager.default.removeItem(at: oldUrl)
+                    DispatchQueue.main.async {
+                        self.notice = "A video segment failed to save"
+                        self.refreshFreeSpace()
+                    }
+                    return
+                }
                 self.generateThumbnail(for: oldUrl)
                 self.deliver(oldUrl, to: destination) {
                     DispatchQueue.main.async { self.refreshFreeSpace() }
                 }
             }
+        } else {
+            DebugLog.write("❌ rotated segment was not writable: status=\(oldWriter.status.rawValue)")
+            try? FileManager.default.removeItem(at: oldUrl)
         }
 
         startSegment(at: pts, firstSampleBuffer: firstSampleBuffer)
@@ -881,3 +893,5 @@ extension CameraRecorder {
         var errorDescription: String? { "Encoder rejected format settings" }
     }
 }
+
+
