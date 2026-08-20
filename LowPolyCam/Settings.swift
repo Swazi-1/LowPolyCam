@@ -858,35 +858,47 @@ enum Encoder {
             // Real-time path: no B-frame reordering (less backlog on A10).
             var compression: [String: Any] = [
                 AVVideoAverageBitRateKey: plan.videoBitrate,
-                AVVideoMaxKeyFrameIntervalKey: plan.keyFrameInterval,
-                AVVideoExpectedSourceFrameRateKey: plan.frameRate,
+                AVVideoMaxKeyFrameIntervalKey: max(plan.keyFrameInterval, 1),
                 AVVideoAllowFrameReorderingKey: false
             ]
+            // Expected frame rate helps the encoder; at 240fps some iOS 15
+            // builds reject the key with HEVC — try with it first, caller
+            // falls back via canApply.
+            if plan.frameRate <= 120 {
+                compression[AVVideoExpectedSourceFrameRateKey] = plan.frameRate
+            }
             if codec == .h264 {
                 compression[AVVideoProfileLevelKey] = AVVideoProfileLevelH264HighAutoLevel
+            }
+            // Cap keyframe distance at 240fps (2s × 240 = 480 was fine; keep ≤2s).
+            if plan.frameRate >= 240 {
+                compression[AVVideoMaxKeyFrameIntervalKey] = min(max(plan.keyFrameInterval, 1), 480)
             }
             return [
                 AVVideoCodecKey: codec,
                 AVVideoWidthKey: plan.width,
                 AVVideoHeightKey: plan.height,
-                AVVideoScalingModeKey: AVVideoScalingModeResize,
                 AVVideoCompressionPropertiesKey: compression
             ]
         }
 
-        let preferred = build(plan.codec)
-        if writer.canApply(outputSettings: preferred, forMediaType: .video) {
-            return preferred
+        // Try preferred codec, then H.264, then bare minimum.
+        for codec in [plan.codec, AVVideoCodecType.h264] {
+            let settings = build(codec)
+            if writer.canApply(outputSettings: settings, forMediaType: .video) {
+                return settings
+            }
         }
-        let fallback = build(.h264)
-        if writer.canApply(outputSettings: fallback, forMediaType: .video) {
-            return fallback
-        }
-        return [
+        // Last resort: no compression property dictionary.
+        let bare: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.h264,
             AVVideoWidthKey: plan.width,
             AVVideoHeightKey: plan.height
         ]
+        if writer.canApply(outputSettings: bare, forMediaType: .video) {
+            return bare
+        }
+        return bare
     }
 }
 
