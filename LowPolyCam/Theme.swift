@@ -104,10 +104,15 @@ enum Design {
     static let spring = Animation.spring(response: 0.38, dampingFraction: 0.82)
 }
 
-// MARK: - Device check (shared with Settings.swift's DeviceTier)
+// MARK: - Device check
+//
+// Canonical check now lives in PerformanceProfile.swift
+// (`PerformanceProfile.DeviceTier.current`) — this is a thin alias kept so
+// the many `usesLightweightMaterial ? ... : ...` call sites below don't
+// all need renaming.
 
 var usesLightweightMaterial: Bool {
-    ProcessInfo.processInfo.physicalMemory <= 2_500_000_000
+    PerformanceProfile.DeviceTier.current == .constrained
 }
 
 /// Live blur on modern devices; flat fill on iPhone 7-class (A10) to save GPU.
