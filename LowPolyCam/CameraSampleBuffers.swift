@@ -196,11 +196,18 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
     /// endSession does not undershoot and Photos duration stays consistent
     /// with frame count.
 
-    /// Append a camera frame, scaling down when the selected resolution is
-    /// smaller than the active sensor format (144p/320p/480p).
+    /// Append a camera frame.
+    ///
+    /// iPhone 7 / iOS 15.8: always prefer passthrough. Live CI downscale was
+    /// the source of "first clip fails / 240fps never saves". Encode plan is
+    /// forced to the active sensor size at record start, so sizes match.
     @discardableResult
     func appendVideoSample(_ sampleBuffer: CMSampleBuffer, to input: AVAssetWriterInput?) -> Bool {
         guard let input = input else { return false }
+        guard input.isReadyForMoreMediaData else { return false }
+
+        // Passthrough path — used for 720p/1080p/slo-mo and for low-res when
+        // the plan was aligned to the sensor format.
         guard let plan = plan,
               let pb = CMSampleBufferGetImageBuffer(sampleBuffer) else {
             return input.append(sampleBuffer)
@@ -209,63 +216,13 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
         let srcH = CVPixelBufferGetHeight(pb)
         let dstW = plan.width
         let dstH = plan.height
-        // Exact match (or encoder will handle tiny differences) — passthrough.
-        // Camera delivers 420f YUV; writer accepts that for same-size frames.
-        if abs(srcW - dstW) <= 2 && abs(srcH - dstH) <= 2 {
+        if abs(srcW - dstW) <= 16 && abs(srcH - dstH) <= 16 {
             return input.append(sampleBuffer)
         }
 
-        // Must scale to plan size. NEVER input.append() a mismatched buffer —
-        // that puts AVAssetWriter into .failed ("Clip failed to save").
-        // iPhone 7 / iOS 15: use software CIContext + fully-compatible BGRA
-        // buffers. Metal CIContext into a pool buffer without Metal flags
-        // silently fails on A10 and yields an empty encode.
-        guard let adaptor = pixelBufferAdaptor else { return false }
-
-        var dst: CVPixelBuffer?
-        // Prefer our own pre-created pool (ready on first frame of first clip).
-        if let pool = scalePixelBufferPool {
-            let status = CVPixelBufferPoolCreatePixelBuffer(nil, pool, &dst)
-            if status != kCVReturnSuccess { dst = nil }
-        }
-        if dst == nil, let pool = adaptor.pixelBufferPool {
-            let status = CVPixelBufferPoolCreatePixelBuffer(nil, pool, &dst)
-            if status != kCVReturnSuccess { dst = nil }
-        }
-        if dst == nil {
-            let attrs: [String: Any] = [
-                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-                kCVPixelBufferWidthKey as String: dstW,
-                kCVPixelBufferHeightKey as String: dstH,
-                kCVPixelBufferBytesPerRowAlignmentKey as String: 16,
-                kCVPixelBufferCGImageCompatibilityKey as String: true,
-                kCVPixelBufferCGBitmapContextCompatibilityKey as String: true,
-                kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: Any]
-            ]
-            let status = CVPixelBufferCreate(
-                kCFAllocatorDefault, dstW, dstH,
-                kCVPixelFormatType_32BGRA,
-                attrs as CFDictionary, &dst
-            )
-            if status != kCVReturnSuccess { dst = nil }
-        }
-        guard let dst = dst else { return false }
-
-        // Software renderer is reliable on A10 / iOS 15.8 (Metal path into
-        // non-Metal-backed pool buffers was a common silent failure).
-        let ctx = scaleCIContext
-        let ci = CIImage(cvPixelBuffer: pb)
-        let scaleX = CGFloat(dstW) / CGFloat(max(srcW, 1))
-        let scaleY = CGFloat(dstH) / CGFloat(max(srcH, 1))
-        let scaled = ci.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
-        // sRGB is the safe colour space for BGRA → H.264/HEVC on iOS 15.
-        let colour = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
-        ctx.render(scaled, to: dst,
-                   bounds: CGRect(x: 0, y: 0, width: dstW, height: dstH),
-                   colorSpace: colour)
-        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-        let ok = adaptor.append(dst, withPresentationTime: pts)
-        return ok
+        // Rare mismatch (format still settling). Drop the frame rather than
+        // risk poisoning the writer with a wrong-sized buffer or a slow CI path.
+        return false
     }
 
     static func endPTS(for pts: CMTime, duration: CMTime, fps: Int) -> CMTime {
