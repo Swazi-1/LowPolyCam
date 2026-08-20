@@ -112,9 +112,11 @@ extension CameraRecorder {
             // Camera does not do that. Still force off at 4K (A10 can't hold
             // 30 fps with stab) and in Photo mode (still path is separate).
             _ = forceRecording // retained for call-site compatibility
+            // Stab at 120/240fps is not viable on A10 and can break the writer.
             let wantStab = settings.stabilization
                 && settings.resolution != .p2160
                 && settings.cameraMode != .photo
+                && settings.cameraMode != .slowMo
             c.preferredVideoStabilizationMode = wantStab ? .auto : .off
         }
         DispatchQueue.main.async { self.stabilizationSupported = supported }
