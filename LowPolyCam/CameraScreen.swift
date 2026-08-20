@@ -618,73 +618,64 @@ struct CameraScreen: View {
     }
 
     // MARK: Pro Tools Menu
+    //
+    // The drawer body below only handles the header + card chrome. The
+    // actual controls (Timer, Level meter, Exposure, White balance, ...)
+    // are described as data in `proToolsDrawerControls` and rendered by
+    // `ProToolsControlList` (see ProToolsControls.swift). To add a new
+    // Pro Tools control, add one entry to `proToolsDrawerControls` — no
+    // new hand-built VStack/HStack block needed.
 
-    private func proToolsSectionHeader(_ title: String, icon: String) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: icon)
-                .font(.system(size: 11, weight: .bold))
-                .foregroundColor(settings.accentColor.color)
-            Text(title.uppercased())
-                .font(.system(size: 12, weight: .semibold, design: .rounded))
-                .foregroundColor(.white.opacity(0.5))
-                .tracking(0.6)
-        }
-    }
-
-    private func proToolsChip(label: String, selected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: {
-            if settings.hapticFeedbackEnabled { modeHaptic.selectionChanged() }
-            action()
-        }) {
-            Text(label)
-                .font(.system(size: 12, weight: selected ? .semibold : .medium, design: .rounded))
-                .foregroundColor(selected ? Palette.slateDeep : .white.opacity(0.85))
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(
-                    Capsule()
-                        .fill(selected ? settings.accentColor.color : Palette.slateMid.opacity(0.6))
-                )
-        }
-        .buttonStyle(.plain)
-    }
-
-    /// A single full-width settings-style row: icon, title, optional subtitle,
-    /// and a trailing control. Rows sit inside one continuous card separated
-    /// by hairline dividers, closer to how Settings itself lays things out
-    /// rather than everything crammed into loose floating chips.
-    private func proToolsRow<Trailing: View>(
-        icon: String,
-        title: String,
-        subtitle: String? = nil,
-        @ViewBuilder trailing: () -> Trailing
-    ) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: icon)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(.white)
-                .frame(width: 30, height: 30)
-                .background(Palette.slateMid)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(.system(size: 15, weight: .medium, design: .rounded))
-                    .foregroundColor(.white)
-                if let subtitle {
-                    Text(subtitle)
-                        .font(.system(size: 12, weight: .regular))
-                        .foregroundColor(.white.opacity(0.45))
+    /// The list of controls shown in the Pro Tools ("Shoot") drawer, in
+    /// display order. This is the single place to touch when adding,
+    /// removing, or reordering a Pro Tools control.
+    private var proToolsDrawerControls: [ProToolControl] {
+        [
+            .chips(ProToolControl.ChipsSpec(
+                id: "timer",
+                title: "Timer",
+                items: CountdownTimer.allCases.map { timer in
+                    ProToolControl.ChipsSpec.Item(
+                        id: timer.label,
+                        label: timer.label,
+                        selected: settings.countdownTimer == timer,
+                        action: { settings.countdownTimer = timer }
+                    )
                 }
-            }
-
-            Spacer(minLength: 8)
-
-            trailing()
-        }
-        .padding(.vertical, 4)
+            )),
+            .toggle(ProToolControl.ToggleSpec(
+                id: "levelMeter",
+                title: "Level meter",
+                isOn: $settings.showLevelGauge,
+                onChange: { _ in recorder.refreshMotionUpdateRate() }
+            )),
+            .slider(ProToolControl.SliderSpec(
+                id: "exposure",
+                title: "Exposure",
+                value: $settings.exposureBias,
+                range: -2.0...2.0,
+                step: 0.1,
+                valueLabel: { String(format: "%@%.1f EV", $0 > 0 ? "+" : "", $0) },
+                onChange: { recorder.setExposureBias($0) },
+                defaultValue: 0
+            )),
+            .chips(ProToolControl.ChipsSpec(
+                id: "whiteBalance",
+                title: "White balance",
+                items: WhiteBalancePreset.allCases.map { preset in
+                    ProToolControl.ChipsSpec.Item(
+                        id: preset.rawValue,
+                        label: preset.label,
+                        selected: settings.whiteBalance == preset,
+                        action: {
+                            settings.whiteBalance = preset
+                            recorder.setWhiteBalance(preset)
+                        }
+                    )
+                },
+                scrollsHorizontally: true
+            ))
+        ]
     }
 
     private var proToolsDrawer: some View {
@@ -707,87 +698,11 @@ struct CameraScreen: View {
                 .buttonStyle(.plain)
             }
 
-            // Timer
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Timer")
-                    .font(.system(size: 12, weight: .semibold, design: .rounded))
-                    .foregroundColor(.white.opacity(0.55))
-                HStack(spacing: 8) {
-                    ForEach(CountdownTimer.allCases) { timer in
-                        proToolsChip(label: timer.label, selected: settings.countdownTimer == timer) {
-                            settings.countdownTimer = timer
-                        }
-                    }
-                    Spacer(minLength: 0)
-                }
-            }
-
-            // Level
-            HStack {
-                Text("Level meter")
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
-                    .foregroundColor(.white.opacity(0.9))
-                Spacer()
-                Toggle("", isOn: Binding(
-                    get: { settings.showLevelGauge },
-                    set: { newValue in
-                        settings.showLevelGauge = newValue
-                        recorder.refreshMotionUpdateRate()
-                    }
-                ))
-                .labelsHidden()
-                .toggleStyle(SwitchToggleStyle(tint: settings.accentColor.color))
-            }
-
-            // Exposure
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text("Exposure")
-                        .font(.system(size: 12, weight: .semibold, design: .rounded))
-                        .foregroundColor(.white.opacity(0.55))
-                    Spacer()
-                    Text(String(format: "%@%.1f EV", settings.exposureBias > 0 ? "+" : "", settings.exposureBias))
-                        .font(.system(size: 13, weight: .bold, design: .rounded))
-                        .foregroundColor(.white.opacity(0.9))
-                }
-                HStack(spacing: 8) {
-                    Slider(value: $settings.exposureBias, in: -2.0...2.0, step: 0.1)
-                        .tint(settings.accentColor.color)
-                        .onChange(of: settings.exposureBias) { val in
-                            recorder.setExposureBias(val)
-                        }
-                    if abs(settings.exposureBias) > 0.01 {
-                        Button("Reset") {
-                            settings.exposureBias = 0
-                            recorder.setExposureBias(0)
-                        }
-                        .font(.system(size: 12, weight: .bold, design: .rounded))
-                        .foregroundColor(.white.opacity(0.85))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(Palette.slateMid)
-                        .clipShape(Capsule())
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-
-            // White balance
-            VStack(alignment: .leading, spacing: 6) {
-                Text("White balance")
-                    .font(.system(size: 12, weight: .semibold, design: .rounded))
-                    .foregroundColor(.white.opacity(0.55))
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        ForEach(WhiteBalancePreset.allCases) { preset in
-                            proToolsChip(label: preset.label, selected: settings.whiteBalance == preset) {
-                                settings.whiteBalance = preset
-                                recorder.setWhiteBalance(preset)
-                            }
-                        }
-                    }
-                }
-            }
+            ProToolsControlList(
+                controls: proToolsDrawerControls,
+                accentColor: settings.accentColor.color,
+                hapticsEnabled: settings.hapticFeedbackEnabled
+            )
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 14)
