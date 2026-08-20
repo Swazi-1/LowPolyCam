@@ -47,6 +47,10 @@ final class CameraRecorder: NSObject, ObservableObject {
     @Published var availableResolutions: [Resolution] = Resolution.allCases
     @Published var availableSlowMoRates: [SlowMoFrameRate] = SlowMoFrameRate.allCases
     @Published var availableSlowMoResolutions: [Resolution] = [.p1080, .p720]
+    /// Per-resolution map of slow-mo FPS support. Used so selecting e.g. 1080p
+    /// only offers FPS rates the hardware can actually deliver at that size
+    /// (iPhone 7: 240 fps is available at 720p but not at 1080p).
+    var slowRatesByResolution: [Resolution: Set<SlowMoFrameRate>] = [:]
     @Published var isSlowMoSupportedOnCurrentLens = true
     @Published var batteryPercent: Int = -1
     @Published var batteryCharging = false
