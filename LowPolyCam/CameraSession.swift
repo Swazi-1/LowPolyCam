@@ -12,6 +12,7 @@ extension CameraRecorder {
     // MARK: Session setup
 
     func configureSession() {
+        DebugLog.write("configureSession() start position=\(position) mode=\(settings.cameraMode)")
         session.beginConfiguration()
         session.sessionPreset = .inputPriority
 
@@ -20,6 +21,9 @@ extension CameraRecorder {
            session.canAddInput(input) {
             session.addInput(input)
             cameraInput = input
+            DebugLog.write("configureSession() camera input added: \(device.localizedName)")
+        } else {
+            DebugLog.write("❌ configureSession() failed to add camera input for position=\(position) mode=\(settings.cameraMode)")
         }
 
         // On weaker/older hardware (e.g. iPhone 7's A10) the encoder can
@@ -54,6 +58,7 @@ extension CameraRecorder {
         refreshTorchState()
         resetFocusAndExposureToAuto()
         syncMicInput()
+        DebugLog.write("configureSession() done")
     }
 
     // MARK: Photo Output Configuration
@@ -133,12 +138,14 @@ extension CameraRecorder {
 
     func switchCameraInput(to targetDevice: AVCaptureDevice) {
         guard cameraInput?.device.uniqueID != targetDevice.uniqueID else { return }
+        DebugLog.write("switchCameraInput() -> \(targetDevice.localizedName) mode=\(settings.cameraMode)")
         DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
 
         // Create and validate the replacement before removing the live input.
         // If input creation/configuration fails, preserving the old input keeps
         // the preview usable instead of leaving the session with no camera.
         guard let input = try? AVCaptureDeviceInput(device: targetDevice) else {
+            DebugLog.write("❌ switchCameraInput() failed to create AVCaptureDeviceInput")
             DispatchQueue.main.async { self.notice = "Could not switch camera" }
             return
         }
@@ -152,8 +159,10 @@ extension CameraRecorder {
         } else if let old = old, session.canAddInput(old) {
             // Restore the existing input if the replacement is rejected.
             session.addInput(old)
+            DebugLog.write("❌ switchCameraInput() rejected new input, restored previous")
             DispatchQueue.main.async { self.notice = "Could not switch camera" }
         } else {
+            DebugLog.write("❌ switchCameraInput() rejected new input, no previous input to restore")
             DispatchQueue.main.async { self.notice = "Could not switch camera" }
         }
         session.commitConfiguration()
@@ -363,6 +372,7 @@ extension CameraRecorder {
             device.unlockForConfiguration()
             return true
         } catch {
+            DebugLog.write("❌ applyActiveFormat() lockForConfiguration failed: \(error.localizedDescription)")
             DispatchQueue.main.async { self.notice = "Camera settings busy" }
             return false
         }
@@ -375,8 +385,12 @@ extension CameraRecorder {
     }
 
     func refreshCapabilitiesThenApplyFormat() {
+        DebugLog.write("refreshCapabilitiesThenApplyFormat() mode=\(settings.cameraMode) position=\(position)")
         ensureCorrectCameraDevice(for: settings.cameraMode)
-        guard let device = cameraInput?.device else { return }
+        guard let device = cameraInput?.device else {
+            DebugLog.write("❌ refreshCapabilitiesThenApplyFormat() no cameraInput.device after ensureCorrectCameraDevice")
+            return
+        }
 
         let targetDims = settings.cameraMode == .slowMo
             ? settings.slowMoResolution.captureDimensions
@@ -592,8 +606,10 @@ extension CameraRecorder {
             self.setTorch(on: false)
             self.sessionQueue.async {
                 let next: AVCaptureDevice.Position = (self.position == .back) ? .front : .back
+                DebugLog.write("flipCamera() \(self.position) -> \(next) mode=\(self.settings.cameraMode)")
                 guard let device = Self.camera(at: next, mode: self.settings.cameraMode, preferPhysical: self.wantsPhysicalWideLens),
                       let input = try? AVCaptureDeviceInput(device: device) else {
+                    DebugLog.write("❌ flipCamera() could not resolve/create input for \(next)")
                     finishFlipUI()
                     return
                 }
@@ -609,8 +625,10 @@ extension CameraRecorder {
                 } else if let old = old, self.session.canAddInput(old) {
                     // Restore the previous camera if the replacement is rejected.
                     self.session.addInput(old)
+                    DebugLog.write("❌ flipCamera() new input rejected, restored previous")
                     DispatchQueue.main.async { self.notice = "Could not switch camera" }
                 } else {
+                    DebugLog.write("❌ flipCamera() new input rejected, no previous input to restore")
                     DispatchQueue.main.async { self.notice = "Could not switch camera" }
                 }
                 self.session.commitConfiguration()
@@ -621,6 +639,7 @@ extension CameraRecorder {
                 // Capability scan + format apply before volume shutter resumes.
                 self.refreshCapabilitiesThenApplyFormat()
                 self.resetFocusAndExposureToAuto()
+                DebugLog.write("flipCamera() done, position=\(self.position)")
                 finishFlipUI()
             }
         }
