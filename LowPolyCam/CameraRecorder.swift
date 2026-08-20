@@ -17,7 +17,9 @@ final class CameraRecorder: NSObject, ObservableObject {
     static let reserveBytes: Int64 = VideoRecordingSystem.reserveBytes
     static let recordStartWarmupSeconds: Double = VideoRecordingSystem.recordStartWarmupSeconds
     static let recordStartWarmupFrameFloor = VideoRecordingSystem.recordStartWarmupFrameFloor
-    static let recordStartWarmupFrameCeiling = VideoRecordingSystem.recordStartWarmupFrameCeiling
+    static func recordStartWarmupFrameCeiling(fps: Int) -> Int {
+        VideoRecordingSystem.recordStartWarmupFrameCeiling(fps: fps)
+    }
     static let inProgressKey = "inProgressClipName"
 
     // Used by the stop-recording flow in CameraRecording.swift to guard
