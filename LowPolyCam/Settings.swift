@@ -209,9 +209,9 @@ enum Quality: String, CaseIterable, Identifiable {
 
     var detail: String {
         switch self {
-        case .high: return "Matches iOS Camera quality (largest files)"
+        case .high: return "Matches iOS Camera size & quality"
         case .medium: return "Slightly below iOS Camera, balanced size"
-        case .low: return "Noticeably smaller files, still clear"
+        case .low: return "Smaller files, still clear"
         case .ultraLow: return "Smallest usable files for long shoots"
         }
     }
@@ -726,17 +726,20 @@ enum Encoder {
     // bitrate. With that race fixed, bitrate can go back up to real
     // quality levels without reintroducing the frame-drop symptom.
     private static let videoKbps: [Resolution: [Quality: Int]] = [
-        // High ≈ stock iOS Camera HEVC. Medium ~70%. Low ~45%. Data Saver ~22% (still usable).
-        .p2160: [.high: 45000, .medium: 32000, .low: 20000, .ultraLow: 10000],
-        .p1080: [.high: 17000, .medium: 12000, .low: 7500,  .ultraLow: 3500],
-        .p720:  [.high: 10000, .medium: 7000,  .low: 4500,  .ultraLow: 2000],
-        .p480:  [.high: 4000,  .medium: 2800,  .low: 1600,  .ultraLow: 800],
-        .p320:  [.high: 1800,  .medium: 1200,  .low: 700,   .ultraLow: 350],
-        .p144:  [.high: 600,   .medium: 400,   .low: 250,   .ultraLow: 120],
+        // High ≈ stock iOS Camera HEVC (measured: 1080p30 ≈ 8 Mbps → ~4.8 MB / 5s).
+        // Other heights scale by pixel count from that anchor. 4K uses Apple-like
+        // ~32 Mbps (pure pixel scale from 1080p would under-rate fine detail).
+        // Medium ~70%, Low ~45%, Data Saver ~25%.
+        .p2160: [.high: 32000, .medium: 22000, .low: 14500, .ultraLow: 8000],
+        .p1080: [.high: 8000,  .medium: 5500,  .low: 3600,  .ultraLow: 2000],
+        .p720:  [.high: 3600,  .medium: 2500,  .low: 1600,  .ultraLow: 900],
+        .p480:  [.high: 1600,  .medium: 1100,  .low: 700,   .ultraLow: 400],
+        .p320:  [.high: 700,   .medium: 500,   .low: 300,   .ultraLow: 180],
+        .p144:  [.high: 250,   .medium: 180,   .low: 120,   .ultraLow: 80]
     ]
 
     private static let audioKbps: [Quality: Int] = [
-        .high: 192, .medium: 128, .low: 64, .ultraLow: 32
+        .high: 160, .medium: 128, .low: 64, .ultraLow: 32
     ]
 
     private static let keyFrameSeconds: [Quality: Int] = [
@@ -789,16 +792,15 @@ enum Encoder {
         // 720p@240≈170MB/min, 1080p@120≈130MB/min, 720p@120≈65MB/min) —
         // matching them keeps the encoder comfortably real-time on A10.
         if isSlow {
-            // Slow-mo uses a single iOS-Camera-matched rate (no Quality tiers).
-            // Measured stock Camera ~720p@240 ≈ 28 Mbps; 1080p@120 ≈ 20 Mbps;
-            // 720p@120 ≈ 12 Mbps. 1080p@240 is not offered (locked in UI).
+            // Single rate matched to measured stock Camera (no Quality tiers).
+            // 720p@240 ≈ 28 Mbps; 1080p@120 ≈ 20 Mbps; 720p@120 ≈ 12 Mbps.
             let slowMoTargetKbps: Double
             if fps >= 240 {
-                slowMoTargetKbps = 28000   // ~28 Mbps — matches stock 720p240
+                slowMoTargetKbps = 28000
             } else if res == .p1080 {
-                slowMoTargetKbps = 20000   // ~20 Mbps — 1080p120
+                slowMoTargetKbps = 20000
             } else {
-                slowMoTargetKbps = 12000   // ~12 Mbps — 720p120
+                slowMoTargetKbps = 12000
             }
             kbps = slowMoTargetKbps
         }
