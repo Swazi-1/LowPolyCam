@@ -88,7 +88,14 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
             if currentWriter == nil {
                 writerLock.lock()
                 if segmentStartInFlight {
-                    if pendingStartBuffers.count < Self.pendingStartBufferLimit {
+                    // At 120/240fps, do NOT retain camera sample buffers for later
+                    // append. The capture pool recycles pixel data; flushing 12–14
+                    // stale buffers at segment start was poisoning AVAssetWriter
+                    // (log: flush 14 frames → writer dead within ~3s → incomplete MOV).
+                    let highFPS = (plan?.frameRate ?? 30) >= 120
+                    if highFPS {
+                        countDroppedFrame()
+                    } else if pendingStartBuffers.count < Self.pendingStartBufferLimit {
                         pendingStartBuffers.append(sampleBuffer)
                     } else {
                         countDroppedFrame()
