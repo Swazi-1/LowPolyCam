@@ -533,6 +533,12 @@ final class AppSettings: ObservableObject {
     @Published var autoDimOnRecord: Bool {
         didSet { store.set(autoDimOnRecord, forKey: "autoDimOnRecord") }
     }
+    /// 📊 Opt-in live stats readout (measured fps / bitrate / drop rate)
+    /// during recording. Off by default so the HUD layout for everyone
+    /// else stays exactly as it was.
+    @Published var showRecordingStats: Bool {
+        didSet { store.set(showRecordingStats, forKey: "showRecordingStats") }
+    }
     @Published var accentColor: AccentColor {
         didSet { store.set(accentColor.rawValue, forKey: "accentColor") }
     }
@@ -602,6 +608,7 @@ final class AppSettings: ObservableObject {
         useHEVC          = store.object(forKey: "useHEVC") as? Bool ?? true
         showGrid         = store.object(forKey: "showGrid") as? Bool ?? false
         autoDimOnRecord  = store.object(forKey: "autoDimOnRecord") as? Bool ?? false
+        showRecordingStats = store.object(forKey: "showRecordingStats") as? Bool ?? false
         // Default appearance is Dial Lavender. Legacy "mint" installs map to violet
         // (Lens Mint was removed).
         if let raw = store.string(forKey: "accentColor"), raw != "mint",
