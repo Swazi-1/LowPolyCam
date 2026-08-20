@@ -64,7 +64,12 @@ extension CameraRecorder {
             guard self.recordingSessionToken == myToken, !self.stopRequested else { return }
             self.applyStabilization(forceRecording: true)
 
-            // Align encode plan with the active sensor format when needed.
+            // ALWAYS encode at the active sensor size (passthrough sample
+            // buffers). Live CI downscale on iPhone 7 / iOS 15.8 caused:
+            //  - first clip after launch fails, second works
+            //  - 240 fps slo-mo never saves
+            // Data-saver tiers still pick the smallest available sensor
+            // format via CameraFormatSelector; bitrate follows the tier.
             if let device = self.cameraInput?.device {
                 let activeDims = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
                 let sensorW = Int(activeDims.width)
@@ -72,34 +77,14 @@ extension CameraRecorder {
                 if sensorW > 0, sensorH > 0 {
                     let sensLong = max(sensorW, sensorH)
                     let sensShort = min(sensorW, sensorH)
-                    let planLong = max(newPlan.width, newPlan.height)
-                    let planShort = min(newPlan.width, newPlan.height)
-
-                    if newPlan.isSlowMo {
-                        // Slow-mo at 120/240 fps CANNOT software-scale on A10 —
-                        // CI downscale cannot keep up and the writer ends with
-                        // zero frames → "Clip failed to save". Always encode at
-                        // the sensor size (passthrough). 1080p240 unavailable
-                        // already falls back via applyActiveFormat.
-                        if newPlan.width >= newPlan.height {
-                            newPlan.width = sensLong
-                            newPlan.height = sensShort
-                        } else {
-                            newPlan.width = sensShort
-                            newPlan.height = sensLong
-                        }
-                    } else if sensLong < planLong - 2 || sensShort < planShort - 2 {
-                        // Normal video: only shrink when sensor is smaller than
-                        // requested (anti-upscale). Data Saver keeps plan size
-                        // and scales down in appendVideoSample.
-                        if newPlan.width >= newPlan.height {
-                            newPlan.width = sensLong
-                            newPlan.height = sensShort
-                        } else {
-                            newPlan.width = sensShort
-                            newPlan.height = sensLong
-                        }
+                    if newPlan.width >= newPlan.height {
+                        newPlan.width = sensLong
+                        newPlan.height = sensShort
+                    } else {
+                        newPlan.width = sensShort
+                        newPlan.height = sensLong
                     }
+                    DebugLog.write("[plan] sensor \(sensorW)x\(sensorH) → encode \(newPlan.width)x\(newPlan.height) @\(newPlan.frameRate)fps")
                 }
             }
             let transform = Self.transform(width: newPlan.width, height: newPlan.height, isFront: self.isFrontCamera)
@@ -317,7 +302,11 @@ extension CameraRecorder {
 
             let w = try AVAssetWriter(outputURL: url, fileType: .mov)
             DebugLog.write("[2] AVAssetWriter created OK")
-            w.movieFragmentInterval = CMTime(seconds: Self.fragmentSeconds, preferredTimescale: 600)
+            // Movie fragments at 240fps have caused finishWriting failures on
+            // A10 / iOS 15. Only use them for normal ≤60fps recording.
+            if plan.frameRate <= 60 {
+                w.movieFragmentInterval = CMTime(seconds: Self.fragmentSeconds, preferredTimescale: 600)
+            }
             w.metadata = Self.captureMetadataItems()
 
             let videoSettings = Encoder.videoSettings(for: plan, writer: w)
