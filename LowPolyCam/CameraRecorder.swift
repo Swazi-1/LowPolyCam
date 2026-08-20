@@ -6,6 +6,7 @@ import CoreMotion
 import Combine
 import AudioToolbox
 import ImageIO
+import CoreImage
 
 final class CameraRecorder: NSObject, ObservableObject {
 
@@ -170,6 +171,10 @@ final class CameraRecorder: NSObject, ObservableObject {
     var writer: AVAssetWriter?
     var videoIn: AVAssetWriterInput?
     var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
+    /// Shared software CIContext for downscaling camera frames to 144p/320p/480p.
+    /// Software renderer is intentional: Metal CI into non-Metal pool buffers
+    /// fails silently on iPhone 7 / iOS 15.8.
+    lazy var scaleCIContext: CIContext = CIContext(options: [.useSoftwareRenderer: true])
     var audioIn: AVAssetWriterInput?
     var segmentStart = CMTime.invalid
     var lastVideoPTS = CMTime.invalid
