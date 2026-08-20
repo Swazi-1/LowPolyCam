@@ -106,9 +106,11 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
 
         if isVideo {
             if vIn?.isReadyForMoreMediaData == true {
-                _ = appendVideoSample(sampleBuffer, to: vIn)
+                let appended = appendVideoSample(sampleBuffer, to: vIn)
                 writerLock.lock()
-                lastVideoPTS = Self.endPTS(for: pts, duration: dur, fps: plan?.frameRate ?? 30)
+                if appended {
+                    lastVideoPTS = Self.endPTS(for: pts, duration: dur, fps: plan?.frameRate ?? 30)
+                }
                 let drainDone = shouldFinalizeAfterAppend
                 writerLock.unlock()
                 if drainDone {
@@ -196,33 +198,12 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
     /// endSession does not undershoot and Photos duration stays consistent
     /// with frame count.
 
-    /// Append a camera frame.
-    ///
-    /// iPhone 7 / iOS 15.8: always prefer passthrough. Live CI downscale was
-    /// the source of "first clip fails / 240fps never saves". Encode plan is
-    /// forced to the active sensor size at record start, so sizes match.
+    /// Append a camera frame (passthrough CMSampleBuffer → AVAssetWriterInput).
+    /// Plan dimensions are forced to the active sensor size at record start.
     @discardableResult
     func appendVideoSample(_ sampleBuffer: CMSampleBuffer, to input: AVAssetWriterInput?) -> Bool {
-        guard let input = input else { return false }
-        guard input.isReadyForMoreMediaData else { return false }
-
-        // Passthrough path — used for 720p/1080p/slo-mo and for low-res when
-        // the plan was aligned to the sensor format.
-        guard let plan = plan,
-              let pb = CMSampleBufferGetImageBuffer(sampleBuffer) else {
-            return input.append(sampleBuffer)
-        }
-        let srcW = CVPixelBufferGetWidth(pb)
-        let srcH = CVPixelBufferGetHeight(pb)
-        let dstW = plan.width
-        let dstH = plan.height
-        if abs(srcW - dstW) <= 16 && abs(srcH - dstH) <= 16 {
-            return input.append(sampleBuffer)
-        }
-
-        // Rare mismatch (format still settling). Drop the frame rather than
-        // risk poisoning the writer with a wrong-sized buffer or a slow CI path.
-        return false
+        guard let input = input, input.isReadyForMoreMediaData else { return false }
+        return input.append(sampleBuffer)
     }
 
     static func endPTS(for pts: CMTime, duration: CMTime, fps: Int) -> CMTime {
