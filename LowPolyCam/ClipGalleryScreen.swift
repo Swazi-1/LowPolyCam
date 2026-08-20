@@ -1,505 +1,281 @@
-import SwiftUI
 import AVFoundation
 import UIKit
+import Photos
+import MediaPlayer
+import CoreMotion
+import Combine
+import AudioToolbox
+import ImageIO
+import CoreImage
 
-/// A single recorded clip or photo on disk, with metadata for display.
-struct RecordedClip: Identifiable, Equatable {
-    let id: URL
-    let url: URL
-    let name: String
-    let createdAt: Date
-    let fileSize: Int64
-    let duration: TimeInterval
-    let isPhoto: Bool
+extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate {
 
-    static func == (lhs: RecordedClip, rhs: RecordedClip) -> Bool { lhs.id == rhs.id }
-}
+    func captureOutput(_ output: AVCaptureOutput,
+                       didOutput sampleBuffer: CMSampleBuffer,
+                       from connection: AVCaptureConnection) {
 
-/// v2.1 — "Recorded Clips" sheet: browse every clip saved in the app's
-/// documents directory, batch-delete them (all / older-than-3-days /
-/// selection), and AirDrop / share a selection without leaving the app.
-struct ClipGalleryScreen: View {
-    @ObservedObject var settings: AppSettings
-
-    @Environment(\.presentationMode) private var presentation
-
-    @State private var clips: [RecordedClip] = []
-    @State private var isLoading = true
-    @State private var isEditing = false
-    @State private var selection: Set<URL> = []
-    @State private var shareItems: [URL]?
-    @State private var confirmDeleteAll = false
-    @State private var confirmDeleteOld = false
-    @State private var confirmDeleteSelection = false
-    @State private var playingClip: RecordedClip?
-    @State private var renameClip: RecordedClip?
-    @State private var renameText: String = ""
-    @State private var renameError: String?
-
-    private let byteFormatter: ByteCountFormatter = {
-        let f = ByteCountFormatter()
-        f.countStyle = .file
-        return f
-    }()
-
-    private let relativeDateFormatter: RelativeDateTimeFormatter = {
-        let f = RelativeDateTimeFormatter()
-        f.unitsStyle = .abbreviated
-        return f
-    }()
-
-    var body: some View {
-        NavigationView {
-            ZStack {
-                Palette.slateDeep.ignoresSafeArea()
-
-                if isLoading {
-                    ProgressView().tint(Palette.violet.opacity(0.95)).scaleEffect(1.2)
-                } else if clips.isEmpty {
-                    emptyState
-                } else {
-                    list
-                }
-            }
-            .navigationBarTitle("Recorded Clips", displayMode: .inline)
-            .navigationBarItems(
-                // Select on the leading side; Done dismisses on the trailing
-                // side (matches Settings and other sheets).
-                leading: leadingBar,
-                trailing: Button("Done") {
-                    if isEditing {
-                        isEditing = false
-                        selection.removeAll()
-                    }
-                    presentation.wrappedValue.dismiss()
-                }
-            )
-            .toolbar {
-                ToolbarItemGroup(placement: .bottomBar) {
-                    bottomBar
-                }
-            }
-        }
-        .navigationViewStyle(StackNavigationViewStyle())
-        .accentColor(Palette.violet)
-        .onAppear(perform: reload)
-        .sheet(item: $playingClip) { clip in
-            if clip.isPhoto {
-                PhotoPreviewView(url: clip.url)
-            } else {
-                ClipPlayerView(url: clip.url)
-            }
-        }
-        .sheet(item: shareBinding) { wrapper in
-            ShareSheet(items: wrapper.items)
-        }
-        .confirmationDialog("Delete all clips? This can't be undone.",
-                             isPresented: $confirmDeleteAll, titleVisibility: .visible) {
-            Button("Delete All \(clips.count) Clips", role: .destructive) { deleteAll() }
-            Button("Cancel", role: .cancel) {}
-        }
-        .confirmationDialog("Delete clips older than 3 days? This can't be undone.",
-                             isPresented: $confirmDeleteOld, titleVisibility: .visible) {
-            Button("Delete Older Clips", role: .destructive) { deleteOlderThanThreeDays() }
-            Button("Cancel", role: .cancel) {}
-        }
-        .confirmationDialog("Delete \(selection.count) selected clip\(selection.count == 1 ? "" : "s")?",
-                             isPresented: $confirmDeleteSelection, titleVisibility: .visible) {
-            Button("Delete Selected", role: .destructive) { deleteSelection() }
-            Button("Cancel", role: .cancel) {}
-        }
-        .alert("Rename Clip", isPresented: Binding(
-            get: { renameClip != nil },
-            set: { if !$0 { renameClip = nil } }
-        )) {
-            TextField("Name", text: $renameText)
-            Button("Save") { commitRename() }
-            Button("Cancel", role: .cancel) { renameClip = nil }
-        } message: {
-            Text("Enter a new name for this file.")
-        }
-        .alert("Rename Failed", isPresented: Binding(
-            get: { renameError != nil },
-            set: { if !$0 { renameError = nil } }
-        )) {
-            Button("OK", role: .cancel) { renameError = nil }
-        } message: {
-            Text(renameError ?? "Unknown error")
-        }
-    }
-
-    // MARK: Empty State
-
-    private var emptyState: some View {
-        VStack(spacing: 18) {
-            ZStack {
-                Facet(sides: 6, rotation: .pi / 6)
-                    .fill(Palette.slateMid.opacity(0.6))
-                    .frame(width: 88, height: 88)
-                Facet(sides: 6, rotation: .pi / 6)
-                    .stroke(Palette.violet.opacity(0.35), lineWidth: 1.5)
-                    .frame(width: 88, height: 88)
-                Image(systemName: "film.stack")
-                    .font(.system(size: 32, weight: .medium))
-                    .foregroundColor(Palette.violet.opacity(0.95))
-            }
-            .shadow(color: Palette.violet.opacity(0.2), radius: 16)
-
-            Text("No Clips Yet")
-                .font(.system(size: 20, weight: .bold, design: .rounded))
-                .foregroundColor(.white)
-            Text("New recordings appear here. If you only used an older build that deleted local copies after Photos save, record a new clip and it will show up.")
-                .font(.system(size: 14, weight: .medium))
-                .foregroundColor(.white.opacity(0.55))
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 36)
-        }
-    }
-
-    // MARK: List
-
-    private var list: some View {
-        List {
-            Section {
-                ForEach(clips) { clip in
-                    row(for: clip)
-                }
-            } header: {
-                Text("\(clips.count) clip\(clips.count == 1 ? "" : "s") · \(totalSizeLabel)")
-                    .foregroundColor(.white.opacity(0.5))
-            }
-        }
-        .listStyle(.insetGrouped)
-        .modifier(HiddenScrollBackground())
-    }
-
-    private func row(for clip: RecordedClip) -> some View {
-        HStack(spacing: 12) {
-            if isEditing {
-                Image(systemName: selection.contains(clip.url) ? "checkmark.circle.fill" : "circle")
-                    .foregroundColor(selection.contains(clip.url) ? Palette.violet.opacity(0.95) : .white.opacity(0.35))
-                    .font(.system(size: 20))
-            }
-
-            Image(systemName: clip.isPhoto ? "photo.fill" : "film.fill")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundColor(Palette.slateDeep)
-                .frame(width: 32, height: 32)
-                .background(
-                    Facet(sides: 6, rotation: .pi / 6)
-                        .fill(
-                            LinearGradient(
-                                colors: [Palette.violet.opacity(0.95), Palette.violet],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                )
-                .shadow(color: Palette.violet.opacity(0.3), radius: 4, y: 2)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(clip.name)
-                    .font(.system(size: 14, weight: .semibold, design: .rounded))
-                    .foregroundColor(.white)
-                    .lineLimit(1)
-                Text(clip.isPhoto
-                     ? "\(relativeDate(clip.createdAt)) · \(byteFormatter.string(fromByteCount: clip.fileSize))"
-                     : "\(relativeDate(clip.createdAt)) · \(durationLabel(clip.duration)) · \(byteFormatter.string(fromByteCount: clip.fileSize))")
-                    .font(.system(size: 12))
-                    .foregroundColor(.white.opacity(0.5))
-            }
-
-            Spacer()
-        }
-        .padding(.vertical, 4)
-        .contentShape(Rectangle())
-        .listRowBackground(Palette.panel.opacity(0.6))
-        .onTapGesture {
-            if isEditing {
-                toggle(clip.url)
-            } else {
-                playingClip = clip
-            }
-        }
-        .swipeActions(edge: .trailing) {
-            Button(role: .destructive) { delete([clip]) } label: {
-                Label("Delete", systemImage: "trash")
-            }
-            Button { shareItems = [clip.url] } label: {
-                Label("Share", systemImage: "square.and.arrow.up")
-            }
-            .tint(Palette.violetDeep)
-            Button {
-                renameText = (clip.url.deletingPathExtension().lastPathComponent)
-                renameClip = clip
-            } label: {
-                Label("Rename", systemImage: "pencil")
-            }
-            .tint(Palette.violetDeep)
-        }
-    }
-
-    // MARK: Bars
-
-    private var leadingBar: some View {
-        Group {
-            if isEditing {
-                Button("Cancel") {
-                    isEditing = false
-                    selection.removeAll()
-                }
-                .foregroundColor(Palette.violet.opacity(0.95))
-            } else if !clips.isEmpty {
-                Button("Select") { isEditing = true }
-                    .foregroundColor(Palette.violet.opacity(0.95))
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var bottomBar: some View {
-        if isEditing {
-            Button {
-                confirmDeleteSelection = true
-            } label: {
-                Label("Delete", systemImage: "trash")
-            }
-            .disabled(selection.isEmpty)
-            .foregroundColor(selection.isEmpty ? .white.opacity(0.3) : .red)
-
-            Spacer()
-
-            Button {
-                shareItems = clips.filter { selection.contains($0.url) }.map { $0.url }
-            } label: {
-                Label("Share", systemImage: "square.and.arrow.up")
-            }
-            .disabled(selection.isEmpty)
-            .foregroundColor(selection.isEmpty ? .white.opacity(0.3) : Palette.violet.opacity(0.95))
-        } else if !clips.isEmpty {
-            Button("Delete Older Than 3 Days") { confirmDeleteOld = true }
-                .foregroundColor(.white.opacity(0.75))
-            Spacer()
-            Button("Delete All") { confirmDeleteAll = true }
-                .foregroundColor(.red)
-        }
-    }
-
-    // MARK: Helpers
-
-    private var totalSizeLabel: String {
-        byteFormatter.string(fromByteCount: clips.reduce(0) { $0 + $1.fileSize })
-    }
-
-    private func toggle(_ url: URL) {
-        if selection.contains(url) { selection.remove(url) } else { selection.insert(url) }
-    }
-
-    private func relativeDate(_ date: Date) -> String {
-        relativeDateFormatter.localizedString(for: date, relativeTo: Date())
-    }
-
-    private func durationLabel(_ seconds: TimeInterval) -> String {
-        guard seconds > 0 else { return "--:--" }
-        let s = Int(seconds.rounded())
-        let h = s / 3600, m = (s % 3600) / 60, sec = s % 60
-        if h > 0 { return String(format: "%d:%02d:%02d", h, m, sec) }
-        return String(format: "%d:%02d", m, sec)
-    }
-
-    // MARK: Data
-
-    private func reload() {
-        isLoading = true
-        DispatchQueue.global(qos: .userInitiated).async {
-            let fm = FileManager.default
-            let dir = CameraRecorder.clipsDirectory
-            let keys: [URLResourceKey] = [.creationDateKey, .fileSizeKey]
-            let files = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles])) ?? []
-
-            let loaded: [RecordedClip] = files.compactMap { url in
-                let ext = url.pathExtension.lowercased()
-                let isVideo = (ext == "mov" || ext == "mp4")
-                let isPhoto = (ext == "heic" || ext == "jpg" || ext == "jpeg")
-                guard isVideo || isPhoto else { return nil }
-                let values = try? url.resourceValues(forKeys: Set(keys))
-                let created = values?.creationDate ?? .distantPast
-                let size = Int64(values?.fileSize ?? 0)
-                // Prefer a quick duration read. For movie-fragment files the property
-                // can be inaccurate until tracks are loaded; we accept a best-effort
-                // value here to keep the gallery responsive on A10 / iPhone 7.
-                var duration: TimeInterval = 0
-                if isVideo {
-                    let asset = AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: false])
-                    let sec = CMTimeGetSeconds(asset.duration)
-                    duration = sec.isFinite ? sec : 0
-                }
-                return RecordedClip(id: url, url: url, name: url.deletingPathExtension().lastPathComponent,
-                                     createdAt: created, fileSize: size,
-                                     duration: duration,
-                                     isPhoto: isPhoto)
-            }.sorted { $0.createdAt > $1.createdAt }
-
-            DispatchQueue.main.async {
-                self.clips = loaded
-                self.isLoading = false
-            }
-        }
-    }
-
-    private func commitRename() {
-        guard let clip = renameClip else { return }
-        let trimmed = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            renameClip = nil
+        // Hard stop only after drain finished.
+        if stopRequested {
             return
         }
-        // Keep original extension
-        let ext = clip.url.pathExtension
-        let safe = trimmed
-            .replacingOccurrences(of: "/", with: "-")
-            .replacingOccurrences(of: ":", with: "-")
-        let newURL = clip.url.deletingLastPathComponent()
-            .appendingPathComponent(safe)
-            .appendingPathExtension(ext)
-        // Avoid overwriting an existing file
-        var finalURL = newURL
-        if FileManager.default.fileExists(atPath: finalURL.path), finalURL != clip.url {
-            var i = 2
-            while FileManager.default.fileExists(atPath: finalURL.path) {
-                finalURL = clip.url.deletingLastPathComponent()
-                    .appendingPathComponent("\(safe) \(i)")
-                    .appendingPathExtension(ext)
-                i += 1
+
+        guard CMSampleBufferDataIsReady(sampleBuffer) else { return }
+        let isVideo = (output === videoOutput)
+        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        let dur = CMSampleBufferGetDuration(sampleBuffer)
+
+        writerLock.lock()
+        var currentlyWants = wantsRecording
+        var shouldFinalizeAfterAppend = false
+        let draining = isStopDraining
+        if draining {
+            currentlyWants = true
+            if isVideo && CACurrentMediaTime() >= stopDrainDeadlineHost {
+                shouldFinalizeAfterAppend = true
             }
         }
-        do {
-            if finalURL != clip.url {
-                try FileManager.default.moveItem(at: clip.url, to: finalURL)
+        if !currentlyWants {
+            let hasWriter = writer != nil
+            writerLock.unlock()
+            if hasWriter {
+                DebugLog.write("finishSegment triggered from didOutput (wantsRecording=false, writer still present)")
+                finishSegment()
             }
-            renameClip = nil
-            reload()
-        } catch {
-            renameClip = nil
-            renameError = "Could not rename: \(error.localizedDescription)"
+            return
         }
-    }
 
-    private func delete(_ toDelete: [RecordedClip]) {
-        let fm = FileManager.default
-        for clip in toDelete {
-            try? fm.removeItem(at: clip.url)
+        // Silently discard the first few video frames after a fresh record
+        // start — AE/AGC brightness ramp. Counter lives under writerLock.
+        if isVideo && pendingWarmupFrames > 0 {
+            pendingWarmupFrames -= 1
+            writerLock.unlock()
+            return
         }
-        let deletedURLs = Set(toDelete.map { $0.url })
-        clips.removeAll { deletedURLs.contains($0.url) }
-        selection.subtract(deletedURLs)
-        if clips.isEmpty { isEditing = false }
-    }
 
-    private func deleteAll() {
-        delete(clips)
-    }
-
-    private func deleteOlderThanThreeDays() {
-        let cutoff = Date().addingTimeInterval(-3 * 24 * 60 * 60)
-        delete(clips.filter { $0.createdAt < cutoff })
-    }
-
-    private func deleteSelection() {
-        delete(clips.filter { selection.contains($0.url) })
-    }
-
-    // MARK: Share sheet plumbing
-
-    private struct ShareWrapper: Identifiable {
-        let id = UUID()
-        let items: [URL]
-    }
-
-    private var shareBinding: Binding<ShareWrapper?> {
-        Binding<ShareWrapper?>(
-            get: { shareItems.map { ShareWrapper(items: $0) } },
-            set: { newValue in shareItems = newValue?.items }
-        )
-    }
-}
-
-/// iOS 16+ only modifier, applied conditionally so this still builds on older deployment targets.
-private struct HiddenScrollBackground: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(iOS 16.0, *) {
-            content.scrollContentBackground(.hidden)
-        } else {
-            content
-        }
-    }
-}
-
-/// Thin UIKit bridge so we can AirDrop / share multiple clip files at once.
-private struct ShareSheet: UIViewControllerRepresentable {
-    let items: [URL]
-
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: items, applicationActivities: nil)
-    }
-
-    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
-}
-
-/// Simple full-screen still-image preview for photos saved by the app,
-/// mirroring ClipPlayerView's chrome so gallery browsing feels consistent
-/// whether you tap a video or a photo.
-struct PhotoPreviewView: View {
-    let url: URL
-    @Environment(\.presentationMode) private var presentation
-    @State private var image: UIImage?
-    @State private var loadFailed = false
-
-    var body: some View {
-        NavigationView {
-            ZStack {
-                Color.black.ignoresSafeArea()
-                if let image {
-                    Image(uiImage: image)
-                        .resizable()
-                        .scaledToFit()
-                        .ignoresSafeArea(edges: .bottom)
-                } else if loadFailed {
-                    VStack(spacing: 16) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.system(size: 40))
-                            .foregroundColor(Palette.amber)
-                            .shadow(color: Palette.amber.opacity(0.5), radius: 10)
-                        Text("Unable to load photo")
-                            .font(.headline)
-                            .foregroundColor(.white)
-                        Text("The photo file could not be found or opened.")
-                            .font(.subheadline)
-                            .foregroundColor(.white.opacity(0.6))
-                    }
-                    .padding()
-                } else {
-                    ProgressView().tint(Palette.violet.opacity(0.95)).scaleEffect(1.2)
-                }
+        var needsNewSegment = false
+        var needsRotate = false
+        if isVideo {
+            needsNewSegment = (writer == nil) && !segmentStartInFlight
+            if writer != nil, let splitLimit = plan?.splitInterval.seconds, segmentStart.isValid {
+                let duration = CMTimeGetSeconds(CMTimeSubtract(pts, segmentStart))
+                needsRotate = duration >= splitLimit
             }
-            .navigationBarTitle("Preview", displayMode: .inline)
-            .navigationBarItems(trailing: Button("Done") {
-                presentation.wrappedValue.dismiss()
-            })
+            if needsNewSegment { segmentStartInFlight = true }
         }
-        .navigationViewStyle(StackNavigationViewStyle())
-        .accentColor(Palette.violet)
-        .onAppear {
-            DispatchQueue.global(qos: .userInitiated).async {
-                let loaded = UIImage(contentsOfFile: url.path)
-                DispatchQueue.main.async {
-                    if let loaded = loaded {
-                        self.image = loaded
+
+        let currentWriter = writer
+        let vIn = videoIn
+        let aIn = audioIn
+        let segStart = segmentStart
+        writerLock.unlock()
+
+        // Starting or rotating a segment must never happen on the video
+        // delivery queue (setup latency drops subsequent frames).
+        if isVideo {
+            if needsNewSegment {
+                DebugLog.write("first video frame arrived, dispatching startSegment to ioQueue")
+                ioQueue.async { [weak self] in self?.startSegment(at: pts, firstSampleBuffer: sampleBuffer) }
+                return
+            }
+            if needsRotate {
+                ioQueue.async { [weak self] in self?.rotateSegment(at: pts, firstSampleBuffer: sampleBuffer) }
+                return
+            }
+            // Writer still spinning up — buffer this frame instead of
+            // dropping it. Dropping here was the main reason short 30 fps
+            // clips showed ~27.5 fps in Photos (PTS span included the gap,
+            // frame count did not).
+            if currentWriter == nil {
+                writerLock.lock()
+                if segmentStartInFlight {
+                    // At 120/240fps, do NOT retain camera sample buffers for later
+                    // append. The capture pool recycles pixel data; flushing 12–14
+                    // stale buffers at segment start was poisoning AVAssetWriter
+                    // (log: flush 14 frames → writer dead within ~3s → incomplete MOV).
+                    let highFPS = (plan?.frameRate ?? 30) >= 120
+                    if highFPS {
+                        countDroppedFrame()
+                    } else if pendingStartBuffers.count < Self.pendingStartBufferLimit {
+                        pendingStartBuffers.append(sampleBuffer)
                     } else {
-                        self.loadFailed = true
+                        countDroppedFrame()
+                    }
+                }
+                writerLock.unlock()
+                return
+            }
+        }
+
+        // Do NOT auto-stop on .failed here — at 240fps the writer can briefly
+        // report failed on a bad append and this used to instantly end recording.
+        // finishSegment salvage handles real failures when the user stops.
+        guard let currentWriter = currentWriter, currentWriter.status == .writing,
+              segStart.isValid, CMTimeCompare(pts, segStart) >= 0 else {
+            return
+        }
+
+        if isVideo {
+            if vIn?.isReadyForMoreMediaData == true {
+                let appended = appendVideoSample(sampleBuffer, to: vIn)
+                writerLock.lock()
+                if appended {
+                    lastVideoPTS = Self.endPTS(for: pts, duration: dur, fps: plan?.frameRate ?? 30)
+                }
+                let drainDone = shouldFinalizeAfterAppend
+                writerLock.unlock()
+                if drainDone {
+                    DebugLog.write("[stop] drain deadline reached in didOutput (appended path), finalizing")
+                    completeStopDrainIfNeeded(force: false)
+                }
+                // Encoder is caught up — flush mid-backlog if any (≤60fps only;
+                // high-fps path never queues mid buffers).
+                if !draining, (plan?.frameRate ?? 30) < 120 {
+                    writerLock.lock()
+                    let backlog = pendingMidBuffers
+                    pendingMidBuffers.removeAll(keepingCapacity: true)
+                    writerLock.unlock()
+                    if !backlog.isEmpty, let vIn = vIn {
+                        var leftover: [CMSampleBuffer] = []
+                        for buf in backlog {
+                            // Route through appendVideoSample so low-res plans still get scaled.
+                            if vIn.isReadyForMoreMediaData, appendVideoSample(buf, to: vIn) {
+                                let bPTS = CMSampleBufferGetPresentationTimeStamp(buf)
+                                let bDur = CMSampleBufferGetDuration(buf)
+                                writerLock.lock()
+                                lastVideoPTS = Self.endPTS(for: bPTS, duration: bDur, fps: plan?.frameRate ?? 30)
+                                writerLock.unlock()
+                            } else {
+                                leftover.append(buf)
+                            }
+                        }
+                        writerLock.lock()
+                        pendingMidBuffers = leftover
+                        writerLock.unlock()
+                    }
+                }
+            } else if draining {
+                // Never drop the stop tail — buffer until finalize flushes.
+                writerLock.lock()
+                if pendingStopBuffers.count < Self.pendingStopBufferLimit {
+                    pendingStopBuffers.append(sampleBuffer)
+                } else {
+                    DebugLog.write("⚠️ pendingStopBuffers at cap (\(Self.pendingStopBufferLimit)) during drain, dropping tail frame")
+                }
+                let drainDone = shouldFinalizeAfterAppend
+                writerLock.unlock()
+                if drainDone {
+                    DebugLog.write("[stop] drain deadline reached in didOutput (buffered path), finalizing")
+                    completeStopDrainIfNeeded(force: false)
+                }
+            } else {
+                // Encoder busy. At 120/240fps, NEVER queue backlog — that is what
+                // pushed AVAssetWriter into .failed after a few seconds on A10
+                // (log: writer dead after ~7s, then Photos 3302 on corrupt file).
+                // Drop the frame instead so the writer stays healthy.
+                let highFPS = (plan?.frameRate ?? 30) >= 120
+                if highFPS {
+                    countDroppedFrame()
+                } else {
+                    writerLock.lock()
+                    if pendingMidBuffers.count < Self.pendingMidBufferLimit {
+                        pendingMidBuffers.append(sampleBuffer)
+                        writerLock.unlock()
+                    } else {
+                        writerLock.unlock()
+                        countDroppedFrame()
                     }
                 }
             }
+            if !draining {
+                pushElapsed(pts)
+            }
+        } else {
+            if aIn?.isReadyForMoreMediaData == true {
+                aIn?.append(sampleBuffer)
+            }
         }
+    }
+
+    func captureOutput(_ output: AVCaptureOutput,
+                       didDrop sampleBuffer: CMSampleBuffer,
+                       from connection: AVCaptureConnection) {
+        writerLock.lock()
+        let currentlyWants = wantsRecording
+        writerLock.unlock()
+        guard output === videoOutput, currentlyWants else { return }
+        countDroppedFrame()
+    }
+
+    func countDroppedFrame() {
+        writerLock.lock()
+        droppedFrameCount += 1
+        writerLock.unlock()
+    }
+
+    /// End timestamp for a written frame. Prefer the buffer's own duration;
+    /// if it's invalid (common on some A10 paths), fall back to 1/fps so
+    /// endSession does not undershoot and Photos duration stays consistent
+    /// with frame count.
+
+    /// Append a camera frame (passthrough CMSampleBuffer → AVAssetWriterInput).
+    /// Plan dimensions are forced to the active sensor size at record start.
+    @discardableResult
+    func appendVideoSample(_ sampleBuffer: CMSampleBuffer, to input: AVAssetWriterInput?) -> Bool {
+        guard let input = input, input.isReadyForMoreMediaData else { return false }
+        return input.append(sampleBuffer)
+    }
+
+    static func endPTS(for pts: CMTime, duration: CMTime, fps: Int) -> CMTime {
+        if duration.isValid && duration.isNumeric && duration.seconds > 0 {
+            return CMTimeAdd(pts, duration)
+        }
+        let safeFPS = max(fps, 1)
+        let oneFrame = CMTime(value: 1, timescale: CMTimeScale(safeFPS))
+        return CMTimeAdd(pts, oneFrame)
+    }
+
+    func pushElapsed(_ pts: CMTime) {
+        writerLock.lock()
+        let start = recordStartPTS
+        writerLock.unlock()
+        guard start.isValid else { return }
+        if lastElapsedPush.isValid,
+           CMTimeGetSeconds(CMTimeSubtract(pts, lastElapsedPush)) < 0.25 { return }
+        lastElapsedPush = pts
+
+        if freeBytesSnapshot <= Self.reserveBytes {
+            DispatchQueue.main.async {
+                self.stopRecording(notice: "Storage full · Recording stopped")
+            }
+            return
+        }
+
+        let seconds = CMTimeGetSeconds(CMTimeSubtract(pts, start))
+        writerLock.lock()
+        let drops = droppedFrameCount
+        writerLock.unlock()
+        let level = currentAudioLevel()
+
+        // Auto-stop when max duration is reached
+        if let limit = self.settings.maxDuration.seconds, seconds >= limit {
+            DispatchQueue.main.async {
+                self.elapsed = seconds
+                self.stopRecording(notice: "Max duration reached · Recording stopped")
+            }
+            return
+        }
+
+        DispatchQueue.main.async {
+            self.elapsed = seconds
+            if self.droppedFrames != drops { self.droppedFrames = drops }
+            self.audioLevel = level
+        }
+    }
+
+    func currentAudioLevel() -> Float {
+        guard let channel = audioOutput.connection(with: .audio)?.audioChannels.first else { return 0 }
+        let db = channel.averagePowerLevel
+        let normalized = (db + 50) / 50
+        return Float(max(0, min(1, normalized)))
     }
 }
