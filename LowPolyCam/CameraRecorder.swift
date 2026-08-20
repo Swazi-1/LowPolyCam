@@ -102,6 +102,9 @@ final class CameraRecorder: NSObject, ObservableObject {
     let videoQueue = DispatchQueue(label: "lowpolycam.video", qos: .userInteractive)
     let audioQueue = DispatchQueue(label: "lowpolycam.audio", qos: .userInitiated)
     let ioQueue = DispatchQueue(label: "lowpolycam.io", qos: .userInitiated)
+    /// Dedicated stop/finalize lane. Stop completion must not wait behind
+    /// camera/storage work queued on ioQueue, especially at 120/240fps.
+    let finalizeQueue = DispatchQueue(label: "lowpolycam.finalize", qos: .userInitiated)
     let motionManager = CMMotionManager()
 
     let videoOutput = AVCaptureVideoDataOutput()
