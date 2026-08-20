@@ -94,11 +94,15 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
                     // (log: flush 14 frames → writer dead within ~3s → incomplete MOV).
                     let highFPS = (plan?.frameRate ?? 30) >= 120
                     if highFPS {
-                        countDroppedFrame()
+                        // writerLock is already held. Calling countDroppedFrame()
+                        // here would try to take the same NSLock again, deadlocking
+                        // the capture queue and subsequently the Stop button.
+                        droppedFrameCount += 1
                     } else if pendingStartBuffers.count < Self.pendingStartBufferLimit {
                         pendingStartBuffers.append(sampleBuffer)
                     } else {
-                        countDroppedFrame()
+                        // Same lock ownership as the high-FPS branch above.
+                        droppedFrameCount += 1
                     }
                 }
                 writerLock.unlock()
