@@ -119,9 +119,9 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
                 if drainDone {
                     completeStopDrainIfNeeded(force: false)
                 }
-                // Encoder is caught up — opportunistically flush a couple
-                // of frames buffered from a recent brief stall, if any.
-                if !draining {
+                // Encoder is caught up — flush mid-backlog if any (≤60fps only;
+                // high-fps path never queues mid buffers).
+                if !draining, (plan?.frameRate ?? 30) < 120 {
                     writerLock.lock()
                     let backlog = pendingMidBuffers
                     pendingMidBuffers.removeAll(keepingCapacity: true)
@@ -157,17 +157,22 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
                     completeStopDrainIfNeeded(force: false)
                 }
             } else {
-                // Encoder momentarily busy. Rather than dropping the frame
-                // outright, hold it in a small capped buffer to be flushed
-                // on a later frame once the encoder catches up. Only a real
-                // sustained overload (buffer full) counts as a genuine drop.
-                writerLock.lock()
-                if pendingMidBuffers.count < Self.pendingMidBufferLimit {
-                    pendingMidBuffers.append(sampleBuffer)
-                    writerLock.unlock()
-                } else {
-                    writerLock.unlock()
+                // Encoder busy. At 120/240fps, NEVER queue backlog — that is what
+                // pushed AVAssetWriter into .failed after a few seconds on A10
+                // (log: writer dead after ~7s, then Photos 3302 on corrupt file).
+                // Drop the frame instead so the writer stays healthy.
+                let highFPS = (plan?.frameRate ?? 30) >= 120
+                if highFPS {
                     countDroppedFrame()
+                } else {
+                    writerLock.lock()
+                    if pendingMidBuffers.count < Self.pendingMidBufferLimit {
+                        pendingMidBuffers.append(sampleBuffer)
+                        writerLock.unlock()
+                    } else {
+                        writerLock.unlock()
+                        countDroppedFrame()
+                    }
                 }
             }
             if !draining {
