@@ -202,22 +202,20 @@ extension CameraRecorder {
 
         // Idle preview: match the recording resolution + fps whenever possible
         // so pressing Record / Stop does not reconfigure the sensor (that was
-        // the ~0.5s freeze + flicker). Only Longevity Mode / thermal throttle
-        // still force a cooler lower-res idle path.
+        // the ~0.5s freeze + flicker). PerformanceProfile decides when a
+        // lighter idle format is worth the trade-off — Longevity Mode,
+        // critical thermal, and (gently) constrained hardware all feed into
+        // it. See PerformanceProfile.swift.
         let targetFPS: Double
         if forRecording {
             targetFPS = fullFPS
-        } else if forceLowestIdlePreview || settings.longevityMode {
-            let idleCapH = 720
-            if dims.h > idleCapH {
-                dims = Resolution.p720.captureDimensions
-            }
-            let idleFPSCap: Double = forceLowestIdlePreview ? 15.0 : 24.0
-            targetFPS = min(fullFPS, idleFPSCap)
         } else {
-            // Same dims + fps as recording → applyActiveFormat is a no-op when
-            // starting/stopping (lastAppliedFormatKey matches).
-            targetFPS = fullFPS
+            let profile = PerformanceProfile.current(settings: settings, thermalState: thermalState)
+            let cap = profile.idlePreviewCap(forceLowest: forceLowestIdlePreview)
+            if let capRes = cap.resolution, dims.h > capRes.captureDimensions.h {
+                dims = capRes.captureDimensions
+            }
+            targetFPS = min(fullFPS, cap.fps)
         }
 
         // Route format selection through the mode-specific policy so Video,
