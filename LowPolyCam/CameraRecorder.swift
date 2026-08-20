@@ -185,9 +185,12 @@ final class CameraRecorder: NSObject, ObservableObject {
     var writer: AVAssetWriter?
     var videoIn: AVAssetWriterInput?
     var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
-    /// Hardware scaler used when the sharp camera preview is larger than the
-    /// selected saved-video tier. VideoToolbox is available on iOS 15.
-    var pixelTransferSession: VTPixelTransferSession?
+    /// Scaler used when the sharp camera preview is larger than the
+    /// selected saved-video tier. Uses Core Image instead of
+    /// VTPixelTransferSession, which is iOS 16+ only — this app's minimum
+    /// target (iPhone 7, stuck on iOS 15.8.8) can never get iOS 16, so the
+    /// VideoToolbox transfer session API is not usable here at all.
+    let scaleContext = CIContext(options: [.useSoftwareRenderer: false])
     /// Own pool for downscaled video frames. It is created per segment rather
     /// than relying on adaptor.pixelBufferPool, which can still be nil for the
     /// first append on iOS 15.
