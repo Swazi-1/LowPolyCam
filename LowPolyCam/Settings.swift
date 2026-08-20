@@ -796,9 +796,8 @@ enum Encoder {
             // 720p@240 ≈ 28 Mbps; 1080p@120 ≈ 20 Mbps; 720p@120 ≈ 12 Mbps.
             let slowMoTargetKbps: Double
             if fps >= 240 {
-                // ~12 Mbps keeps A10 H.264 real-time for multi-second takes.
-                // 18 Mbps still died after ~7s (writer .failed → incomplete MOV).
-                slowMoTargetKbps = 12000
+                // ~10 Mbps H.264 — prioritise writer survival over bitrate.
+                slowMoTargetKbps = 10000
             } else if res == .p1080 {
                 slowMoTargetKbps = 20000
             } else {
