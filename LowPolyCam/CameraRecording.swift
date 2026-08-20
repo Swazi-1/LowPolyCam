@@ -64,23 +64,34 @@ extension CameraRecorder {
             guard self.recordingSessionToken == myToken, !self.stopRequested else { return }
             self.applyStabilization(forceRecording: true)
 
-            // Only shrink the encode plan when the sensor locked to something
-            // *smaller* than requested (e.g. 1080p240 unavailable → 720p240).
-            // Never expand to full sensor size — that broke Data Saver modes
-            // (144p/320p) by writing 352×288 / 960×540 instead of 256×144 / 568×320.
-            // Downscale is handled in appendVideoSample.
+            // Align encode plan with the active sensor format when needed.
             if let device = self.cameraInput?.device {
                 let activeDims = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
                 let sensorW = Int(activeDims.width)
                 let sensorH = Int(activeDims.height)
                 if sensorW > 0, sensorH > 0 {
-                    // Sensor buffers are landscape; plan is landscape (w ≥ h).
                     let sensLong = max(sensorW, sensorH)
                     let sensShort = min(sensorW, sensorH)
                     let planLong = max(newPlan.width, newPlan.height)
                     let planShort = min(newPlan.width, newPlan.height)
-                    if sensLong < planLong - 2 || sensShort < planShort - 2 {
-                        // Keep landscape orientation of the plan.
+
+                    if newPlan.isSlowMo {
+                        // Slow-mo at 120/240 fps CANNOT software-scale on A10 —
+                        // CI downscale cannot keep up and the writer ends with
+                        // zero frames → "Clip failed to save". Always encode at
+                        // the sensor size (passthrough). 1080p240 unavailable
+                        // already falls back via applyActiveFormat.
+                        if newPlan.width >= newPlan.height {
+                            newPlan.width = sensLong
+                            newPlan.height = sensShort
+                        } else {
+                            newPlan.width = sensShort
+                            newPlan.height = sensLong
+                        }
+                    } else if sensLong < planLong - 2 || sensShort < planShort - 2 {
+                        // Normal video: only shrink when sensor is smaller than
+                        // requested (anti-upscale). Data Saver keeps plan size
+                        // and scales down in appendVideoSample.
                         if newPlan.width >= newPlan.height {
                             newPlan.width = sensLong
                             newPlan.height = sensShort
@@ -89,7 +100,6 @@ extension CameraRecorder {
                             newPlan.height = sensLong
                         }
                     }
-                    // else: keep requested plan size; appendVideoSample scales down.
                 }
             }
             let transform = Self.transform(width: newPlan.width, height: newPlan.height, isFront: self.isFrontCamera)
@@ -336,6 +346,27 @@ extension CameraRecorder {
             ]
             let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: v, sourcePixelBufferAttributes: srcAttrs)
 
+            // Dedicated scale pool so the first 480p clip after launch has
+            // buffers ready (adaptor.pixelBufferPool is often still nil on
+            // the first append on iOS 15.8).
+            var scalePool: CVPixelBufferPool?
+            let poolAttrs: [String: Any] = [
+                kCVPixelBufferPoolMinimumBufferCountKey as String: 3
+            ]
+            CVPixelBufferPoolCreate(
+                kCFAllocatorDefault,
+                poolAttrs as CFDictionary,
+                srcAttrs as CFDictionary,
+                &scalePool
+            )
+            self.scalePixelBufferPool = scalePool
+            // Touch the pool once so the first real frame is not the first alloc.
+            if let scalePool = scalePool {
+                var warm: CVPixelBuffer?
+                CVPixelBufferPoolCreatePixelBuffer(nil, scalePool, &warm)
+                warm = nil
+            }
+
             var a: AVAssetWriterInput?
             if plan.hasAudio, let aSettings = audioSettings(for: plan, writer: w) {
                 DebugLog.write("[6] audio settings=\(aSettings)")
@@ -433,7 +464,7 @@ extension CameraRecorder {
     func finishSegment(_ completion: (() -> Void)? = nil) {
         writerLock.lock()
         guard let w = writer, let v = videoIn else {
-            writer = nil; videoIn = nil; audioIn = nil; pixelBufferAdaptor = nil
+            writer = nil; videoIn = nil; audioIn = nil; pixelBufferAdaptor = nil; scalePixelBufferPool = nil
             writerLock.unlock()
             completion?()
             return
@@ -445,13 +476,19 @@ extension CameraRecorder {
         let destination = recordingDestination
         let url = w.outputURL
 
-        writer = nil; videoIn = nil; audioIn = nil; pixelBufferAdaptor = nil
+        writer = nil; videoIn = nil; audioIn = nil; pixelBufferAdaptor = nil; scalePixelBufferPool = nil
         segmentStart = .invalid
         lastVideoDuration = .invalid
         writerLock.unlock()
 
         guard w.status == .writing else {
+            let err = w.error?.localizedDescription ?? "status=\(w.status.rawValue)"
+            DebugLog.write("❌ finishSegment writer not writing: \(err)")
             w.cancelWriting()
+            DispatchQueue.main.async {
+                self.notice = "Clip failed to save"
+                self.refreshFreeSpace()
+            }
             completion?()
             return
         }
@@ -496,7 +533,7 @@ extension CameraRecorder {
         let oldUrl = oldWriter.outputURL
         let destination = recordingDestination
 
-        writer = nil; videoIn = nil; audioIn = nil; pixelBufferAdaptor = nil
+        writer = nil; videoIn = nil; audioIn = nil; pixelBufferAdaptor = nil; scalePixelBufferPool = nil
         segmentStart = .invalid
         writerLock.unlock()
 
