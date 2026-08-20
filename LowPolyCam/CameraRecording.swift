@@ -213,9 +213,13 @@ extension CameraRecorder {
         // A dedicated timer on the main queue can't be blocked by that
         // congestion, so the drain always terminates on schedule.
         DispatchQueue.main.asyncAfter(deadline: .now() + hardCeiling) { [weak self] in
+            guard let self = self else { return }
             DebugLog.write("[stop] hard ceiling reached token=\(myToken), forcing drain completion")
-            self?.ioQueue.async {
-                self?.completeStopDrainIfNeeded(force: true)
+            // Never enqueue the stop completion behind the general ioQueue.
+            // At high FPS that queue can contain unrelated work, which used
+            // to leave isSaving true and the Record button disabled forever.
+            self.finalizeQueue.async {
+                self.completeStopDrainIfNeeded(force: true)
             }
         }
 
@@ -294,8 +298,8 @@ extension CameraRecorder {
             self.applyStabilization()
         }
 
-        DebugLog.write("[stop] dispatching finishSegment to ioQueue token=\(token)")
-        ioQueue.async {
+        DebugLog.write("[stop] dispatching finishSegment to finalizeQueue token=\(token)")
+        finalizeQueue.async {
             guard token == self.recordingSessionToken else {
                 DebugLog.write("[stop] finishSegment skipped, stale token=\(token) currentToken=\(self.recordingSessionToken)")
                 DispatchQueue.main.async { self.isSaving = false }
@@ -320,6 +324,14 @@ extension CameraRecorder {
 
     func startSegment(at pts: CMTime, firstSampleBuffer: CMSampleBuffer? = nil) {
         DebugLog.write("[0] startSegment called at pts=\(CMTimeGetSeconds(pts)) plan=\(plan != nil) freeBytesSnapshot=\(freeBytesSnapshot)")
+        guard !stopRequested else {
+            DebugLog.write("[0b] startSegment ignored because stopRequested=true")
+            writerLock.lock()
+            segmentStartInFlight = false
+            pendingStartBuffers.removeAll(keepingCapacity: false)
+            writerLock.unlock()
+            return
+        }
         guard let plan = plan else {
             DebugLog.write("❌ no plan, bailing")
             writerLock.lock()
@@ -563,7 +575,7 @@ extension CameraRecorder {
             body()
         }
 
-        ioQueue.asyncAfter(deadline: .now() + 5.0) {
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 5.0) {
             finishOnce {
                 DebugLog.write("❌ finishWriting watchdog fired (no callback within 5s), status=\(w.status.rawValue)")
                 let bytes = fileByteSize(url)
