@@ -87,6 +87,7 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
             // frame count did not).
             if currentWriter == nil {
                 writerLock.lock()
+                var droppedForStats = false // 📊 set inside lock, reported after unlock
                 if segmentStartInFlight {
                     // At 120/240fps, do NOT retain camera sample buffers for later
                     // append. The capture pool recycles pixel data; flushing 12–14
@@ -98,14 +99,19 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
                         // here would try to take the same NSLock again, deadlocking
                         // the capture queue and subsequently the Stop button.
                         droppedFrameCount += 1
+                        droppedForStats = true
                     } else if pendingStartBuffers.count < Self.pendingStartBufferLimit {
                         pendingStartBuffers.append(sampleBuffer)
                     } else {
                         // Same lock ownership as the high-FPS branch above.
                         droppedFrameCount += 1
+                        droppedForStats = true
                     }
                 }
                 writerLock.unlock()
+                // 📊 statsTracker shares no lock with writerLock, so this is
+                // safe here even though countDroppedFrame() itself isn't.
+                if droppedForStats { statsTracker.recordDroppedFrame() }
                 return
             }
         }
@@ -127,6 +133,10 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
                 }
                 let drainDone = shouldFinalizeAfterAppend
                 writerLock.unlock()
+                // 📊 Outside writerLock on purpose — statsTracker owns no
+                // shared lock with the capture path, so this can never be
+                // the thing that blocks a video frame.
+                if appended { statsTracker.recordAppendedFrame() }
                 if drainDone {
                     DebugLog.write("[stop] drain deadline reached in didOutput (appended path), finalizing")
                     completeStopDrainIfNeeded(force: false)
@@ -148,6 +158,7 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
                                 writerLock.lock()
                                 lastVideoPTS = Self.endPTS(for: bPTS, duration: bDur, fps: plan?.frameRate ?? 30)
                                 writerLock.unlock()
+                                statsTracker.recordAppendedFrame() // 📊
                             } else {
                                 leftover.append(buf)
                             }
@@ -214,6 +225,7 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
         writerLock.lock()
         droppedFrameCount += 1
         writerLock.unlock()
+        statsTracker.recordDroppedFrame() // 📊 no lock shared with writerLock
     }
 
     /// End timestamp for a written frame. Prefer the buffer's own duration;
@@ -257,8 +269,18 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
         let seconds = CMTimeGetSeconds(CMTimeSubtract(pts, start))
         writerLock.lock()
         let drops = droppedFrameCount
+        let outputURL = writer?.outputURL // 📊 read-only, same lock writer already lives under
         writerLock.unlock()
         let level = currentAudioLevel()
+
+        // 📊 Cheap: just a stat() call on the currently-open output file.
+        // Same io cost class as the existing fileByteSize() helper used
+        // elsewhere in the recording path (finishSegment).
+        if let outputURL = outputURL {
+            let bytes = (try? outputURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+            statsTracker.sample(currentFileBytes: Int64(bytes))
+        }
+        let statsSnapshot = statsTracker.snapshot
 
         // Auto-stop when max duration is reached
         if let limit = self.settings.maxDuration.seconds, seconds >= limit {
@@ -273,6 +295,7 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
             self.elapsed = seconds
             if self.droppedFrames != drops { self.droppedFrames = drops }
             self.audioLevel = level
+            self.recordingStats = statsSnapshot // 📊
         }
     }
 
