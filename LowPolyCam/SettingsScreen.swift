@@ -63,7 +63,7 @@ struct SettingsScreen: View {
                 case .slowMo:
                     slowMoFrameRateSection
                     slowMoResolutionSection
-                    videoQualitySection
+                    // Quality is fixed to iOS Camera rate — no picker in Slow-Mo.
                     slowMoOutputSection
                     slowMoAssistSection
                     advancedSection
@@ -850,7 +850,7 @@ struct SettingsScreen: View {
     private var slowMoFrameRateSection: some View {
         Section(header: sectionHeader("Slow-Mo Speed", icon: "tortoise.fill"),
                 footer: Text(isSlowMoSupported
-                             ? "Higher fps = smoother, slower playback."
+                             ? "Higher fps = smoother, slower playback. 240 fps locks resolution to 720p (same as iOS Camera)."
                              : "Slow motion is not available on this camera lens.")) {
             chipRow(SlowMoFrameRate.allCases.map { rate in
                 let available = availableSlowMoRates.contains(rate)
@@ -858,6 +858,10 @@ struct SettingsScreen: View {
                                  enabled: available,
                                  selected: settings.slowMoFrameRate == rate) {
                     settings.slowMoFrameRate = rate
+                    // 240 fps is 720p-only on iPhone (matches stock Camera).
+                    if rate == .fps240, settings.slowMoResolution == .p1080 {
+                        settings.slowMoResolution = .p720
+                    }
                     recorder.updateCaptureFormat()
                 }
             })
@@ -866,12 +870,17 @@ struct SettingsScreen: View {
 
     private var slowMoResolutionSection: some View {
         Section(header: sectionHeader("Slow-Mo Resolution", icon: "rectangle.dashed"),
-                footer: Text("Some frame rates limit the maximum resolution on this iPhone.")) {
+                footer: Text(settings.slowMoFrameRate == .fps240
+                             ? "1080p is locked at 240 fps — use 120 fps for 1080p (same as iOS Camera)."
+                             : "Some frame rates limit the maximum resolution on this iPhone.")) {
             chipRow(Resolution.allCases.filter { $0 != .p2160 }.map { r in
-                let available = availableSlowMoResolutions.contains(r)
-                return ChipItem(id: r.id, label: r.label,
+                // Block 1080p when 240 fps is selected.
+                let locked1080at240 = (r == .p1080 && settings.slowMoFrameRate == .fps240)
+                let available = availableSlowMoResolutions.contains(r) && !locked1080at240
+                return ChipItem(id: r.id, label: locked1080at240 ? "1080p 🔒" : r.label,
                                  enabled: available,
                                  selected: settings.slowMoResolution == r) {
+                    guard !locked1080at240 else { return }
                     settings.slowMoResolution = r
                     recorder.updateCaptureFormat()
                 }
