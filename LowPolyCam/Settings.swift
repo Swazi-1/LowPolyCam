@@ -796,8 +796,10 @@ enum Encoder {
             // 720p@240 ≈ 28 Mbps; 1080p@120 ≈ 20 Mbps; 720p@120 ≈ 12 Mbps.
             let slowMoTargetKbps: Double
             if fps >= 240 {
-                // Stock Camera ~720p@240 HEVC ≈ 28 Mbps (≈170 MB/min).
-                slowMoTargetKbps = 28000
+                // ~18 Mbps: stock is ~28 Mbps HEVC, but third-party AVAssetWriter
+                // on A10 / iOS 15 drops into .failed at that rate; 18 Mbps stays
+                // real-time and still looks clean for slo-mo.
+                slowMoTargetKbps = 18000
             } else if res == .p1080 {
                 slowMoTargetKbps = 20000
             } else {
@@ -838,6 +840,10 @@ enum Encoder {
             // when the user has HEVC enabled. H.264 only for sub-720p normal video
             // (unusual sizes) or when HEVC is turned off in settings.
             codec: {
+                // 240fps: H.264 only for third-party AVAssetWriter on A10/iOS 15.
+                // Stock Camera uses a private HEVC path; public AVAssetWriter + HEVC
+                // at 240fps often fails the first append and aborts the take.
+                if isSlow && fps >= 240 { return AVVideoCodecType.h264 }
                 if isSlow {
                     return settings.useHEVC ? AVVideoCodecType.hevc : AVVideoCodecType.h264
                 }
