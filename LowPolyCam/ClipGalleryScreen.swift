@@ -15,21 +15,6 @@ struct RecordedClip: Identifiable, Equatable {
     static func == (lhs: RecordedClip, rhs: RecordedClip) -> Bool { lhs.id == rhs.id }
 }
 
-/// Tiny persisted set of favorited clip filenames. Keyed by filename (not
-/// the full URL) since renaming a clip changes its URL but should keep it
-/// favorited — see ClipGalleryScreen.commitRename, which migrates the key.
-enum FavoritesStore {
-    private static let key = "favoriteClipFilenames"
-
-    static func load() -> Set<String> {
-        Set(UserDefaults.standard.stringArray(forKey: key) ?? [])
-    }
-
-    static func save(_ names: Set<String>) {
-        UserDefaults.standard.set(Array(names), forKey: key)
-    }
-}
-
 /// v2.1 — "Recorded Clips" sheet: browse every clip saved in the app's
 /// documents directory, batch-delete them (all / older-than-3-days /
 /// selection), and AirDrop / share a selection without leaving the app.
@@ -50,9 +35,6 @@ struct ClipGalleryScreen: View {
     @State private var renameClip: RecordedClip?
     @State private var renameText: String = ""
     @State private var renameError: String?
-    @State private var favorites: Set<String> = FavoritesStore.load()
-    @State private var showFavoritesOnly = false
-    @State private var favoriteHaptic = UISelectionFeedbackGenerator()
 
     private let byteFormatter: ByteCountFormatter = {
         let f = ByteCountFormatter()
@@ -75,8 +57,6 @@ struct ClipGalleryScreen: View {
                     ProgressView().tint(Palette.violet.opacity(0.95)).scaleEffect(1.2)
                 } else if clips.isEmpty {
                     emptyState
-                } else if displayedClips.isEmpty {
-                    favoritesEmptyState
                 } else {
                     list
                 }
@@ -176,56 +156,16 @@ struct ClipGalleryScreen: View {
         }
     }
 
-    /// Shown instead of `emptyState` when the Favorites filter is on but
-    /// nothing has been starred yet — distinct from "no clips at all".
-    private var favoritesEmptyState: some View {
-        VStack(spacing: 18) {
-            Image(systemName: "star")
-                .font(.system(size: 32, weight: .medium))
-                .foregroundColor(Palette.amber.opacity(0.9))
-            Text("No Favorites Yet")
-                .font(.system(size: 20, weight: .bold, design: .rounded))
-                .foregroundColor(.white)
-            Text("Tap the star on any clip to pin it here.")
-                .font(.system(size: 14, weight: .medium))
-                .foregroundColor(.white.opacity(0.55))
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 36)
-        }
-    }
-
-    // MARK: Favorites filter
-
-    /// `clips` narrowed to favorites when the filter is on, else all clips.
-    private var displayedClips: [RecordedClip] {
-        showFavoritesOnly ? clips.filter { favorites.contains($0.url.lastPathComponent) } : clips
-    }
-
-    private func isFavorite(_ clip: RecordedClip) -> Bool {
-        favorites.contains(clip.url.lastPathComponent)
-    }
-
-    private func toggleFavorite(_ clip: RecordedClip) {
-        let key = clip.url.lastPathComponent
-        if favorites.contains(key) {
-            favorites.remove(key)
-        } else {
-            favorites.insert(key)
-        }
-        FavoritesStore.save(favorites)
-        if settings.hapticFeedbackEnabled { favoriteHaptic.selectionChanged() }
-    }
-
     // MARK: List
 
     private var list: some View {
         List {
             Section {
-                ForEach(displayedClips) { clip in
+                ForEach(clips) { clip in
                     row(for: clip)
                 }
             } header: {
-                Text("\(displayedClips.count) clip\(displayedClips.count == 1 ? "" : "s") · \(totalSizeLabel)")
+                Text("\(clips.count) clip\(clips.count == 1 ? "" : "s") · \(totalSizeLabel)")
                     .foregroundColor(.white.opacity(0.5))
             }
         }
@@ -269,17 +209,6 @@ struct ClipGalleryScreen: View {
             }
 
             Spacer()
-
-            if !isEditing {
-                Button {
-                    toggleFavorite(clip)
-                } label: {
-                    Image(systemName: isFavorite(clip) ? "star.fill" : "star")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(isFavorite(clip) ? Palette.amber : .white.opacity(0.3))
-                }
-                .buttonStyle(.plain)
-            }
         }
         .padding(.vertical, 4)
         .contentShape(Rectangle())
@@ -307,37 +236,21 @@ struct ClipGalleryScreen: View {
             }
             .tint(Palette.violetDeep)
         }
-        .swipeActions(edge: .leading) {
-            Button { toggleFavorite(clip) } label: {
-                Label(isFavorite(clip) ? "Unfavorite" : "Favorite",
-                      systemImage: isFavorite(clip) ? "star.slash" : "star.fill")
-            }
-            .tint(Palette.amberDeep)
-        }
     }
 
     // MARK: Bars
 
     private var leadingBar: some View {
-        HStack(spacing: 16) {
+        Group {
             if isEditing {
                 Button("Cancel") {
                     isEditing = false
                     selection.removeAll()
                 }
                 .foregroundColor(Palette.violet.opacity(0.95))
-            } else {
-                if !clips.isEmpty {
-                    Button("Select") { isEditing = true }
-                        .foregroundColor(Palette.violet.opacity(0.95))
-                }
-                Button {
-                    showFavoritesOnly.toggle()
-                    if settings.hapticFeedbackEnabled { favoriteHaptic.selectionChanged() }
-                } label: {
-                    Image(systemName: showFavoritesOnly ? "star.fill" : "star")
-                        .foregroundColor(showFavoritesOnly ? Palette.amber : Palette.violet.opacity(0.95))
-                }
+            } else if !clips.isEmpty {
+                Button("Select") { isEditing = true }
+                    .foregroundColor(Palette.violet.opacity(0.95))
             }
         }
     }
@@ -374,7 +287,7 @@ struct ClipGalleryScreen: View {
     // MARK: Helpers
 
     private var totalSizeLabel: String {
-        byteFormatter.string(fromByteCount: displayedClips.reduce(0) { $0 + $1.fileSize })
+        byteFormatter.string(fromByteCount: clips.reduce(0) { $0 + $1.fileSize })
     }
 
     private func toggle(_ url: URL) {
@@ -462,13 +375,6 @@ struct ClipGalleryScreen: View {
         do {
             if finalURL != clip.url {
                 try FileManager.default.moveItem(at: clip.url, to: finalURL)
-                // Keep the favorite star attached to the renamed file —
-                // favorites are keyed by filename, so the key must move too.
-                let oldKey = clip.url.lastPathComponent
-                if favorites.remove(oldKey) != nil {
-                    favorites.insert(finalURL.lastPathComponent)
-                    FavoritesStore.save(favorites)
-                }
             }
             renameClip = nil
             reload()
@@ -482,9 +388,7 @@ struct ClipGalleryScreen: View {
         let fm = FileManager.default
         for clip in toDelete {
             try? fm.removeItem(at: clip.url)
-            favorites.remove(clip.url.lastPathComponent)
         }
-        FavoritesStore.save(favorites)
         let deletedURLs = Set(toDelete.map { $0.url })
         clips.removeAll { deletedURLs.contains($0.url) }
         selection.subtract(deletedURLs)
