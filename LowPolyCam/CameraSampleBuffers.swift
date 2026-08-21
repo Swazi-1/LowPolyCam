@@ -256,7 +256,6 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
         }
 
         guard let adaptor = pixelBufferAdaptor,
-              let transfer = pixelTransferSession,
               let pool = scalePixelBufferPool else {
             DebugLog.write("❌ missing scaler for \(sourceWidth)x\(sourceHeight) → \(plan.width)x\(plan.height)")
             return false
@@ -269,11 +268,14 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
             return false
         }
 
-        let transferStatus = VTPixelTransferSessionTransferImage(transfer, from: sourceBuffer, to: destinationBuffer)
-        guard transferStatus == noErr else {
-            DebugLog.write("❌ frame scale failed status=\(transferStatus)")
-            return false
-        }
+        // Core Image scaler — works back to iOS 5, unlike VTPixelTransferSession
+        // (iOS 16+ only), so it runs fine on an iPhone 7 capped at iOS 15.8.8.
+        let sourceImage = CIImage(cvPixelBuffer: sourceBuffer)
+        let scaleX = CGFloat(plan.width) / CGFloat(sourceWidth)
+        let scaleY = CGFloat(plan.height) / CGFloat(sourceHeight)
+        let scaledImage = sourceImage.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
+        scaleContext.render(scaledImage, to: destinationBuffer)
+
         return adaptor.append(destinationBuffer, withPresentationTime: CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
     }
 
