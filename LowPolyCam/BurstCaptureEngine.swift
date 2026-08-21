@@ -148,46 +148,96 @@ extension CameraRecorder {
         sessionQueue.async { [weak self] in
             guard let self = self else { return }
 
-            // Video output delegate is normally nil while idle (see
-            // configureSession in CameraSession.swift) — attach it just for
-            // this burst, on the same dedicated video queue recording uses,
-            // so frame delivery has the same priority/behavior as it does
-            // during an actual recording.
-            let grabber = BurstFrameGrabber(
-                targetCount: total,
-                onFrame: { pixelBuffer in
-                    // Copy pixels out to a UIImage immediately — see the
-                    // comment on frameContext above for why this can't wait.
-                    let image = Self.image(from: pixelBuffer,
-                                            orientation: orientation,
-                                            mirrored: wantsMirroredSave,
-                                            targetMegapixels: targetMP,
-                                            context: frameContext)
-                    bufferLock.lock()
-                    if let image = image { collectedImages.append(image) }
-                    let count = collectedImages.count
-                    bufferLock.unlock()
-                    DispatchQueue.main.async {
-                        self.burstShotsTaken = count
-                    }
-                },
-                onComplete: { [weak self] in
-                    guard let self = self else { return }
-                    self.sessionQueue.async {
-                        self.videoOutput.setSampleBufferDelegate(
-                            self.isRecording ? self : nil,
-                            queue: self.isRecording ? self.videoQueue : nil
-                        )
-                        self.activeBurstGrabber = nil
-                        bufferLock.lock()
-                        let images = collectedImages
-                        bufferLock.unlock()
-                        self.finishBurst(images: images, destination: self.settings.saveLocation)
+            // On iOS 15 the active format drives both preview AND still
+            // aspect ratio (same reasoning as capturePhotoInternal in
+            // CameraPhoto.swift). Burst mode reads frames straight off
+            // videoOutput's live connection, which normally sits in the
+            // smooth 16:9-ish preview format — so without this swap, burst
+            // photos came out in the video preview's wide aspect instead of
+            // the normal 4:3/3:2 still-photo aspect real captures use.
+            // Swapping to the still format here makes burst frames match
+            // single-shot photos.
+            var didSwapForStill = false
+            if #available(iOS 16.0, *) {
+                // iOS 16+ still handles this via maxPhotoDimensions on the
+                // discrete photo path; burst mode's live-frame aspect there
+                // already follows the still-capable active format, so no
+                // swap is needed.
+            } else if let device = self.cameraInput?.device {
+                let stillFormat = CameraFormatSelector.bestPhotoStillFormat(for: device, maxPreviewHeight: 1080, fps: 30)
+                if let stillFormat = stillFormat {
+                    let stillDims = stillFormat.highResolutionStillImageDimensions
+                    let currentStill = device.activeFormat.highResolutionStillImageDimensions
+                    let stillArea = Int(stillDims.width) * Int(stillDims.height)
+                    let currentArea = Int(currentStill.width) * Int(currentStill.height)
+                    if stillArea > currentArea + 500_000 {
+                        if self.applyUnifiedHardwareConfiguration(to: device, format: stillFormat, targetFPS: 30) {
+                            self.lastAppliedFormatKey = nil // force restore after
+                            self.configurePhotoOutput()
+                            didSwapForStill = true
+                        }
                     }
                 }
-            )
-            self.activeBurstGrabber = grabber
-            self.videoOutput.setSampleBufferDelegate(grabber, queue: self.videoQueue)
+            }
+
+            let startGrabbing: () -> Void = { [weak self] in
+                guard let self = self else { return }
+
+                // Video output delegate is normally nil while idle (see
+                // configureSession in CameraSession.swift) — attach it just
+                // for this burst, on the same dedicated video queue
+                // recording uses, so frame delivery has the same
+                // priority/behavior as it does during an actual recording.
+                let grabber = BurstFrameGrabber(
+                    targetCount: total,
+                    onFrame: { pixelBuffer in
+                        // Copy pixels out to a UIImage immediately — see the
+                        // comment on frameContext above for why this can't wait.
+                        let image = Self.image(from: pixelBuffer,
+                                                orientation: orientation,
+                                                mirrored: wantsMirroredSave,
+                                                targetMegapixels: targetMP,
+                                                context: frameContext)
+                        bufferLock.lock()
+                        if let image = image { collectedImages.append(image) }
+                        let count = collectedImages.count
+                        bufferLock.unlock()
+                        DispatchQueue.main.async {
+                            self.burstShotsTaken = count
+                        }
+                    },
+                    onComplete: { [weak self] in
+                        guard let self = self else { return }
+                        self.sessionQueue.async {
+                            self.videoOutput.setSampleBufferDelegate(
+                                self.isRecording ? self : nil,
+                                queue: self.isRecording ? self.videoQueue : nil
+                            )
+                            self.activeBurstGrabber = nil
+                            // Restore the smooth preview format now that the
+                            // burst is done reading from videoOutput, same
+                            // as the single-shot still capture path does.
+                            if didSwapForStill {
+                                _ = self.applyActiveFormat(forRecording: false)
+                            }
+                            bufferLock.lock()
+                            let images = collectedImages
+                            bufferLock.unlock()
+                            self.finishBurst(images: images, destination: self.settings.saveLocation)
+                        }
+                    }
+                )
+                self.activeBurstGrabber = grabber
+                self.videoOutput.setSampleBufferDelegate(grabber, queue: self.videoQueue)
+            }
+
+            // After a format swap, wait for AE to settle so the first
+            // frames of the burst aren't dark (mirrors capturePhotoInternal).
+            if didSwapForStill, let device = self.cameraInput?.device {
+                self.waitForExposureSettled(device: device, timeout: 0.25, completion: startGrabbing)
+            } else {
+                startGrabbing()
+            }
         }
     }
 
