@@ -22,6 +22,10 @@ extension CameraRecorder {
 
         if settings.saveLocation == .photos { ensurePhotosAccess() }
         if settings.shutterSoundEnabled { SoundPlayer.play(.shutter) }
+        // Same audio-route/KVO-noise guard used in capturePhoto()/startRecording() —
+        // this burst's own shutter sound could otherwise misread as an extra
+        // volume-button press partway through.
+        suppressVolumeTriggerBriefly(duration: 1.2)
 
         sessionQueue.async { [weak self] in
             guard let self = self else { return }
