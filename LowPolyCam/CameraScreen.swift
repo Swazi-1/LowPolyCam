@@ -72,6 +72,16 @@ struct CameraScreen: View {
                     showFocusReticle(at: viewPoint)
                 }, onDoubleTap: { [weak recorder] in
                     recorder?.flipCamera()
+                }, onLongPress: { [weak recorder] devicePoint, viewPoint in
+                    if showProMenu {
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { showProMenu = false }
+                    }
+                    if settings.hapticFeedbackEnabled {
+                        let gen = UIImpactFeedbackGenerator(style: .medium)
+                        gen.impactOccurred()
+                    }
+                    recorder?.lockFocusAndExposure(at: devicePoint)
+                    showFocusReticle(at: viewPoint)
                 })
                 .gesture(
                     MagnificationGesture()
@@ -94,6 +104,8 @@ struct CameraScreen: View {
                 if let focusPoint {
                     focusReticle.position(focusPoint)
                 }
+
+                if recorder.focusExposureLocked { aeafLockBadge }
 
                 if settings.gridStyle != .off { gridOverlay }
 
@@ -675,7 +687,7 @@ struct CameraScreen: View {
     /// display order. This is the single place to touch when adding,
     /// removing, or reordering a Pro Tools control.
     private var proToolsDrawerControls: [ProToolControl] {
-        [
+        var controls: [ProToolControl] = [
             .chips(ProToolControl.ChipsSpec(
                 id: "timer",
                 icon: "timer",
@@ -717,8 +729,36 @@ struct CameraScreen: View {
                         showWhiteBalanceSheet = true
                     }
                 }
+            )),
+            .toggle(ProToolControl.ToggleSpec(
+                id: "manualFocus",
+                icon: "camera.aperture",
+                title: "Manual focus",
+                isOn: $settings.manualFocusEnabled,
+                onChange: { recorder.setManualFocus(enabled: $0) }
             ))
         ]
+
+        // Only take up drawer space with the lens-position slider while
+        // manual focus is actually on — otherwise it's a control with
+        // nothing to do.
+        if settings.manualFocusEnabled {
+            controls.append(.slider(ProToolControl.SliderSpec(
+                id: "manualFocusPosition",
+                icon: "scope",
+                title: "Focus",
+                value: $settings.manualFocusLensPosition,
+                range: 0.0...1.0,
+                step: 0.01,
+                valueLabel: { pos in
+                    pos < 0.02 ? "Near" : (pos > 0.98 ? "Far" : String(format: "%.0f%%", pos * 100))
+                },
+                onChange: { recorder.setManualFocusLensPosition($0) },
+                defaultValue: 0.5
+            )))
+        }
+
+        return controls
     }
 
     private var proToolsDrawer: some View {
@@ -1612,6 +1652,24 @@ struct CameraScreen: View {
         .scaleEffect(focusPoint == nil ? 1.3 : 1.0)
         .opacity(focusPoint == nil ? 0 : 1)
         .animation(.spring(response: 0.3, dampingFraction: 0.6), value: focusPoint)
+    }
+
+    private var aeafLockBadge: some View {
+        VStack {
+            Text("AE/AF LOCK")
+                .font(.system(size: 11, weight: .bold, design: .rounded))
+                .foregroundColor(.black)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Capsule().fill(Color.yellow.opacity(0.92)))
+                .shadow(color: .black.opacity(0.3), radius: 4)
+            Spacer()
+        }
+        .padding(.top, 60)
+        .frame(maxWidth: .infinity)
+        .allowsHitTesting(false)
+        .transition(.opacity.combined(with: .scale(scale: 0.9)))
+        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: recorder.focusExposureLocked)
     }
 
     private func showFocusReticle(at point: CGPoint) {
