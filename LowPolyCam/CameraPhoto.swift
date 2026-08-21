@@ -7,14 +7,107 @@ import Combine
 import AudioToolbox
 import ImageIO
 
+// MARK: - Photo 2.0 review model
+
+/// One capture the post-shutter review sheet can show. Photos saved to the
+/// app's own Files location have a stable on-disk `url` we can reload
+/// directly; photos saved to the system Photos library do not (PHAsset
+/// only), so those are represented purely by their in-memory `image`
+/// (already downscaled/encoded the same as what was saved).
+struct PhotoReviewItem: Identifiable, Equatable {
+    let id = UUID()
+    let image: UIImage
+    let url: URL?
+    let capturedAt = Date()
+
+    static func == (lhs: PhotoReviewItem, rhs: PhotoReviewItem) -> Bool { lhs.id == rhs.id }
+}
+
 extension CameraRecorder {
 
     // MARK: Photo Capture
 
-    func capturePhoto() {
-        guard !isCapturingPhoto, !isRecording, !isSwitchingCamera else { return }
+    /// Center-crops a full-frame still to a 1:1 square when the user has
+    /// selected the Square aspect setting. No-op for `.full`. Runs on the
+    /// already-downscaled image, so this is cheap even on A10.
+    func applyPhotoAspect(_ image: UIImage) -> UIImage {
+        guard settings.photoAspect == .square, let cg = image.cgImage else { return image }
+        let w = cg.width
+        let h = cg.height
+        let side = min(w, h)
+        guard side < w || side < h else { return image }
+        let x = (w - side) / 2
+        let y = (h - side) / 2
+        guard let cropped = cg.cropping(to: CGRect(x: x, y: y, width: side, height: side)) else { return image }
+        return UIImage(cgImage: cropped, scale: image.scale, orientation: image.imageOrientation)
+    }
+
+    /// Starts a burst capture: fires `settings.burstCount` still photos back
+    /// to back as fast as the photo pipeline can process each one. Each
+    /// frame reuses the exact same single-shot capture path (same format,
+    /// same downscale, same save destination) so burst photos are
+    /// byte-for-byte consistent with a normal single photo — this is just
+    /// that path called N times with a short settle between frames instead
+    /// of a dedicated (and, on A10, unsupported) high-speed capture API.
+    func startBurstCapture() {
+        guard !isBursting, !isCapturingPhoto, !isRecording, !isSwitchingCamera else { return }
         guard freeBytes > Self.reserveBytes else {
             notice = "Low storage · Free space needed"
+            return
+        }
+        let total = settings.burstCount.rawValue
+        isBursting = true
+        burstShotsTaken = 0
+        burstShotsTotal = total
+        lastBurstReviewItems = []
+        fireNextBurstFrame(remaining: total)
+    }
+
+    private func fireNextBurstFrame(remaining: Int) {
+        guard remaining > 0, isBursting else {
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.isBursting = false
+                if !self.lastBurstReviewItems.isEmpty {
+                    self.lastPhotoReviewItem = self.lastBurstReviewItems.first
+                    self.photoReviewToken += 1
+                }
+            }
+            return
+        }
+        capturePhotoInternal(isBurstFrame: true) { [weak self] in
+            guard let self = self else { return }
+            DispatchQueue.main.async {
+                self.burstShotsTaken += 1
+            }
+            // Small settle delay between frames — the sensor/AE pipeline on
+            // A10 needs a beat to be ready for the next still, and this also
+            // keeps burst-mode from starving the main queue/UI.
+            self.sessionQueue.asyncAfter(deadline: .now() + 0.12) {
+                self.fireNextBurstFrame(remaining: remaining - 1)
+            }
+        }
+    }
+
+    /// Cancels an in-progress burst after the current in-flight frame
+    /// finishes; already-captured frames in this burst are kept.
+    func cancelBurstCapture() {
+        guard isBursting else { return }
+        isBursting = false
+    }
+
+    func capturePhoto() {
+        capturePhotoInternal(isBurstFrame: false, completion: nil)
+    }
+
+    private func capturePhotoInternal(isBurstFrame: Bool, completion: (() -> Void)?) {
+        guard !isCapturingPhoto, !isRecording, !isSwitchingCamera else {
+            completion?()
+            return
+        }
+        guard freeBytes > Self.reserveBytes else {
+            notice = "Low storage · Free space needed"
+            completion?()
             return
         }
 
@@ -22,7 +115,10 @@ extension CameraRecorder {
 
         isCapturingPhoto = true
 
-        if settings.hapticFeedbackEnabled {
+        // Burst frames skip the per-shot haptic (10-15 buzzes in ~1.5s feels
+        // like a jackhammer, not a shutter) and use a single lighter tick
+        // fired once from startBurstCapture's caller instead.
+        if settings.hapticFeedbackEnabled && !isBurstFrame {
             let hapticGen = UIImpactFeedbackGenerator(style: .medium)
             hapticGen.prepare()
             hapticGen.impactOccurred()
@@ -161,9 +257,22 @@ extension CameraRecorder {
 
                     guard let image = image else {
                         DispatchQueue.main.async { self.notice = errorMessage ?? "Photo capture failed" }
+                        completion?()
                         return
                     }
-                    self.savePhoto(image, originalData: originalData, metadata: metadata, to: destination)
+                    // A non-nil originalData is the camera's own passthrough
+                    // bytes (no re-downscale happened) — once we crop for
+                    // Square aspect or force a different save format, those
+                    // original bytes no longer match the image we're about
+                    // to save, so they must not be used in that case.
+                    let aspected = self.applyPhotoAspect(image)
+                    let needsReencode = self.settings.photoAspect == .square || self.settings.photoFormat == .jpeg
+                    self.savePhoto(aspected,
+                                    originalData: needsReencode ? nil : originalData,
+                                    metadata: metadata,
+                                    to: destination,
+                                    isBurstFrame: isBurstFrame,
+                                    completion: completion)
                 })
                 self.activePhotoProcessors[photoSettings.uniqueID] = processor
                 self.photoOutput.capturePhoto(with: photoSettings, delegate: processor)
@@ -178,14 +287,24 @@ extension CameraRecorder {
         }
     }
 
-    func savePhoto(_ image: UIImage, originalData: Data? = nil, metadata: [String: Any]?, to destination: SaveLocation) {
+    func savePhoto(_ image: UIImage,
+                    originalData: Data? = nil,
+                    metadata: [String: Any]?,
+                    to destination: SaveLocation,
+                    isBurstFrame: Bool = false,
+                    completion: (() -> Void)? = nil) {
         DispatchQueue.main.async { self.lastPhotoThumbnail = image }
 
-        // Prefer the camera's original file bytes when we did not downscale —
-        // re-encoding HEIC makes photos look worse than stock Camera and can
-        // even increase file size.
+        // Prefer the camera's original file bytes when we did not downscale
+        // AND the user's format setting still matches (HEIC) — re-encoding
+        // otherwise makes photos look worse than stock Camera and can even
+        // increase file size.
+        let wantsJPEG = settings.photoFormat == .jpeg
         let encoded: (data: Data?, isHEIC: Bool) = {
-            if let originalData = originalData { return (originalData, true) }
+            if !wantsJPEG, let originalData = originalData { return (originalData, true) }
+            if wantsJPEG {
+                return (PhotoEncoder.encodeJPEG(image, metadata: metadata), false)
+            }
             if let data = PhotoEncoder.encodeHEIC(image, metadata: metadata) {
                 return (data, true)
             }
@@ -193,10 +312,24 @@ extension CameraRecorder {
         }()
         let resolvedData = encoded.data
 
+        func finishReview(url: URL?) {
+            DispatchQueue.main.async {
+                let item = PhotoReviewItem(image: image, url: url)
+                if isBurstFrame {
+                    self.lastBurstReviewItems.insert(item, at: 0)
+                } else {
+                    self.lastPhotoReviewItem = item
+                    self.photoReviewToken += 1
+                }
+            }
+            completion?()
+        }
+
         guard destination == .photos else {
             ioQueue.async {
                 guard let data = resolvedData else {
                     DispatchQueue.main.async { self.notice = "Photo failed to save" }
+                    completion?()
                     return
                 }
                 let f = DateFormatter()
@@ -210,11 +343,13 @@ extension CameraRecorder {
                 do {
                     try data.write(to: url, options: .atomic)
                     DispatchQueue.main.async {
-                        self.notice = "Photo saved to Files"
+                        self.notice = isBurstFrame ? nil : "Photo saved to Files"
                         self.refreshFreeSpace()
                     }
+                    finishReview(url: url)
                 } catch {
                     DispatchQueue.main.async { self.notice = "Photo failed to save" }
+                    completion?()
                 }
             }
             return
@@ -223,11 +358,13 @@ extension CameraRecorder {
         let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
         guard status == .authorized || status == .limited else {
             DispatchQueue.main.async { self.notice = "Enable Photos access in Settings to save" }
+            completion?()
             return
         }
 
         guard let data = resolvedData else {
             DispatchQueue.main.async { self.notice = "Photo failed to save" }
+            completion?()
             return
         }
 
@@ -237,8 +374,12 @@ extension CameraRecorder {
             request.addResource(with: .photo, data: data, options: options)
         }) { [weak self] success, _ in
             DispatchQueue.main.async {
-                self?.notice = success ? "Photo saved to Photos" : "Could not save photo"
+                self?.notice = isBurstFrame ? nil : (success ? "Photo saved to Photos" : "Could not save photo")
             }
+            // Photos-library saves have no stable local file URL to reopen
+            // for review — the sheet falls back to showing the in-memory
+            // `image` only (see PhotoReviewItem.url == nil handling in the UI).
+            finishReview(url: nil)
         }
     }
 
