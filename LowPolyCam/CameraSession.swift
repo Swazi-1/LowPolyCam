@@ -358,9 +358,22 @@ extension CameraRecorder {
         }
     }
 
-    func updateCaptureFormat() {
+    func updateCaptureFormat(completion: (() -> Void)? = nil) {
         sessionQueue.async {
             self.refreshCapabilitiesThenApplyFormat()
+            let finish = {
+                DispatchQueue.main.async {
+                    completion?()
+                }
+            }
+            // A format change briefly restarts auto exposure. Keep the UI's
+            // transition cover up until that settles so it fades into a live,
+            // correctly exposed preview rather than a dark first frame.
+            if let device = self.cameraInput?.device {
+                self.waitForExposureSettled(device: device, timeout: 0.25, completion: finish)
+            } else {
+                finish()
+            }
         }
     }
 
