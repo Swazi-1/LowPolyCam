@@ -35,8 +35,10 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         MARKETING_VERSION: "1.2.6"
         CURRENT_PROJECT_VERSION: "14"
-        SWIFT_VERSION: "5.0"
+        SWIFT_VERSION: "5.7"
         TARGETED_DEVICE_FAMILY: "1"          # iPhone only
+        # iPhone 7's final supported release is iOS 15.8.8. Keep this at the
+        # start of iOS 15 so every iOS 15 device can run the same code path.
         IPHONEOS_DEPLOYMENT_TARGET: "15.0"
         ENABLE_BITCODE: NO
         CODE_SIGN_STYLE: Automatic
