@@ -170,7 +170,6 @@ struct ClipGalleryScreen: View {
             }
         }
         .listStyle(.insetGrouped)
-        .modifier(HiddenScrollBackground())
     }
 
     private func row(for clip: RecordedClip) -> some View {
@@ -418,17 +417,6 @@ struct ClipGalleryScreen: View {
 
 }
 
-/// iOS 16+ only modifier, applied conditionally so this still builds on older deployment targets.
-private struct HiddenScrollBackground: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(iOS 16.0, *) {
-            content.scrollContentBackground(.hidden)
-        } else {
-            content
-        }
-    }
-}
-
 /// Thin UIKit bridge so we can AirDrop / share multiple clip files at once.
 private struct ShareSheet: UIViewControllerRepresentable {
     let items: [URL]
@@ -497,5 +485,4 @@ struct PhotoPreviewView: View {
         }
     }
 }
-
 
