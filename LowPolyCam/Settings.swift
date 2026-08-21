@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import Combine
 import SwiftUI
+import UIKit
 
 // MARK: - Physical Device Orientation
 
@@ -431,6 +432,146 @@ enum GridStyle: String, CaseIterable, Identifiable, SettingStorable {
     }
 }
 
+// MARK: - HUD Element Visibility
+
+/// One togglable piece of the live camera HUD. Each case maps to exactly
+/// one `AppSettings` bool (see the "HUD Customization" block below) — this
+/// enum exists purely to drive the Settings UI list in one place, rather
+/// than hand-writing a toggle row per element.
+///
+/// The shutter button and the Settings gear itself are deliberately NOT
+/// included here: hiding the shutter would make the app unusable, and
+/// hiding the gear would strand the user with no way back into Settings
+/// to turn elements back on.
+enum HUDElement: String, CaseIterable, Identifiable {
+    case flashButton
+    case infoPill
+    case batteryInfo
+    case storageInfo
+    case zoomControl
+    case modeSelector
+    case galleryThumbnail
+    case proToolsButton
+    case flipCameraButton
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .flashButton: return "Flash / Torch button"
+        case .infoPill: return "Format info pill"
+        case .batteryInfo: return "Battery indicator"
+        case .storageInfo: return "Storage & time left"
+        case .zoomControl: return "Zoom bar"
+        case .modeSelector: return "Mode selector"
+        case .galleryThumbnail: return "Last shot thumbnail"
+        case .proToolsButton: return "Pro Tools (•••) button"
+        case .flipCameraButton: return "Flip camera button"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .flashButton: return "bolt.fill"
+        case .infoPill: return "capsule.fill"
+        case .batteryInfo: return "battery.75"
+        case .storageInfo: return "internaldrive"
+        case .zoomControl: return "arrow.left.and.right"
+        case .modeSelector: return "list.bullet.rectangle"
+        case .galleryThumbnail: return "square.stack.3d.up.fill"
+        case .proToolsButton: return "ellipsis"
+        case .flipCameraButton: return "arrow.triangle.2.circlepath.camera.fill"
+        }
+    }
+}
+
+/// Controls the spring used to animate HUD elements appearing/disappearing
+/// (both from the Customizable HUD toggles above and existing conditional
+/// chrome like the level meter / notices). `.off` disables the animation
+/// entirely — an instant cut, for anyone who finds motion distracting.
+enum HUDMotion: String, CaseIterable, Identifiable, SettingStorable {
+    case off, subtle, standard, snappy
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .off: return "Off"
+        case .subtle: return "Subtle"
+        case .standard: return "Standard"
+        case .snappy: return "Snappy"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .off: return "Instant, no animation"
+        case .subtle: return "Slow, gentle ease"
+        case .standard: return "Balanced default"
+        case .snappy: return "Quick, energetic spring"
+        }
+    }
+
+    /// nil means "no animation" — pass straight to `.animation(_:value:)`.
+    var animation: Animation? {
+        switch self {
+        case .off: return nil
+        case .subtle: return .spring(response: 0.5, dampingFraction: 0.92)
+        case .standard: return .spring(response: 0.35, dampingFraction: 0.82)
+        case .snappy: return .spring(response: 0.22, dampingFraction: 0.7)
+        }
+    }
+
+    /// Matching transition for HUD elements that pop in/out entirely
+    /// (rather than just resizing), scaled by the same motion preference.
+    var transition: AnyTransition {
+        switch self {
+        case .off: return .identity
+        default: return .opacity.combined(with: .scale(scale: 0.85))
+        }
+    }
+}
+
+// MARK: - Haptic Intensity
+
+/// Scales the impact-haptic strength used across the app (shutter, record
+/// start/stop, countdown ticks) relative to each event's normal ("standard")
+/// weight. Selection haptics (mode/chip taps) are left as-is — iOS doesn't
+/// expose an intensity knob for those.
+enum HapticIntensity: String, CaseIterable, Identifiable, SettingStorable {
+    case light, standard, strong
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .light: return "Light"
+        case .standard: return "Standard"
+        case .strong: return "Strong"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .light: return "Softer taps"
+        case .standard: return "Default feel"
+        case .strong: return "More pronounced taps"
+        }
+    }
+
+    /// Re-scales a base impact style (as originally hand-tuned per event)
+    /// to this intensity level.
+    func scaled(_ base: UIImpactFeedbackGenerator.FeedbackStyle) -> UIImpactFeedbackGenerator.FeedbackStyle {
+        switch (self, base) {
+        case (.light, .heavy):  return .medium
+        case (.light, .medium): return .light
+        case (.strong, .light): return .medium
+        case (.strong, .medium): return .heavy
+        default: return base
+        }
+    }
+}
+
 // MARK: - Quick Capture Presets
 
 struct CapturePreset: Identifiable {
@@ -634,6 +775,65 @@ final class AppSettings: ObservableObject {
     /// steers the encoder toward safer settings and strengthens auto-dim.
     @Setting("longevityMode") var longevityMode: Bool = false
 
+    // MARK: HUD Customization
+    // Per-element visibility toggles for the live camera HUD. The shutter
+    // and Settings gear are intentionally not toggleable here — see
+    // `HUDElement`'s doc comment.
+    @Setting("hudShowFlashButton") var hudShowFlashButton: Bool = true
+    @Setting("hudShowInfoPill") var hudShowInfoPill: Bool = true
+    @Setting("hudShowBatteryInfo") var hudShowBatteryInfo: Bool = true
+    @Setting("hudShowStorageInfo") var hudShowStorageInfo: Bool = true
+    @Setting("hudShowZoomControl") var hudShowZoomControl: Bool = true
+    @Setting("hudShowModeSelector") var hudShowModeSelector: Bool = true
+    @Setting("hudShowGalleryThumbnail") var hudShowGalleryThumbnail: Bool = true
+    @Setting("hudShowProToolsButton") var hudShowProToolsButton: Bool = true
+    @Setting("hudShowFlipCameraButton") var hudShowFlipCameraButton: Bool = true
+    /// Spring style used to animate HUD elements showing/hiding.
+    @Setting("hudMotion") var hudMotion: HUDMotion = .standard
+    /// Relative strength of impact haptics (shutter, record start/stop, countdown).
+    @Setting("hapticIntensity") var hapticIntensity: HapticIntensity = .standard
+    /// 6-digit RGB hex (no '#') for the user-picked custom accent color,
+    /// used only when `accentColor == .custom`.
+    @Setting("customAccentColorHex") var customAccentColorHex: String = "C4A8E8"
+
+    /// Convenience accessor for a `HUDElement`'s current visibility.
+    func isHUDElementVisible(_ element: HUDElement) -> Bool {
+        switch element {
+        case .flashButton: return hudShowFlashButton
+        case .infoPill: return hudShowInfoPill
+        case .batteryInfo: return hudShowBatteryInfo
+        case .storageInfo: return hudShowStorageInfo
+        case .zoomControl: return hudShowZoomControl
+        case .modeSelector: return hudShowModeSelector
+        case .galleryThumbnail: return hudShowGalleryThumbnail
+        case .proToolsButton: return hudShowProToolsButton
+        case .flipCameraButton: return hudShowFlipCameraButton
+        }
+    }
+
+    /// Binding into the right bool for a given `HUDElement`, for building
+    /// `SettingsToggleSpec`s generically in the Settings UI.
+    func binding(for element: HUDElement) -> Binding<Bool> {
+        switch element {
+        case .flashButton: return Binding(get: { self.hudShowFlashButton }, set: { self.hudShowFlashButton = $0 })
+        case .infoPill: return Binding(get: { self.hudShowInfoPill }, set: { self.hudShowInfoPill = $0 })
+        case .batteryInfo: return Binding(get: { self.hudShowBatteryInfo }, set: { self.hudShowBatteryInfo = $0 })
+        case .storageInfo: return Binding(get: { self.hudShowStorageInfo }, set: { self.hudShowStorageInfo = $0 })
+        case .zoomControl: return Binding(get: { self.hudShowZoomControl }, set: { self.hudShowZoomControl = $0 })
+        case .modeSelector: return Binding(get: { self.hudShowModeSelector }, set: { self.hudShowModeSelector = $0 })
+        case .galleryThumbnail: return Binding(get: { self.hudShowGalleryThumbnail }, set: { self.hudShowGalleryThumbnail = $0 })
+        case .proToolsButton: return Binding(get: { self.hudShowProToolsButton }, set: { self.hudShowProToolsButton = $0 })
+        case .flipCameraButton: return Binding(get: { self.hudShowFlipCameraButton }, set: { self.hudShowFlipCameraButton = $0 })
+        }
+    }
+
+    /// Custom accent color parsed from `customAccentColorHex`, plus derived
+    /// bright/deep variants matching how the built-in presets each hand-tune
+    /// their own bright/deep pair (see `AccentColor`).
+    var customColor: Color { Color(hexString: customAccentColorHex) }
+    var customColorBright: Color { customColor.brightnessScaled(1.3) }
+    var customColorDeep: Color { customColor.brightnessScaled(0.68) }
+
     /// Applies a capture preset. Forces video mode for recording-oriented presets.
     func applyPreset(_ preset: CapturePreset) {
         cameraMode = .video
@@ -659,7 +859,7 @@ final class AppSettings: ObservableObject {
 // MARK: - Accent Colour
 
 enum AccentColor: String, CaseIterable, Identifiable, SettingStorable {
-    case violet, amber, red, ice, aurora, coral
+    case violet, amber, red, ice, aurora, coral, custom
 
     var id: String { rawValue }
 
@@ -671,6 +871,7 @@ enum AccentColor: String, CaseIterable, Identifiable, SettingStorable {
         case .ice: return "Ice Cyan"
         case .aurora: return "Aurora"
         case .coral: return "Coral Bloom"
+        case .custom: return "Custom"
         }
     }
 
@@ -682,6 +883,11 @@ enum AccentColor: String, CaseIterable, Identifiable, SettingStorable {
         case .ice: return Palette.ice
         case .aurora: return Palette.aurora
         case .coral: return Palette.coral
+        // `.custom` has no case-local storage (enums can't hold external
+        // state), so it reads from the shared settings singleton — the
+        // same pattern used everywhere else a static context needs the
+        // live setting (see PerformanceProfile).
+        case .custom: return AppSettings.shared.customColor
         }
     }
 
@@ -693,6 +899,7 @@ enum AccentColor: String, CaseIterable, Identifiable, SettingStorable {
         case .ice: return Palette.iceBright
         case .aurora: return Palette.auroraBright
         case .coral: return Palette.coralBright
+        case .custom: return AppSettings.shared.customColorBright
         }
     }
 
@@ -704,6 +911,7 @@ enum AccentColor: String, CaseIterable, Identifiable, SettingStorable {
         case .ice: return Palette.iceDeep
         case .aurora: return Palette.auroraDeep
         case .coral: return Palette.coralDeep
+        case .custom: return AppSettings.shared.customColorDeep
         }
     }
 }
