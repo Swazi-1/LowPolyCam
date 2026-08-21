@@ -133,37 +133,46 @@ private struct PhotoLibraryThumbnail: View {
     @State private var image: UIImage?
 
     var body: some View {
-        GeometryReader { proxy in
-            ZStack(alignment: .bottomTrailing) {
-                Group {
-                    if let image = image {
-                        Image(uiImage: image)
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                    } else {
-                        Palette.panel
-                    }
-                }
-                .frame(width: proxy.size.width, height: proxy.size.width)
-                .clipped()
-
-                if asset.mediaType == .video {
-                    Image(systemName: "play.fill")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(.white)
-                        .padding(6)
-                        .background(Color.black.opacity(0.6))
-                        .clipShape(Circle())
-                        .padding(5)
+        ZStack(alignment: .bottomTrailing) {
+            Group {
+                if let image = image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                } else {
+                    Palette.panel
                 }
             }
-            .onAppear { loadImage(side: proxy.size.width) }
+            // Square shape comes from aspectRatio alone — no GeometryReader.
+            // A GeometryReader here previously proposed extra height beyond
+            // the square (it fills all space offered, not just the width),
+            // so each cell's tappable area silently overflowed into the row
+            // below and taps near the bottom of a thumbnail sometimes hit
+            // the wrong photo. Removing it makes the tappable bounds exactly
+            // match the visible square.
+            .aspectRatio(1, contentMode: .fit)
+            .clipped()
+
+            if asset.mediaType == .video {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(.white)
+                    .padding(6)
+                    .background(Color.black.opacity(0.6))
+                    .clipShape(Circle())
+                    .padding(5)
+            }
         }
-        .aspectRatio(1, contentMode: .fit)
+        .contentShape(Rectangle())
+        .onAppear(perform: loadImage)
     }
 
-    private func loadImage(side: CGFloat) {
+    private func loadImage() {
         guard image == nil else { return }
+        // Fixed target size instead of a measured GeometryReader width —
+        // slightly less pixel-perfect, but thumbnails are small enough that
+        // the difference isn't visible, and it avoids the layout bug above.
+        let side = UIScreen.main.bounds.width / 3
         let options = PHImageRequestOptions()
         options.deliveryMode = .opportunistic
         options.resizeMode = .fast
