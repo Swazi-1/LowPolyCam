@@ -285,6 +285,39 @@ extension CameraRecorder {
         }
     }
 
+    /// Standard iPhone still-photo aspect ratio (4:3, landscape terms —
+    /// sensor buffers arrive in native landscape orientation before the
+    /// UIImage.Orientation tag is applied). Burst mode reads frames from the
+    /// live *video* stream, which stays 16:9 on some formats/cameras no
+    /// matter what still-capable AVCaptureDevice.Format is active — notably
+    /// the iPhone 7 front camera, which has no distinct 4:3 high-res still
+    /// stream the way the rear camera does, so the format-swap in
+    /// startBurstCapture() has nothing to swap to there. Cropping here
+    /// guarantees burst photos always match single-shot photo aspect,
+    /// independent of that hardware quirk, on both cameras.
+    private static let targetPhotoAspect: CGFloat = 4.0 / 3.0
+
+    /// Center-crops a raw sensor-native (landscape, unrotated) CGImage to
+    /// `targetPhotoAspect` if it's noticeably wider than that — i.e. still
+    /// 16:9 rather than the normal 4:3 photo shape. No-op if the buffer is
+    /// already close to 4:3 (the common rear-camera case once the format
+    /// swap succeeds), so this only kicks in as a safety net.
+    private static func croppedToPhotoAspect(_ cgImage: CGImage) -> CGImage {
+        let w = cgImage.width
+        let h = cgImage.height
+        guard w > 0, h > 0 else { return cgImage }
+        let currentAspect = CGFloat(w) / CGFloat(h)
+        guard currentAspect > targetPhotoAspect * 1.02 else { return cgImage }
+
+        let newWidth = max(1, Int((CGFloat(h) * targetPhotoAspect).rounded()))
+        guard newWidth < w else { return cgImage }
+        let x = (w - newWidth) / 2
+        guard let cropped = cgImage.cropping(to: CGRect(x: x, y: 0, width: newWidth, height: h)) else {
+            return cgImage
+        }
+        return cropped
+    }
+
     /// Converts one raw sensor pixel buffer into an oriented, downscaled
     /// UIImage — the same downscale-to-target-megapixels behavior
     /// PhotoCaptureProcessor applies to a normal still, so burst photos are
@@ -300,7 +333,8 @@ extension CameraRecorder {
                               targetMegapixels: Double,
                               context: CIContext) -> UIImage? {
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-        guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else { return nil }
+        guard let rawCGImage = context.createCGImage(ciImage, from: ciImage.extent) else { return nil }
+        let cgImage = croppedToPhotoAspect(rawCGImage)
         let full = UIImage(cgImage: cgImage, scale: 1, orientation: orientation)
 
         let currentPixels = Double(cgImage.width * cgImage.height)
