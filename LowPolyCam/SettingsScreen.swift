@@ -72,6 +72,8 @@ struct SettingsScreen: View {
                     // Photo only: size + where to save + framing assists.
                     // No video quality, codec, frame rate, stab, split, etc.
                     photoMegapixelsSection
+                    photoBurstSection
+                    photoFormatSection
                     photoOutputSection
                     photoAssistSection
                 }
@@ -897,6 +899,43 @@ struct SettingsScreen: View {
                     settings.photoMegapixels = mp
                 }
             })
+        }
+    }
+
+    // MARK: - Photo 2.0: Burst, format, aspect, review
+
+    private var photoBurstSection: some View {
+        Section(header: sectionHeader("Burst Mode", icon: "square.stack.3d.up.fill"),
+                footer: Text("Press and hold the shutter to fire a burst. A quick tap still takes a single photo.")) {
+            chipRow(BurstCount.allCases.map { count in
+                ChipItem(id: "burst-\(count.id)", label: "\(count.label) photos",
+                         selected: settings.burstCount == count) {
+                    settings.burstCount = count
+                }
+            })
+        }
+    }
+
+    private var photoFormatSection: some View {
+        Section(header: sectionHeader("Format & Framing", icon: "square.on.square")) {
+            SettingsPickerRow(
+                title: "File format",
+                icon: "doc.fill",
+                accentColor: settings.accentColor.color,
+                selection: $settings.photoFormat,
+                label: { Text($0.label) }
+            )
+            SettingsPickerRow(
+                title: "Aspect ratio",
+                icon: "crop",
+                accentColor: settings.accentColor.color,
+                selection: $settings.photoAspect,
+                label: { Text($0.label) }
+            )
+            Toggle(isOn: $settings.photoReviewAfterCapture) {
+                Label("Review after capture", systemImage: "eye.fill")
+                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
+            }
         }
     }
 
