@@ -193,6 +193,8 @@ private struct ProToolsToggleRow: View {
             Text(spec.title)
                 .font(.system(size: 15, weight: .medium, design: .rounded))
                 .foregroundColor(.white.opacity(0.92))
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
             Spacer()
             Toggle("", isOn: Binding(
                 get: { spec.isOn.wrappedValue },
@@ -203,7 +205,12 @@ private struct ProToolsToggleRow: View {
             ))
             .labelsHidden()
             .toggleStyle(SwitchToggleStyle(tint: accentColor))
+            // A fixed native-switch footprint prevents its right edge from
+            // being clipped by the Pro Tools drawer on iPhone 7 widths.
+            .frame(width: 51, height: 31, alignment: .trailing)
+            .fixedSize()
         }
+        .frame(minHeight: 44)
     }
 }
 
