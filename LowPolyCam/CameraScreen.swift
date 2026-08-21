@@ -30,8 +30,6 @@ struct CameraScreen: View {
     // preview) so the two gestures never fight over `zoomGestureBase`.
     @State private var isZoomDialDragging = false
     @State private var lastRecordButtonTap = Date.distantPast
-    @State private var showZoomLabel = false
-    @State private var zoomLabelHideToken = 0
 
     // Tap to focus
     @State private var focusPoint: CGPoint?
@@ -98,14 +96,12 @@ struct CameraScreen: View {
                                 isPinching = true
                                 zoomGestureBase = recorder.zoomFactor
                             }
-                            showZoomLabel = true
                             recorder.suppressVolumeTriggerBriefly()
                             recorder.setZoom(factor: zoomGestureBase * value)
                         }
                         .onEnded { _ in
                             isPinching = false
                             recorder.suppressVolumeTriggerBriefly()
-                            scheduleHideZoomLabel()
                         }
                 )
 
@@ -116,8 +112,6 @@ struct CameraScreen: View {
                 if settings.gridStyle != .off { gridOverlay }
 
                 if settings.showLevelGauge { levelGaugeOverlay }
-
-                if showZoomLabel { zoomLabel }
 
                 if countdownRemaining > 0 { countdownOverlay }
 
@@ -1615,7 +1609,6 @@ struct CameraScreen: View {
                             zoomGestureBase = recorder.zoomFactor
                             if settings.hapticFeedbackEnabled { zoomHaptic.selectionChanged() }
                         }
-                        showZoomLabel = true
                         recorder.suppressVolumeTriggerBriefly()
                         // Exponential mapping (not linear) so the feel matches
                         // native iOS: the same finger travel produces a
@@ -1632,41 +1625,10 @@ struct CameraScreen: View {
                         // native Camera app.
                         isZoomDialDragging = false
                         recorder.suppressVolumeTriggerBriefly()
-                        scheduleHideZoomLabel()
                     }
             )
         }
         .frame(height: 54)
-    }
-
-    private var zoomLabel: some View {
-        Text(zoomDialLabel(recorder.zoomFactor))
-            .font(.system(size: 15, weight: .bold, design: .rounded))
-            .foregroundColor(.white)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(
-                Capsule()
-                    .fill(Palette.panel.opacity(0.9))
-                    .background(Capsule().fill(Palette.slateDeep.opacity(usesLightweightMaterial ? 0.55 : 0.3)))
-            )
-            .overlay(
-                Capsule()
-                    .stroke(settings.accentColor.bright.opacity(0.35), lineWidth: 1)
-            )
-            .shadow(color: .black.opacity(0.35), radius: 10, x: 0, y: 4)
-    }
-
-    private func scheduleHideZoomLabel() {
-        zoomLabelHideToken += 1
-        let token = zoomLabelHideToken
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-            if zoomLabelHideToken == token {
-                withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-                    showZoomLabel = false
-                }
-            }
-        }
     }
 
     private var focusReticle: some View {
