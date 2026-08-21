@@ -38,6 +38,10 @@ struct CameraScreen: View {
 
     // Capture flash confirmation
     @State private var showCaptureFlash = false
+    /// A short, opaque-enough cover hides AVFoundation's format switch from
+    /// the viewfinder instead of exposing a frozen or black frame.
+    @State private var modeTransitionOpacity: Double = 0
+    @State private var modeTransitionLabel = ""
     // Sustained screen-illumination for the selfie "flash" — separate from
     // showCaptureFlash above, which is just the brief post-shutter blink.
     @State private var screenFlashIlluminating = false
@@ -103,6 +107,22 @@ struct CameraScreen: View {
                     .opacity(recorder.isSwitchingCamera ? 1 : 0)
                     .allowsHitTesting(false)
                     .animation(.easeInOut(duration: 0.18), value: recorder.isSwitchingCamera)
+
+                Color.black
+                    .opacity(modeTransitionOpacity)
+                    .allowsHitTesting(false)
+                    .overlay(
+                        Group {
+                            if recorder.isSwitchingMode {
+                                Text(modeTransitionLabel)
+                                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                                    .foregroundColor(.white.opacity(0.9))
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 6)
+                                    .background(Capsule().fill(Palette.slateDeep.opacity(0.8)))
+                            }
+                        }
+                    )
 
                 // Quick white flash confirming a photo was taken (like Camera.app).
                 Color.white
@@ -260,7 +280,7 @@ struct CameraScreen: View {
             }
         }
         .sheet(isPresented: $showGallery) {
-            ClipGalleryScreen(settings: settings)
+            PhotoLibraryScreen()
         }
         .sheet(isPresented: $showPhotoReview) {
             PhotoReviewScreen(
@@ -314,10 +334,10 @@ struct CameraScreen: View {
             Spacer(minLength: 4)
 
             compactInfoPill
-                // Hard cap so the pill never forces the side icons past the
-                // screen edge on iPhone 7–class widths. Content can still
-                // shrink via minimumScaleFactor when needed.
-                .frame(maxWidth: UIScreen.main.bounds.width - 112)
+                // Keep a guaranteed gutter for both 40pt edge buttons and
+                // the CameraScreen's safe-area padding on 375pt iPhone 7.
+                // The old cap was wide enough to push or clip those icons.
+                .frame(maxWidth: max(190, UIScreen.main.bounds.width - 142))
                 .layoutPriority(1)
 
             Spacer(minLength: 4)
@@ -546,6 +566,7 @@ struct CameraScreen: View {
                 }
             }
             .lineLimit(1)
+            .minimumScaleFactor(0.72)
 
             // 📊 Opt-in live stats (measured fps / bitrate) — Settings toggle,
             // off by default. Kept on its OWN row under REC/timer/battery
@@ -585,6 +606,7 @@ struct CameraScreen: View {
                 }
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .foregroundColor(.white)
@@ -1083,10 +1105,7 @@ struct CameraScreen: View {
                     let previous = settings.cameraMode
                     DebugLog.write("modeSelector: \(previous) -> \(mode)")
                     modeHaptic.selectionChanged()
-                    withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
-                        settings.cameraMode = mode
-                    }
-                    recorder.updateCaptureFormat()
+                    switchCaptureMode(to: mode)
                 } label: {
                     Text(mode.label)
                         .font(.system(size: 13, weight: isActive ? .bold : .semibold, design: .rounded))
@@ -1135,6 +1154,34 @@ struct CameraScreen: View {
         .shadow(color: .black.opacity(0.35), radius: 12, x: 0, y: 6)
         // Centered, never forced wider than content so it stays clear of screen edges.
         .frame(maxWidth: .infinity, alignment: .center)
+    }
+
+    private func switchCaptureMode(to mode: CameraMode) {
+        guard !recorder.isSwitchingMode,
+              !recorder.isRecording,
+              !recorder.isSaving,
+              !recorder.isBursting else { return }
+
+        recorder.isSwitchingMode = true
+        modeTransitionLabel = mode.label
+        withAnimation(.easeOut(duration: 0.12)) {
+            modeTransitionOpacity = 0.68
+        }
+
+        // Let the cover reach opacity before the sensor starts negotiating its
+        // new format. This makes Video ⇄ Photo ⇄ Slow-Mo feel intentional on
+        // iPhone 7 rather than showing the preview's transient frozen frame.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            settings.cameraMode = mode
+            recorder.updateCaptureFormat {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.10) {
+                    withAnimation(.easeIn(duration: 0.20)) {
+                        modeTransitionOpacity = 0
+                    }
+                    recorder.isSwitchingMode = false
+                }
+            }
+        }
     }
 
     private func facetButton(system: String,
