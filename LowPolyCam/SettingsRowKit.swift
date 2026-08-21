@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // MARK: - Settings row kit
 //
@@ -48,11 +49,23 @@ struct SettingsToggleSpec: Identifiable {
     }
 }
 
+/// Fires a short, light tap for any toggle flip in Settings, at the user's
+/// chosen haptic strength — the same feedback the shutter/record buttons
+/// use, just at the lighter `.light` base so a screen full of toggles
+/// doesn't feel like a jackhammer. Used by every row below, so flipping
+/// *any* switch in the app gives the same tactile confirmation.
+func fireSettingsToggleHaptic(_ settings: AppSettings) {
+    guard settings.hapticFeedbackEnabled else { return }
+    let generator = UIImpactFeedbackGenerator(style: settings.hapticIntensity.scaled(.light))
+    generator.impactOccurred()
+}
+
 /// A single toggle row matching the existing Settings look
 /// (`SettingsLabelStyle`-styled icon + title, standard `Toggle`).
 struct SettingsToggleRow: View {
     let spec: SettingsToggleSpec
     let accentColor: Color
+    let settings: AppSettings
 
     var body: some View {
         Toggle(isOn: Binding(
@@ -60,6 +73,7 @@ struct SettingsToggleRow: View {
             set: { newValue in
                 spec.isOn.wrappedValue = newValue
                 spec.onChange?(newValue)
+                fireSettingsToggleHaptic(settings)
             }
         )) {
             Label(spec.title, systemImage: spec.icon)
@@ -74,10 +88,11 @@ struct SettingsToggleRow: View {
 struct SettingsToggleGroup: View {
     let specs: [SettingsToggleSpec]
     let accentColor: Color
+    let settings: AppSettings
 
     var body: some View {
         ForEach(specs.filter { $0.isVisible }) { spec in
-            SettingsToggleRow(spec: spec, accentColor: accentColor)
+            SettingsToggleRow(spec: spec, accentColor: accentColor, settings: settings)
         }
     }
 }
