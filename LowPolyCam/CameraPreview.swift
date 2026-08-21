@@ -9,6 +9,9 @@ final class PreviewView: UIView {
 
     var onTap: ((CGPoint, CGPoint) -> Void)?
     var onDoubleTap: (() -> Void)?
+    /// Fired once, on press-and-hold, for AE/AF Lock (see CameraHardware's
+    /// lockFocusAndExposure). Same (devicePoint, viewPoint) shape as onTap.
+    var onLongPress: ((CGPoint, CGPoint) -> Void)?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -21,8 +24,16 @@ final class PreviewView: UIView {
 
         singleTap.require(toFail: doubleTap)
 
+        let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress))
+        longPress.minimumPressDuration = 0.5
+        // A held touch shouldn't also register as a plain tap once it's
+        // released — same "wait for the other gesture to fail" pattern
+        // already used between single and double tap above.
+        singleTap.require(toFail: longPress)
+
         addGestureRecognizer(singleTap)
         addGestureRecognizer(doubleTap)
+        addGestureRecognizer(longPress)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -35,6 +46,13 @@ final class PreviewView: UIView {
 
     @objc private func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
         onDoubleTap?()
+    }
+
+    @objc private func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
+        guard gesture.state == .began else { return }
+        let viewPoint = gesture.location(in: self)
+        let devicePoint = previewLayer.captureDevicePointConverted(fromLayerPoint: viewPoint)
+        onLongPress?(devicePoint, viewPoint)
     }
 
     override func layoutSubviews() {
