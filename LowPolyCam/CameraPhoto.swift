@@ -42,65 +42,11 @@ extension CameraRecorder {
         return UIImage(cgImage: cropped, scale: image.scale, orientation: image.imageOrientation)
     }
 
-    /// Starts a burst capture: fires `settings.burstCount` still photos back
-    /// to back as fast as the photo pipeline can process each one. Each
-    /// frame reuses the exact same single-shot capture path (same format,
-    /// same downscale, same save destination) so burst photos are
-    /// byte-for-byte consistent with a normal single photo — this is just
-    /// that path called N times with a short settle between frames instead
-    /// of a dedicated (and, on A10, unsupported) high-speed capture API.
-    func startBurstCapture() {
-        guard !isBursting, !isCapturingPhoto, !isRecording, !isSwitchingCamera else { return }
-        guard freeBytes > Self.reserveBytes else {
-            notice = "Low storage · Free space needed"
-            return
-        }
-        let total = settings.burstCount.rawValue
-        isBursting = true
-        burstShotsTaken = 0
-        burstShotsTotal = total
-        lastBurstReviewItems = []
-        fireNextBurstFrame(remaining: total)
-    }
-
-    private func fireNextBurstFrame(remaining: Int) {
-        guard remaining > 0, isBursting else {
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
-                self.isBursting = false
-                if !self.lastBurstReviewItems.isEmpty {
-                    self.lastPhotoReviewItem = self.lastBurstReviewItems.first
-                    self.photoReviewToken += 1
-                }
-            }
-            return
-        }
-        capturePhotoInternal(isBurstFrame: true) { [weak self] in
-            guard let self = self else { return }
-            DispatchQueue.main.async {
-                self.burstShotsTaken += 1
-            }
-            // Small settle delay between frames — the sensor/AE pipeline on
-            // A10 needs a beat to be ready for the next still, and this also
-            // keeps burst-mode from starving the main queue/UI.
-            self.sessionQueue.asyncAfter(deadline: .now() + 0.12) {
-                self.fireNextBurstFrame(remaining: remaining - 1)
-            }
-        }
-    }
-
-    /// Cancels an in-progress burst after the current in-flight frame
-    /// finishes; already-captured frames in this burst are kept.
-    func cancelBurstCapture() {
-        guard isBursting else { return }
-        isBursting = false
-    }
-
     func capturePhoto() {
         capturePhotoInternal(isBurstFrame: false, completion: nil)
     }
 
-    private func capturePhotoInternal(isBurstFrame: Bool, completion: (() -> Void)?) {
+    func capturePhotoInternal(isBurstFrame: Bool, completion: (() -> Void)?) {
         guard !isCapturingPhoto, !isRecording, !isSwitchingCamera else {
             completion?()
             return
