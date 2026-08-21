@@ -507,6 +507,25 @@ final class CameraRecorder: NSObject, ObservableObject {
             guard let self = self, let motion = motion else { return }
             let gx = motion.gravity.x
             let gy = motion.gravity.y
+            let gz = motion.gravity.z
+
+            // atan2(gx, -gy) reads rotation *around the z-axis* (screen facing
+            // you dead-on). That's only meaningful when the phone is roughly
+            // upright. Point the camera steeply up or down — aiming up at a
+            // shelf, or flat on a desk — and gx/gy both collapse toward zero
+            // while gz dominates; at that point atan2 is amplifying sensor
+            // noise, not measuring orientation, and can snap to *any* of the
+            // four quadrants almost at random. That's what produced photos
+            // saved sideways/upside-down when shot at a steep tilt: the last
+            // noisy reading just happened to land in the wrong 90° bucket.
+            // Guard: only trust the reading once the horizontal gravity
+            // component is large enough to actually distinguish portrait
+            // from landscape. Below that, keep the last known-good
+            // orientation rather than following the noise.
+            let horizontalMagnitude = (gx * gx + gy * gy).squareRoot()
+            guard horizontalMagnitude > 0.35 else { return }
+            _ = gz // (kept for clarity of the guard's reasoning above)
+
             let angle = atan2(gx, -gy) * (180.0 / .pi)
 
             let absAngle = abs(angle)
