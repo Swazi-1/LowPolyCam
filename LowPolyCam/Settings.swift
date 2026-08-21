@@ -430,6 +430,17 @@ enum GridStyle: String, CaseIterable, Identifiable, SettingStorable {
         case .square: return "square.dashed"
         }
     }
+
+    /// One-line description of what this grid does, shown under the picker
+    /// in Settings — same idea as `HUDMotion.detail`.
+    var detail: String {
+        switch self {
+        case .off: return "No overlay"
+        case .thirds: return "Classic 3×3 composition guide"
+        case .crosshair: return "Center cross for symmetry"
+        case .square: return "Centered square for framing"
+        }
+    }
 }
 
 // MARK: - HUD Element Visibility
