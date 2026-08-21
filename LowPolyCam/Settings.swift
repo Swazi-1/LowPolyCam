@@ -149,6 +149,50 @@ enum CameraMode: String, CaseIterable, Identifiable, SettingStorable {
     var label: String { rawValue }
 }
 
+// MARK: - Volume Button Action
+
+/// What a physical volume-button press does. Kept separate from the fixed
+/// per-mode shutter behavior so it's a single, explicit user choice rather
+/// than something inferred from `cameraMode` alone.
+enum VolumeButtonAction: String, CaseIterable, Identifiable, SettingStorable {
+    case shutter, burst, recording
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .shutter: return "Shutter"
+        case .burst: return "Burst"
+        case .recording: return "Recording"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .shutter: return "Matches the mode — photo tap or record toggle"
+        case .burst: return "Always fires a burst of photos"
+        case .recording: return "Always starts or stops video recording"
+        }
+    }
+}
+
+// MARK: - Camera Facing (persisted for "Keep Last Camera")
+
+/// Lightweight, `SettingStorable` stand-in for `AVCaptureDevice.Position`
+/// (which isn't itself storable) — only the two positions this app ever
+/// selects between (front glass has no telephoto/wide choice to persist).
+enum CameraFacing: String, CaseIterable, Identifiable, SettingStorable {
+    case back, front
+
+    var id: String { rawValue }
+
+    var avPosition: AVCaptureDevice.Position { self == .front ? .front : .back }
+
+    init(_ position: AVCaptureDevice.Position) {
+        self = position == .front ? .front : .back
+    }
+}
+
 // MARK: - Photo Megapixels
 
 enum PhotoMegapixels: Double, CaseIterable, Identifiable, SettingStorable {
@@ -464,6 +508,11 @@ enum HUDElement: String, CaseIterable, Identifiable {
     case galleryThumbnail
     case proToolsButton
     case flipCameraButton
+    /// Compact "12MP" readout in the pill while in Photo mode.
+    case megapixels
+    /// "~X h/min" estimate in the pill, derived from free storage — split
+    /// out from `storageInfo` so it can be shown/hidden independently.
+    case timeRemaining
 
     var id: String { rawValue }
 
@@ -478,6 +527,8 @@ enum HUDElement: String, CaseIterable, Identifiable {
         case .galleryThumbnail: return "Last shot thumbnail"
         case .proToolsButton: return "Pro Tools (•••) button"
         case .flipCameraButton: return "Flip camera button"
+        case .megapixels: return "Megapixel indicator"
+        case .timeRemaining: return "Remaining recording time"
         }
     }
 
@@ -492,6 +543,8 @@ enum HUDElement: String, CaseIterable, Identifiable {
         case .galleryThumbnail: return "square.stack.3d.up.fill"
         case .proToolsButton: return "ellipsis"
         case .flipCameraButton: return "arrow.triangle.2.circlepath.camera.fill"
+        case .megapixels: return "aspectratio"
+        case .timeRemaining: return "clock.fill"
         }
     }
 }
@@ -785,6 +838,18 @@ final class AppSettings: ObservableObject {
     /// on older devices (especially iPhone 7 / A10). When enabled it gently
     /// steers the encoder toward safer settings and strengthens auto-dim.
     @Setting("longevityMode") var longevityMode: Bool = false
+    /// What a physical volume-button press does. Defaults to matching the
+    /// current mode (photo tap / video record toggle) — the pre-existing
+    /// behavior — so upgrading users see no change until they opt into
+    /// Burst or Recording explicitly.
+    @Setting("volumeButtonAction") var volumeButtonAction: VolumeButtonAction = .shutter
+    /// When on, the app reopens on whichever camera (front/rear) was active
+    /// last time, instead of always resetting to the rear camera.
+    @Setting("keepLastCamera") var keepLastCamera: Bool = false
+    /// Last camera facing used, kept up to date on every flip regardless of
+    /// `keepLastCamera` so the value is ready the moment the toggle is
+    /// turned on — only *applied* at launch when that toggle is enabled.
+    @Setting("lastCameraPosition") var lastCameraPosition: CameraFacing = .back
 
     // MARK: HUD Customization
     // Per-element visibility toggles for the live camera HUD. The shutter
@@ -799,6 +864,13 @@ final class AppSettings: ObservableObject {
     @Setting("hudShowGalleryThumbnail") var hudShowGalleryThumbnail: Bool = true
     @Setting("hudShowProToolsButton") var hudShowProToolsButton: Bool = true
     @Setting("hudShowFlipCameraButton") var hudShowFlipCameraButton: Bool = true
+    /// Compact "12MP" readout in the info pill while in Photo mode. Off by
+    /// default, same spirit as `showRecordingStats` — purely opt-in chrome.
+    @Setting("hudShowMegapixels") var hudShowMegapixels: Bool = false
+    /// "~X h/min left" estimate in the info pill, derived from free space.
+    /// On by default — this is the pre-existing behavior, just now a
+    /// dedicated toggle instead of being bundled into storageInfo.
+    @Setting("hudShowTimeRemaining") var hudShowTimeRemaining: Bool = true
     /// Spring style used to animate HUD elements showing/hiding.
     @Setting("hudMotion") var hudMotion: HUDMotion = .standard
     /// Relative strength of impact haptics (shutter, record start/stop, countdown).
@@ -819,6 +891,8 @@ final class AppSettings: ObservableObject {
         case .galleryThumbnail: return hudShowGalleryThumbnail
         case .proToolsButton: return hudShowProToolsButton
         case .flipCameraButton: return hudShowFlipCameraButton
+        case .megapixels: return hudShowMegapixels
+        case .timeRemaining: return hudShowTimeRemaining
         }
     }
 
@@ -835,6 +909,8 @@ final class AppSettings: ObservableObject {
         case .galleryThumbnail: return Binding(get: { self.hudShowGalleryThumbnail }, set: { self.hudShowGalleryThumbnail = $0 })
         case .proToolsButton: return Binding(get: { self.hudShowProToolsButton }, set: { self.hudShowProToolsButton = $0 })
         case .flipCameraButton: return Binding(get: { self.hudShowFlipCameraButton }, set: { self.hudShowFlipCameraButton = $0 })
+        case .megapixels: return Binding(get: { self.hudShowMegapixels }, set: { self.hudShowMegapixels = $0 })
+        case .timeRemaining: return Binding(get: { self.hudShowTimeRemaining }, set: { self.hudShowTimeRemaining = $0 })
         }
     }
 
