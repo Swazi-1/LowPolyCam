@@ -705,13 +705,27 @@ struct SettingsScreen: View {
     }
 
     private var assistGrid: some View {
-        SettingsPickerRow(
-            title: "Grid overlay",
-            icon: "grid",
-            accentColor: settings.accentColor.color,
-            selection: $settings.gridStyle,
-            label: { Text($0.label) }
-        )
+        VStack(alignment: .leading, spacing: 0) {
+            SettingsPickerRow(
+                title: "Grid overlay",
+                icon: "grid",
+                accentColor: settings.accentColor.color,
+                selection: $settings.gridStyle,
+                label: { Text($0.label) }
+            )
+            pickerDetailCaption(settings.gridStyle.detail)
+        }
+    }
+
+    /// Small secondary line under a picker row showing what the currently
+    /// selected value actually does — used under HUD animation and Grid
+    /// overlay so the picker's effect isn't just a bare name.
+    private func pickerDetailCaption(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 12, weight: .medium))
+            .foregroundColor(.secondary)
+            .padding(.leading, 40) // aligns under the picker's label text, past its icon
+            .padding(.top, 2)
     }
 
     // MARK: - Output (mode-specific)
@@ -761,13 +775,20 @@ struct SettingsScreen: View {
 
     // MARK: - Camera HUD (entry + sheet, same pattern as Quick Presets)
 
+    /// `HUDElement`s that live in the Info Pill group instead of the general
+    /// Camera HUD group — the pill itself, plus the readouts that actually
+    /// render inside it (battery / storage & time left), rather than being
+    /// separate viewfinder chrome.
+    private var pillElementIds: Set<HUDElement> = [.infoPill, .batteryInfo, .storageInfo]
+
     /// One `SettingsToggleSpec` per `HUDElement`, built generically from
     /// `AppSettings.binding(for:)` so adding a new hideable element later
     /// is a one-line change in `HUDElement` + `AppSettings`, not here.
-    /// Split from the info pill (see `pillToggles`) so the sheet can group
-    /// "chrome around the viewfinder" separately from "what's in the pill".
+    /// Excludes the info-pill group (see `pillToggles`) so the sheet can
+    /// group "chrome around the viewfinder" separately from "what's in
+    /// the pill".
     private var hudToggles: [SettingsToggleSpec] {
-        HUDElement.allCases.filter { $0 != .infoPill }.map { element in
+        HUDElement.allCases.filter { !pillElementIds.contains($0) }.map { element in
             SettingsToggleSpec(
                 id: element.id,
                 title: element.title,
@@ -777,12 +798,12 @@ struct SettingsScreen: View {
         }
     }
 
-    /// Info-pill-specific toggles only. Currently just the pill's own
-    /// visibility, kept in its own group so pill-specific options (content,
-    /// style, etc.) have an obvious home later without mixing back into the
-    /// general HUD element list above.
+    /// Info-pill-specific toggles: the pill's own visibility plus the two
+    /// readouts it actually displays (battery, storage & time left) — kept
+    /// together since hiding those only makes sense in the context of the
+    /// pill they live in.
     private var pillToggles: [SettingsToggleSpec] {
-        HUDElement.allCases.filter { $0 == .infoPill }.map { element in
+        HUDElement.allCases.filter { pillElementIds.contains($0) }.map { element in
             SettingsToggleSpec(
                 id: element.id,
                 title: element.title,
@@ -845,6 +866,7 @@ struct SettingsScreen: View {
                         selection: $settings.hudMotion,
                         label: { Text($0.label) }
                     )
+                    pickerDetailCaption(settings.hudMotion.detail)
                 }
             }
             .listStyle(InsetGroupedListStyle())
