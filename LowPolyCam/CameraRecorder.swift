@@ -92,6 +92,10 @@ final class CameraRecorder: NSObject, ObservableObject {
     /// Bumped every time a fresh capture (single or burst) finishes, so the
     /// UI can open the review sheet exactly once per capture via onChange.
     @Published var photoReviewToken: Int = 0
+    /// The temporary video-frame delegate used only while a fast burst is
+    /// being collected (see BurstCaptureEngine.swift). nil whenever no
+    /// burst is in flight.
+    var activeBurstGrabber: BurstFrameGrabber?
 
     // Thermal state
     @Published var thermalState: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState
@@ -682,6 +686,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         isSwitchingCamera = false
 
         if isRecording { stopRecording(notice: nil) }
+        if isBursting { cancelBurstCapture() }
         setTorch(on: false)
         sessionQueue.async {
             if self.session.isRunning { self.session.stopRunning() }
@@ -773,6 +778,7 @@ final class CameraRecorder: NSObject, ObservableObject {
     /// does when you leave the viewfinder.
     func pausePreviewSession() {
         guard !isRecording else { return }
+        if isBursting { cancelBurstCapture() }
         pauseVolumeMonitoring()
         stopMotionUpdates()
         setTorch(on: false)
