@@ -55,6 +55,7 @@ extension CameraRecorder {
 
         notice = nil
         elapsed = 0
+        lastTickedMinute = 0
         clipsThisSession = 0
         droppedFrames = 0
         audioLevel = 0
@@ -92,6 +93,7 @@ extension CameraRecorder {
                     guard let self = self, self.isRecording, self.recordingSessionToken == token,
                           let start = self.recordWallStart else { return }
                     self.elapsed = Date().timeIntervalSince(start)
+                    self.checkMinuteTick()
                 }
                 if let timer = self.recordElapsedTimer {
                     RunLoop.main.add(timer, forMode: .common)
@@ -892,8 +894,42 @@ extension CameraRecorder {
             let bytes = (try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
                 .volumeAvailableCapacityForImportantUsage ?? 0
             self.ioQueue.async { self.freeBytesSnapshot = Int64(bytes) }
-            DispatchQueue.main.async { self.freeBytes = Int64(bytes) }
+            DispatchQueue.main.async {
+                self.freeBytes = Int64(bytes)
+                self.checkLowSpaceWarning(bytes: Int64(bytes))
+            }
         }
+    }
+
+    /// Surfaces the existing `notice` banner once when free space drops
+    /// close to the point recording will refuse to start/continue (see
+    /// `reserveBytes`), then stays quiet until space recovers well above
+    /// that line — plain hysteresis so a long shoot near the limit doesn't
+    /// re-show the same notice every few seconds.
+    private func checkLowSpaceWarning(bytes: Int64) {
+        let warnThreshold = Self.reserveBytes * 2   // ~600 MB left
+        let clearThreshold = Self.reserveBytes * 3  // ~900 MB left
+        if bytes < warnThreshold {
+            if !lowSpaceWarningShown {
+                lowSpaceWarningShown = true
+                notice = "Low storage · \(Fmt.size(bytes)) left"
+            }
+        } else if bytes > clearThreshold {
+            lowSpaceWarningShown = false
+        }
+    }
+
+    /// Fires a light haptic once per full minute of recording, only when
+    /// the "Minute tick" preference is on. Cheap integer check, called from
+    /// the existing 0.25s elapsed timer — no extra timer needed.
+    private func checkMinuteTick() {
+        guard settings.minuteTickEnabled else { return }
+        let currentMinute = Int(elapsed) / 60
+        guard currentMinute > 0, currentMinute > lastTickedMinute else { return }
+        lastTickedMinute = currentMinute
+        let generator = UIImpactFeedbackGenerator(style: .light)
+        generator.prepare()
+        generator.impactOccurred()
     }
 
     static var clipsDirectory: URL {
