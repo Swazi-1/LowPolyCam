@@ -1,16 +1,29 @@
 import SwiftUI
 import Photos
 import AVKit
+import UniformTypeIdentifiers
 
 /// iOS 15 Photos-library browser used by the camera thumbnail. It replaces
 /// the app-files-only clip list for the main camera workflow, so captures
 /// saved to Photos appear where people expect them to: behind the thumbnail.
+///
+/// v2 adds the controls people expect from a real "library" screen:
+/// multi-select, delete (via the system Photos confirmation), share/AirDrop
+/// of the original file(s), and a swipeable full-screen viewer instead of a
+/// single locked preview.
 struct PhotoLibraryScreen: View {
     @Environment(\.presentationMode) private var presentation
 
     @State private var assets: [PHAsset] = []
     @State private var authorization: PHAuthorizationStatus = .notDetermined
-    @State private var selectedAsset: LibraryAsset?
+
+    @State private var isSelecting = false
+    @State private var selection: Set<String> = []
+
+    @State private var previewSelection: PreviewIndex?
+    @State private var shareRequest: ShareRequest?
+    @State private var isPreparingShare = false
+    @State private var deleteError: String?
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 2), count: 3)
 
@@ -23,16 +36,7 @@ struct PhotoLibraryScreen: View {
                     if assets.isEmpty {
                         emptyState
                     } else {
-                        ScrollView {
-                            LazyVGrid(columns: columns, spacing: 2) {
-                                ForEach(assets, id: \.localIdentifier) { asset in
-                                    Button(action: { selectedAsset = LibraryAsset(asset: asset) }) {
-                                        PhotoLibraryThumbnail(asset: asset)
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
-                        }
+                        grid
                     }
                 } else if authorization == .notDetermined {
                     ProgressView()
@@ -40,17 +44,121 @@ struct PhotoLibraryScreen: View {
                 } else {
                     permissionState
                 }
+
+                if isPreparingShare {
+                    Color.black.opacity(0.35).ignoresSafeArea()
+                    ProgressView().tint(.white).scaleEffect(1.2)
+                }
             }
             .navigationBarTitle("Library", displayMode: .inline)
-            .navigationBarItems(trailing: Button("Done") {
-                presentation.wrappedValue.dismiss()
-            })
+            .navigationBarItems(leading: leadingBar, trailing: trailingBar)
+            .toolbar {
+                ToolbarItemGroup(placement: .bottomBar) {
+                    bottomBar
+                }
+            }
         }
         .navigationViewStyle(StackNavigationViewStyle())
         .accentColor(Palette.violet)
         .onAppear(perform: requestAccessAndLoad)
-        .sheet(item: $selectedAsset) { item in
-            PhotoLibraryPreview(asset: item.asset)
+        .fullScreenCover(item: $previewSelection) { selection in
+            PhotoLibraryPreview(
+                assets: assets,
+                startIndex: selection.index,
+                onDelete: { asset in delete([asset]) }
+            )
+        }
+        .sheet(item: $shareRequest) { request in
+            ShareSheet(items: request.items)
+        }
+        .alert("Couldn't Delete", isPresented: Binding(
+            get: { deleteError != nil },
+            set: { if !$0 { deleteError = nil } }
+        )) {
+            Button("OK", role: .cancel) { deleteError = nil }
+        } message: {
+            Text(deleteError ?? "Unknown error")
+        }
+    }
+
+    // MARK: Nav bar
+
+    private var leadingBar: some View {
+        Group {
+            if canBrowse && !assets.isEmpty {
+                Button(isSelecting ? "Cancel" : "Select") {
+                    isSelecting.toggle()
+                    if !isSelecting { selection.removeAll() }
+                }
+            }
+        }
+    }
+
+    private var trailingBar: some View {
+        Button("Done") {
+            isSelecting = false
+            selection.removeAll()
+            presentation.wrappedValue.dismiss()
+        }
+    }
+
+    @ViewBuilder
+    private var bottomBar: some View {
+        if isSelecting {
+            Button(action: deleteSelection) {
+                Image(systemName: "trash")
+            }
+            .disabled(selection.isEmpty)
+            .foregroundColor(selection.isEmpty ? .white.opacity(0.3) : .red)
+
+            Spacer()
+
+            Text(selection.isEmpty ? "Select Items" : "\(selection.count) Selected")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(.white.opacity(0.6))
+
+            Spacer()
+
+            Button(action: shareSelection) {
+                Image(systemName: "square.and.arrow.up")
+            }
+            .disabled(selection.isEmpty)
+            .foregroundColor(selection.isEmpty ? .white.opacity(0.3) : Palette.violet.opacity(0.95))
+        }
+    }
+
+    // MARK: Grid
+
+    private var grid: some View {
+        ScrollView {
+            LazyVGrid(columns: columns, spacing: 2) {
+                ForEach(Array(assets.enumerated()), id: \.element.localIdentifier) { index, asset in
+                    thumbnailButton(for: asset, index: index)
+                }
+            }
+        }
+    }
+
+    private func thumbnailButton(for asset: PHAsset, index: Int) -> some View {
+        let id = asset.localIdentifier
+        return Button(action: {
+            if isSelecting {
+                toggle(id)
+            } else {
+                previewSelection = PreviewIndex(index: index)
+            }
+        }) {
+            PhotoLibraryThumbnail(asset: asset, isSelecting: isSelecting, isSelected: selection.contains(id))
+        }
+        .buttonStyle(.plain)
+        // Long-press mirrors the stock Photos app: jump straight into
+        // selection mode with this item already picked, instead of forcing
+        // a separate tap on "Select" first.
+        .onLongPressGesture {
+            if !isSelecting {
+                isSelecting = true
+            }
+            selection.insert(id)
         }
     }
 
@@ -95,6 +203,14 @@ struct PhotoLibraryScreen: View {
         }
     }
 
+    // MARK: Selection
+
+    private func toggle(_ id: String) {
+        if selection.contains(id) { selection.remove(id) } else { selection.insert(id) }
+    }
+
+    // MARK: Loading
+
     private func requestAccessAndLoad() {
         let current = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         authorization = current
@@ -121,15 +237,129 @@ struct PhotoLibraryScreen: View {
             DispatchQueue.main.async { assets = loaded }
         }
     }
+
+    // MARK: Delete
+
+    private func deleteSelection() {
+        let toDelete = assets.filter { selection.contains($0.localIdentifier) }
+        delete(toDelete)
+    }
+
+    /// Deletes assets from the Photos library. `performChanges` itself
+    /// triggers the system's native "Delete X items?" confirmation, so we
+    /// don't show a second, app-level confirmation on top of it.
+    private func delete(_ toDelete: [PHAsset]) {
+        guard !toDelete.isEmpty else { return }
+        PHPhotoLibrary.shared().performChanges({
+            PHAssetChangeRequest.deleteAssets(toDelete as NSArray)
+        }) { success, error in
+            DispatchQueue.main.async {
+                guard success else {
+                    // User cancelling the system confirmation also lands
+                    // here with a nil error — only surface real failures.
+                    if let error = error {
+                        deleteError = error.localizedDescription
+                    }
+                    return
+                }
+                let deletedIDs = Set(toDelete.map { $0.localIdentifier })
+                assets.removeAll { deletedIDs.contains($0.localIdentifier) }
+                selection.subtract(deletedIDs)
+                if let current = previewSelection, current.index >= assets.count {
+                    previewSelection = assets.isEmpty ? nil : PreviewIndex(index: assets.count - 1)
+                }
+                if assets.isEmpty { isSelecting = false }
+            }
+        }
+    }
+
+    // MARK: Share
+
+    private func shareSelection() {
+        let toShare = assets.filter { selection.contains($0.localIdentifier) }
+        share(toShare)
+    }
+
+    private func share(_ toShare: [PHAsset]) {
+        guard !toShare.isEmpty, !isPreparingShare else { return }
+        isPreparingShare = true
+        exportForSharing(toShare) { urls in
+            DispatchQueue.main.async {
+                isPreparingShare = false
+                guard !urls.isEmpty else { return }
+                shareRequest = ShareRequest(items: urls)
+            }
+        }
+    }
+
+    /// Writes each asset's original file bytes to a temp file so the share
+    /// sheet can offer the real photo/video (correct extension, full
+    /// quality) rather than a re-encoded copy.
+    private func exportForSharing(_ assets: [PHAsset], completion: @escaping ([URL]) -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let group = DispatchGroup()
+            var results: [Int: URL] = [:]
+            let lock = NSLock()
+
+            for (index, asset) in assets.enumerated() {
+                guard let resource = preferredResource(for: asset) else { continue }
+                let ext = fileExtension(for: resource)
+                let tmpURL = FileManager.default.temporaryDirectory
+                    .appendingPathComponent(UUID().uuidString)
+                    .appendingPathExtension(ext)
+
+                group.enter()
+                let options = PHAssetResourceRequestOptions()
+                options.isNetworkAccessAllowed = true
+                PHAssetResourceManager.default().writeData(for: resource, toFile: tmpURL, options: options) { error in
+                    if error == nil {
+                        lock.lock()
+                        results[index] = tmpURL
+                        lock.unlock()
+                    }
+                    group.leave()
+                }
+            }
+
+            group.notify(queue: .global(qos: .userInitiated)) {
+                let ordered = results.keys.sorted().compactMap { results[$0] }
+                completion(ordered)
+            }
+        }
+    }
+
+    private func preferredResource(for asset: PHAsset) -> PHAssetResource? {
+        let resources = PHAssetResource.assetResources(for: asset)
+        if asset.mediaType == .video {
+            return resources.first { $0.type == .video } ?? resources.first
+        }
+        return resources.first { $0.type == .photo } ?? resources.first
+    }
+
+    private func fileExtension(for resource: PHAssetResource) -> String {
+        if let type = UTType(resource.uniformTypeIdentifier), let ext = type.preferredFilenameExtension {
+            return ext
+        }
+        return resource.type == .video ? "mov" : "jpg"
+    }
 }
 
-private struct LibraryAsset: Identifiable {
-    let asset: PHAsset
-    var id: String { asset.localIdentifier }
+private struct ShareRequest: Identifiable {
+    let id = UUID()
+    let items: [URL]
+}
+
+/// Wraps a grid index so it can drive `.fullScreenCover(item:)`, which
+/// requires an `Identifiable` — a bare `Int?` can't be used there.
+private struct PreviewIndex: Identifiable {
+    let index: Int
+    var id: Int { index }
 }
 
 private struct PhotoLibraryThumbnail: View {
     let asset: PHAsset
+    let isSelecting: Bool
+    let isSelected: Bool
     @State private var image: UIImage?
 
     var body: some View {
@@ -152,6 +382,7 @@ private struct PhotoLibraryThumbnail: View {
             // match the visible square.
             .aspectRatio(1, contentMode: .fit)
             .clipped()
+            .opacity(isSelecting && !isSelected ? 0.55 : 1)
 
             if asset.mediaType == .video {
                 Image(systemName: "play.fill")
@@ -161,6 +392,15 @@ private struct PhotoLibraryThumbnail: View {
                     .background(Color.black.opacity(0.6))
                     .clipShape(Circle())
                     .padding(5)
+            }
+
+            if isSelecting {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 18))
+                    .foregroundColor(isSelected ? Palette.violet : .white)
+                    .background(Circle().fill(Color.black.opacity(0.45)).padding(-1))
+                    .shadow(color: .black.opacity(0.5), radius: 2)
+                    .padding(6)
             }
         }
         .contentShape(Rectangle())
@@ -188,15 +428,152 @@ private struct PhotoLibraryThumbnail: View {
     }
 }
 
+/// Full-screen, swipeable viewer for the whole library — replaces the old
+/// single-locked-asset preview. Swiping moves between photos the same way
+/// stock Photos does, and Delete/Share are one tap away instead of only
+/// being available from the grid's multi-select bar.
 private struct PhotoLibraryPreview: View {
-    let asset: PHAsset
+    let assets: [PHAsset]
+    let startIndex: Int
+    let onDelete: (PHAsset) -> Void
+
     @Environment(\.presentationMode) private var presentation
+    @State private var index: Int
+    @State private var shareRequest: PreviewShareRequest?
+    @State private var isPreparingShare = false
+
+    init(assets: [PHAsset], startIndex: Int, onDelete: @escaping (PHAsset) -> Void) {
+        self.assets = assets
+        self.startIndex = startIndex
+        self.onDelete = onDelete
+        _index = State(initialValue: startIndex)
+    }
+
+    private var currentAsset: PHAsset? {
+        assets.indices.contains(index) ? assets[index] : nil
+    }
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            TabView(selection: $index) {
+                ForEach(Array(assets.enumerated()), id: \.element.localIdentifier) { i, asset in
+                    PhotoLibraryPreviewPage(asset: asset)
+                        .tag(i)
+                }
+            }
+            .tabViewStyle(PageTabViewStyle(indexDisplayMode: .never))
+
+            if isPreparingShare {
+                Color.black.opacity(0.35).ignoresSafeArea()
+                ProgressView().tint(.white).scaleEffect(1.2)
+            }
+
+            VStack {
+                topBar
+                Spacer()
+                bottomBar
+            }
+        }
+        .sheet(item: $shareRequest) { request in
+            ShareSheet(items: [request.item])
+        }
+    }
+
+    private var topBar: some View {
+        HStack {
+            Spacer()
+            Button(action: { presentation.wrappedValue.dismiss() }) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundColor(.white)
+                    .frame(width: 36, height: 36)
+                    .background(Color.black.opacity(0.6))
+                    .clipShape(Circle())
+            }
+        }
+        .padding()
+    }
+
+    private var bottomBar: some View {
+        HStack {
+            // No app-level confirmation here — PHPhotoLibrary's own delete
+            // change already triggers the system's native confirmation, so
+            // adding one of our own would show two prompts back to back.
+            previewButton(icon: "trash") { deleteCurrent() }
+            Spacer()
+            previewButton(icon: "square.and.arrow.up") { shareCurrent() }
+        }
+        .padding(.horizontal, 24)
+        .padding(.bottom, 20)
+    }
+
+    private func previewButton(icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundColor(.white)
+                .frame(width: 44, height: 44)
+                .background(Color.black.opacity(0.6))
+                .clipShape(Circle())
+        }
+        .disabled(currentAsset == nil)
+    }
+
+    private func deleteCurrent() {
+        guard let asset = currentAsset else { return }
+        onDelete(asset)
+        // The parent view removes the asset from its own array; here we
+        // just make sure paging past the deleted item doesn't run off the
+        // end of the (now stale, one item too long) local `assets` array.
+        if assets.count <= 1 {
+            presentation.wrappedValue.dismiss()
+        }
+    }
+
+    private func shareCurrent() {
+        guard let asset = currentAsset, !isPreparingShare else { return }
+        isPreparingShare = true
+        let resources = PHAssetResource.assetResources(for: asset)
+        let resource = (asset.mediaType == .video ? resources.first { $0.type == .video } : resources.first { $0.type == .photo }) ?? resources.first
+        guard let resource = resource else {
+            isPreparingShare = false
+            return
+        }
+        let ext = UTType(resource.uniformTypeIdentifier)?.preferredFilenameExtension
+            ?? (resource.type == .video ? "mov" : "jpg")
+        let tmpURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension(ext)
+        let options = PHAssetResourceRequestOptions()
+        options.isNetworkAccessAllowed = true
+        PHAssetResourceManager.default().writeData(for: resource, toFile: tmpURL, options: options) { error in
+            DispatchQueue.main.async {
+                isPreparingShare = false
+                guard error == nil else { return }
+                shareRequest = PreviewShareRequest(item: tmpURL)
+            }
+        }
+    }
+}
+
+private struct PreviewShareRequest: Identifiable {
+    let id = UUID()
+    let item: URL
+}
+
+/// One page of the swipeable preview. Kept as its own view (rather than
+/// inline in the TabView) so each page loads and tears down its own
+/// image/player independently — paging away from a playing video pauses it
+/// instead of leaving audio running behind the next page.
+private struct PhotoLibraryPreviewPage: View {
+    let asset: PHAsset
     @State private var image: UIImage?
     @State private var player: AVPlayer?
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
             if asset.mediaType == .video, let player = player {
                 VideoPlayer(player: player)
                     .onAppear { player.play() }
@@ -217,21 +594,10 @@ private struct PhotoLibraryPreview: View {
                 loadImage()
             }
         }
-        .overlay(
-            Button(action: { presentation.wrappedValue.dismiss() }) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundColor(.white)
-                    .frame(width: 36, height: 36)
-                    .background(Color.black.opacity(0.6))
-                    .clipShape(Circle())
-            }
-            .padding(),
-            alignment: .topTrailing
-        )
     }
 
     private func loadImage() {
+        guard image == nil else { return }
         let options = PHImageRequestOptions()
         options.deliveryMode = .highQualityFormat
         options.isNetworkAccessAllowed = true
@@ -246,11 +612,26 @@ private struct PhotoLibraryPreview: View {
     }
 
     private func loadVideo() {
-        PHCachingImageManager.default().requestAVAsset(forVideo: asset, options: nil) { asset, _, _ in
-            guard let asset = asset else { return }
+        guard player == nil else { return }
+        let options = PHVideoRequestOptions()
+        options.isNetworkAccessAllowed = true
+        PHCachingImageManager.default().requestAVAsset(forVideo: asset, options: options) { avAsset, _, _ in
+            guard let avAsset = avAsset else { return }
             DispatchQueue.main.async {
-                player = AVPlayer(playerItem: AVPlayerItem(asset: asset))
+                player = AVPlayer(playerItem: AVPlayerItem(asset: avAsset))
             }
         }
     }
+}
+
+/// Thin UIKit bridge so we can AirDrop / share one or more original
+/// photo/video files without leaving the app.
+private struct ShareSheet: UIViewControllerRepresentable {
+    let items: [URL]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
