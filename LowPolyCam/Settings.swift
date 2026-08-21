@@ -50,6 +50,27 @@ enum PhysicalOrientation {
         case .portraitUpsideDown: return 270
         }
     }
+
+    /// EXIF/UIImage orientation to tag a raw CVPixelBuffer captured straight
+    /// off the sensor (landscape-right native, uncorrected) — used by burst
+    /// mode, which reads frames directly from AVCaptureVideoDataOutput
+    /// instead of going through AVCapturePhotoOutput's own connection-level
+    /// rotation. `mirrored` should be true only for a front-camera frame
+    /// that is being saved mirrored (see CameraPhoto.swift's `mirrored`
+    /// flag on the normal still-capture path — burst matches that exactly
+    /// so burst and single-shot photos are never inconsistently flipped).
+    func imageOrientation(mirrored: Bool) -> UIImage.Orientation {
+        switch (self, mirrored) {
+        case (.portrait, false): return .right
+        case (.portrait, true): return .leftMirrored
+        case (.landscapeRight, false): return .up
+        case (.landscapeRight, true): return .upMirrored
+        case (.landscapeLeft, false): return .down
+        case (.landscapeLeft, true): return .downMirrored
+        case (.portraitUpsideDown, false): return .left
+        case (.portraitUpsideDown, true): return .rightMirrored
+        }
+    }
 }
 
 // Device tier / low-memory check now lives in PerformanceProfile.swift
