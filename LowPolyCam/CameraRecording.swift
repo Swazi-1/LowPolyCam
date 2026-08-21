@@ -372,11 +372,6 @@ extension CameraRecorder {
                 assetWriterInput: v,
                 sourcePixelBufferAttributes: pixelAttributes
             )
-            var transfer: VTPixelTransferSession?
-            guard VTPixelTransferSessionCreate(kCFAllocatorDefault, &transfer) == noErr,
-                  let transferSession = transfer else {
-                throw RecorderError.cannotAddInput
-            }
             // The default transfer mode scales the complete source image to
             // the complete destination buffer, exactly what our 16:9 tiers
             // need. Leaving it at the framework default also avoids adding a
@@ -387,7 +382,6 @@ extension CameraRecorder {
                 throw RecorderError.cannotAddInput
             }
             self.pixelBufferAdaptor = adaptor
-            self.pixelTransferSession = transferSession
             self.scalePixelBufferPool = outputPool
 
             var a: AVAssetWriterInput?
@@ -461,7 +455,6 @@ extension CameraRecorder {
             writer = w
             videoIn = v
             pixelBufferAdaptor = adaptor
-            pixelTransferSession = transferSession
             scalePixelBufferPool = outputPool
             audioIn = a
             segmentStart = startPTS
@@ -509,7 +502,6 @@ extension CameraRecorder {
             pendingStartBuffers.removeAll(keepingCapacity: false)
             pendingMidBuffers.removeAll(keepingCapacity: false)
             pixelBufferAdaptor = nil
-            pixelTransferSession = nil
             scalePixelBufferPool = nil
             wantsRecording = false
             writerLock.unlock()
@@ -527,7 +519,7 @@ extension CameraRecorder {
         writerLock.lock()
         guard let w = writer, let v = videoIn else {
             DebugLog.write("[finish] finishSegment called with no writer/videoIn — nothing to finalize")
-            writer = nil; videoIn = nil; audioIn = nil; pixelBufferAdaptor = nil; pixelTransferSession = nil; scalePixelBufferPool = nil
+            writer = nil; videoIn = nil; audioIn = nil; pixelBufferAdaptor = nil; scalePixelBufferPool = nil
             writerLock.unlock()
             completion?()
             return
@@ -540,7 +532,7 @@ extension CameraRecorder {
         let url = w.outputURL
         let hadFrames = end.isValid && start.isValid && CMTimeCompare(end, start) > 0
 
-        writer = nil; videoIn = nil; audioIn = nil; pixelBufferAdaptor = nil; pixelTransferSession = nil; scalePixelBufferPool = nil
+        writer = nil; videoIn = nil; audioIn = nil; pixelBufferAdaptor = nil; scalePixelBufferPool = nil
         segmentStart = .invalid
         lastVideoDuration = .invalid
         writerLock.unlock()
@@ -670,7 +662,7 @@ extension CameraRecorder {
         let oldUrl = oldWriter.outputURL
         let destination = recordingDestination
 
-        writer = nil; videoIn = nil; audioIn = nil; pixelBufferAdaptor = nil; pixelTransferSession = nil; scalePixelBufferPool = nil
+        writer = nil; videoIn = nil; audioIn = nil; pixelBufferAdaptor = nil; scalePixelBufferPool = nil
         segmentStart = .invalid
         writerLock.unlock()
 
