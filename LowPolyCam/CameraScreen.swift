@@ -323,8 +323,8 @@ struct CameraScreen: View {
             Spacer(minLength: 4)
 
             facetButton(system: "gearshape.fill", size: 40, hitSlop: topHUDHitSlop) { showSettings = true }
-                .disabled(recorder.isRecording || recorder.isSaving || recorder.isSwitchingCamera)
-                .opacity((recorder.isRecording || recorder.isSaving || recorder.isSwitchingCamera) ? 0.35 : 1)
+                .disabled(recorder.isRecording || recorder.isSaving || recorder.isSwitchingCamera || recorder.isBursting)
+                .opacity((recorder.isRecording || recorder.isSaving || recorder.isSwitchingCamera || recorder.isBursting) ? 0.35 : 1)
         }
     }
 
@@ -818,8 +818,8 @@ struct CameraScreen: View {
 
             if !recorder.isRecording && !recorder.isSaving {
                 modeSelector
-                    .disabled(recorder.isSwitchingCamera)
-                    .opacity(recorder.isSwitchingCamera ? 0.35 : 1)
+                    .disabled(recorder.isSwitchingCamera || recorder.isBursting)
+                    .opacity((recorder.isSwitchingCamera || recorder.isBursting) ? 0.35 : 1)
                     .frame(maxWidth: .infinity, alignment: .center)
                     // Sit a bit lower above the shutter (same size/design).
                     .padding(.top, 6)
@@ -879,8 +879,8 @@ struct CameraScreen: View {
                         facetButton(system: "arrow.triangle.2.circlepath.camera.fill", size: 44) {
                             recorder.flipCamera()
                         }
-                        .disabled(recorder.isSaving || recorder.isSwitchingCamera || recorder.isCapturingPhoto || countdownRemaining > 0)
-                        .opacity((recorder.isSaving || recorder.isSwitchingCamera || recorder.isCapturingPhoto || countdownRemaining > 0) ? 0.35 : 1)
+                        .disabled(recorder.isSaving || recorder.isSwitchingCamera || recorder.isCapturingPhoto || recorder.isBursting || countdownRemaining > 0)
+                        .opacity((recorder.isSaving || recorder.isSwitchingCamera || recorder.isCapturingPhoto || recorder.isBursting || countdownRemaining > 0) ? 0.35 : 1)
                     }
                 }
                 .padding(.horizontal, 4)
