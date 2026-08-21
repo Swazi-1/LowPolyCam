@@ -20,6 +20,10 @@ extension CameraRecorder {
         // Never start while a previous clip is still finishing — that path
         // used to orphan the prior AVAssetWriter (token mismatch → no finishWriting).
         guard !isRecording, !isSaving else { return }
+        // A fast burst temporarily owns the video output's delegate (see
+        // BurstCaptureEngine.swift) — never start a recording while one is
+        // still collecting frames, or the two would fight over that delegate.
+        if isBursting { cancelBurstCapture() }
         DebugLog.reset()
         DebugLog.write("===== startRecording() called =====")
         guard freeBytes > Self.reserveBytes else {
