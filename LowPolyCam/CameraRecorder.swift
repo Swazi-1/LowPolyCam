@@ -108,10 +108,6 @@ final class CameraRecorder: NSObject, ObservableObject {
     @Published var isLevel: Bool = false
     @Published var rollAngle: Double = 0
     @Published var notice: String?
-    /// True while focus & exposure are pinned via long-press "AE/AF Lock"
-    /// on the preview (see CameraHardware.swift's lockFocusAndExposure /
-    /// resetFocusAndExposureToAuto). Drives the on-screen lock badge.
-    @Published var focusExposureLocked = false
 
     /// Fired the instant the sensor actually captures the photo (from
     /// AVCapturePhotoOutput's willCapturePhotoFor delegate callback), so the
@@ -169,17 +165,6 @@ final class CameraRecorder: NSObject, ObservableObject {
     // snapping back to baseline on every record start/stop. We only touch
     // the hardware again when this key actually changes.
     var lastAppliedFormatKey: String?
-
-    /// Guards the low-storage `notice` banner so it fires once when free
-    /// space drops near `reserveBytes`, then stays quiet until space
-    /// recovers well above that line (hysteresis) instead of re-firing on
-    /// every 5-20s `refreshFreeSpace()` tick during a long shoot.
-    var lowSpaceWarningShown = false
-
-    /// The last full minute of `elapsed` that fired a "Minute tick"
-    /// haptic (see Settings.minuteTickEnabled), reset to 0 each time a
-    /// new recording starts.
-    var lastTickedMinute = 0
 
     static func formatKey(device: AVCaptureDevice, format: AVCaptureDevice.Format, fps: Double) -> String {
         "\(device.uniqueID)|\(ObjectIdentifier(format))|\(fps.rounded())"
