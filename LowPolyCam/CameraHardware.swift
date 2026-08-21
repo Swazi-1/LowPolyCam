@@ -223,6 +223,10 @@ extension CameraRecorder {
             self.maxZoomFactor = rawCeiling / baseline
             self.minZoomFactor = rawFloor / baseline
             self.zoomFactor = clampedUI
+            // iPhone 7 has one physical (wide) lens, so 1x is the only
+            // "real" optical zoom factor — everything past it is a digital
+            // crop/interpolation, never a switch to a longer lens.
+            self.opticalZoomCeiling = max(1, rawFloor / baseline)
         }
     }
 
@@ -253,6 +257,13 @@ extension CameraRecorder {
             x: min(max(point.x, 0), 1),
             y: min(max(point.y, 0), 1)
         )
+        // A plain tap always means "focus/expose here and go back to
+        // tracking" — it should break any standing focus/exposure lock,
+        // the same way it does in stock Camera.
+        DispatchQueue.main.async {
+            self.focusLocked = false
+            self.exposureLocked = false
+        }
         applyFocusAndExposure(at: clamped,
                               focus: .autoFocus,
                               exposure: .autoExpose,
@@ -264,6 +275,121 @@ extension CameraRecorder {
                               focus: .continuousAutoFocus,
                               exposure: .continuousAutoExposure,
                               monitorSubjectArea: false)
+        DispatchQueue.main.async {
+            self.focusLocked = false
+            self.exposureLocked = false
+        }
+    }
+
+    /// Tap-and-hold: locks focus at the held point and leaves it there
+    /// until the next plain tap or camera switch. Exposure is left alone
+    /// (see `lockExposure`) so the two can be locked independently.
+    func lockFocus(at point: CGPoint) {
+        let clamped = CGPoint(x: min(max(point.x, 0), 1), y: min(max(point.y, 0), 1))
+        sessionQueue.async {
+            guard let device = self.cameraInput?.device else { return }
+            do {
+                try device.lockForConfiguration()
+                if device.isFocusPointOfInterestSupported {
+                    device.focusPointOfInterest = clamped
+                }
+                if device.isFocusModeSupported(.autoFocus) {
+                    device.focusMode = .autoFocus
+                }
+                device.unlockForConfiguration()
+            } catch { }
+
+            // Give the lens a moment to actually rack focus to the tapped
+            // point before freezing it in place — locking immediately would
+            // just freeze whatever distance it happened to be sitting at.
+            self.sessionQueue.asyncAfter(deadline: .now() + 0.35) {
+                guard let device = self.cameraInput?.device else { return }
+                do {
+                    try device.lockForConfiguration()
+                    if device.isFocusModeSupported(.locked) {
+                        device.focusMode = .locked
+                    }
+                    // Subject-area monitoring would otherwise silently pull
+                    // focus back to auto on the next scene change, defeating
+                    // the lock, so suppress it while anything is locked.
+                    device.isSubjectAreaChangeMonitoringEnabled = false
+                    device.unlockForConfiguration()
+                    DispatchQueue.main.async { self.focusLocked = true }
+                } catch { }
+            }
+        }
+    }
+
+    func unlockFocus() {
+        sessionQueue.async {
+            guard let device = self.cameraInput?.device else { return }
+            do {
+                try device.lockForConfiguration()
+                if device.isFocusModeSupported(.continuousAutoFocus) {
+                    device.focusMode = .continuousAutoFocus
+                }
+                let otherStillLocked = device.exposureMode == .locked
+                device.isSubjectAreaChangeMonitoringEnabled = !otherStillLocked
+                device.unlockForConfiguration()
+                DispatchQueue.main.async { self.focusLocked = false }
+            } catch { }
+        }
+    }
+
+    func toggleFocusLock(at point: CGPoint) {
+        if focusLocked { unlockFocus() } else { lockFocus(at: point) }
+    }
+
+    /// Two-finger tap-and-hold: locks exposure at the held point,
+    /// independent of focus.
+    func lockExposure(at point: CGPoint) {
+        let clamped = CGPoint(x: min(max(point.x, 0), 1), y: min(max(point.y, 0), 1))
+        sessionQueue.async {
+            guard let device = self.cameraInput?.device else { return }
+            do {
+                try device.lockForConfiguration()
+                if device.isExposurePointOfInterestSupported {
+                    device.exposurePointOfInterest = clamped
+                }
+                if device.isExposureModeSupported(.autoExpose) {
+                    device.exposureMode = .autoExpose
+                }
+                device.unlockForConfiguration()
+            } catch { }
+
+            self.sessionQueue.asyncAfter(deadline: .now() + 0.35) {
+                guard let device = self.cameraInput?.device else { return }
+                do {
+                    try device.lockForConfiguration()
+                    if device.isExposureModeSupported(.locked) {
+                        device.exposureMode = .locked
+                    }
+                    device.isSubjectAreaChangeMonitoringEnabled = false
+                    device.unlockForConfiguration()
+                    DispatchQueue.main.async { self.exposureLocked = true }
+                } catch { }
+            }
+        }
+    }
+
+    func unlockExposure() {
+        sessionQueue.async {
+            guard let device = self.cameraInput?.device else { return }
+            do {
+                try device.lockForConfiguration()
+                if device.isExposureModeSupported(.continuousAutoExposure) {
+                    device.exposureMode = .continuousAutoExposure
+                }
+                let otherStillLocked = device.focusMode == .locked
+                device.isSubjectAreaChangeMonitoringEnabled = !otherStillLocked
+                device.unlockForConfiguration()
+                DispatchQueue.main.async { self.exposureLocked = false }
+            } catch { }
+        }
+    }
+
+    func toggleExposureLock(at point: CGPoint) {
+        if exposureLocked { unlockExposure() } else { lockExposure(at: point) }
     }
 
     func applyFocusAndExposure(at point: CGPoint,
