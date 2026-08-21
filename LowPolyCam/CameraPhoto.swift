@@ -59,6 +59,16 @@ extension CameraRecorder {
 
         if settings.saveLocation == .photos { ensurePhotosAccess() }
 
+        // The system shutter sound / screen flash that AVCapturePhotoOutput
+        // fires can nudge AVAudioSession's reported outputVolume (route
+        // change / brief audio-session activation), which the volume-button
+        // KVO observer would otherwise read as a real hardware volume press.
+        // With "Volume button → Record" selected, that false read used to
+        // call toggleRecording() a beat after a photo-mode shutter tap,
+        // starting an unwanted recording right after the photo was taken.
+        // Ignore volume-KVO noise for the duration of this capture.
+        suppressVolumeTriggerBriefly(duration: 1.2)
+
         isCapturingPhoto = true
 
         // Burst frames skip the per-shot haptic (10-15 buzzes in ~1.5s feels
