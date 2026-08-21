@@ -64,6 +64,17 @@ struct CameraScreen: View {
 
     private var plan: EncodePlan { Encoder.plan(for: settings) }
 
+    /// Rebuilds the prepared impact-haptic generators at the user's chosen
+    /// intensity. `UIImpactFeedbackGenerator`'s style is fixed at init, so
+    /// changing intensity means swapping the generator instance rather than
+    /// mutating one in place.
+    private func applyHapticIntensity() {
+        startHaptic = UIImpactFeedbackGenerator(style: settings.hapticIntensity.scaled(.medium))
+        stopHaptic = UIImpactFeedbackGenerator(style: settings.hapticIntensity.scaled(.light))
+        startHaptic.prepare()
+        stopHaptic.prepare()
+    }
+
     var body: some View {
         ZStack {
             // Full-bleed preview layer
@@ -213,6 +224,7 @@ struct CameraScreen: View {
         .accentColor(settings.accentColor.color)
         .onAppear {
             recorder.start()
+            applyHapticIntensity()
             startHaptic.prepare()
             stopHaptic.prepare()
             levelHaptic.prepare()
@@ -232,6 +244,9 @@ struct CameraScreen: View {
             if dimmed { leaveDim() }
             recorder.stop()
             countdownTimer?.invalidate()
+        }
+        .onChange(of: settings.hapticIntensity) { _ in
+            applyHapticIntensity()
         }
         .onChange(of: recorder.isLevel) { isLevel in
             if isLevel && settings.showLevelGauge && settings.hapticFeedbackEnabled {
@@ -326,44 +341,58 @@ struct CameraScreen: View {
 
     private var topHUD: some View {
         HStack(alignment: .center, spacing: 8) {
-            if recorder.hasTorch {
-                facetButton(system: recorder.torchOn ? "bolt.fill" : "bolt.slash.fill",
-                            size: 40,
-                            tint: recorder.torchOn ? settings.accentColor.bright : .white,
-                            hitSlop: topHUDHitSlop) {
-                    recorder.toggleTorch()
+            Group {
+                if settings.hudShowFlashButton, recorder.hasTorch {
+                    facetButton(system: recorder.torchOn ? "bolt.fill" : "bolt.slash.fill",
+                                size: 40,
+                                tint: recorder.torchOn ? settings.accentColor.bright : .white,
+                                hitSlop: topHUDHitSlop) {
+                        recorder.toggleTorch()
+                    }
+                    .transition(settings.hudMotion.transition)
+                } else if settings.hudShowFlashButton, recorder.isFrontCamera {
+                    // No physical torch on the front camera — this toggles the
+                    // screen-illumination flash used at capture time instead
+                    // (see performFrontFlashCapture), same idea as stock Camera.
+                    facetButton(system: recorder.frontFlashEnabled ? "bolt.fill" : "bolt.slash.fill",
+                                size: 40,
+                                tint: recorder.frontFlashEnabled ? settings.accentColor.bright : .white,
+                                hitSlop: topHUDHitSlop) {
+                        recorder.frontFlashEnabled.toggle()
+                        if settings.hapticFeedbackEnabled { levelHaptic.selectionChanged() }
+                    }
+                    .transition(settings.hudMotion.transition)
+                } else {
+                    // Keep layout balanced whether hidden by the HUD setting
+                    // or genuinely unavailable on this lens.
+                    Color.clear.frame(width: 40, height: 40)
                 }
-            } else if recorder.isFrontCamera {
-                // No physical torch on the front camera — this toggles the
-                // screen-illumination flash used at capture time instead
-                // (see performFrontFlashCapture), same idea as stock Camera.
-                facetButton(system: recorder.frontFlashEnabled ? "bolt.fill" : "bolt.slash.fill",
-                            size: 40,
-                            tint: recorder.frontFlashEnabled ? settings.accentColor.bright : .white,
-                            hitSlop: topHUDHitSlop) {
-                    recorder.frontFlashEnabled.toggle()
-                    if settings.hapticFeedbackEnabled { levelHaptic.selectionChanged() }
-                }
-            } else {
-                // Keep layout balanced even when torch is unavailable.
-                Color.clear.frame(width: 40, height: 40)
             }
 
             Spacer(minLength: 4)
 
-            compactInfoPill
-                // Keep a guaranteed gutter for both 40pt edge buttons and
-                // the CameraScreen's safe-area padding on 375pt iPhone 7.
-                // The old cap was wide enough to push or clip those icons.
-                .frame(maxWidth: max(190, UIScreen.main.bounds.width - 142))
-                .layoutPriority(1)
+            Group {
+                if settings.hudShowInfoPill {
+                    compactInfoPill
+                        // Keep a guaranteed gutter for both 40pt edge buttons and
+                        // the CameraScreen's safe-area padding on 375pt iPhone 7.
+                        // The old cap was wide enough to push or clip those icons.
+                        .frame(maxWidth: max(190, UIScreen.main.bounds.width - 142))
+                        .layoutPriority(1)
+                        .transition(settings.hudMotion.transition)
+                }
+            }
 
             Spacer(minLength: 4)
 
+            // Always visible — hiding the way back into Settings would
+            // strand anyone who hides other HUD elements from here.
             facetButton(system: "gearshape.fill", size: 40, hitSlop: topHUDHitSlop) { showSettings = true }
                 .disabled(recorder.isRecording || recorder.isSaving || recorder.isSwitchingCamera || recorder.isBursting)
                 .opacity((recorder.isRecording || recorder.isSaving || recorder.isSwitchingCamera || recorder.isBursting) ? 0.35 : 1)
         }
+        .animation(settings.hudMotion.animation, value: settings.hudShowFlashButton)
+        .animation(settings.hudMotion.animation, value: settings.hudShowInfoPill)
     }
 
     private var dataRateLabel: String {
@@ -453,49 +482,57 @@ struct CameraScreen: View {
                 .lineLimit(1)
 
                 HStack(spacing: 5) {
-                    HStack(spacing: 3) {
-                        Image(systemName: "internaldrive")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundColor(Palette.slateLight)
-                        Text(Fmt.size(recorder.freeBytes) + " free")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(.white.opacity(0.68))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.7)
-                    }
-
-                    if settings.cameraMode != .photo, plan.megabytesPerHour > 0 {
-                        let hoursLeft = Double(max(0, recorder.freeBytes - 300_000_000)) / 1_000_000.0 / plan.megabytesPerHour
-                        Text("·")
-                            .foregroundColor(Palette.slateLight)
-                            .font(.system(size: 11, weight: .bold))
+                    if settings.hudShowStorageInfo {
                         HStack(spacing: 3) {
-                            Image(systemName: "clock")
+                            Image(systemName: "internaldrive")
                                 .font(.system(size: 9, weight: .semibold))
                                 .foregroundColor(Palette.slateLight)
-                            Text("~" + Fmt.hours(hoursLeft))
+                            Text(Fmt.size(recorder.freeBytes) + " free")
                                 .font(.system(size: 11, weight: .medium))
                                 .foregroundColor(.white.opacity(0.68))
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.7)
                         }
+
+                        if settings.cameraMode != .photo, plan.megabytesPerHour > 0 {
+                            let hoursLeft = Double(max(0, recorder.freeBytes - 300_000_000)) / 1_000_000.0 / plan.megabytesPerHour
+                            Text("·")
+                                .foregroundColor(Palette.slateLight)
+                                .font(.system(size: 11, weight: .bold))
+                            HStack(spacing: 3) {
+                                Image(systemName: "clock")
+                                    .font(.system(size: 9, weight: .semibold))
+                                    .foregroundColor(Palette.slateLight)
+                                Text("~" + Fmt.hours(hoursLeft))
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.68))
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.7)
+                            }
+                        }
                     }
 
-                    if recorder.batteryPercent >= 0 {
-                        Text("·")
-                            .foregroundColor(Palette.slateLight)
-                            .font(.system(size: 11, weight: .bold))
+                    if settings.hudShowBatteryInfo, recorder.batteryPercent >= 0 {
+                        if settings.hudShowStorageInfo {
+                            Text("·")
+                                .foregroundColor(Palette.slateLight)
+                                .font(.system(size: 11, weight: .bold))
+                        }
                         batteryIndicator
                     }
 
                     if recorder.thermalState != .nominal && recorder.thermalState != .fair {
-                        Text("·")
-                            .foregroundColor(Palette.slateLight)
-                            .font(.system(size: 11, weight: .bold))
+                        if settings.hudShowStorageInfo || settings.hudShowBatteryInfo {
+                            Text("·")
+                                .foregroundColor(Palette.slateLight)
+                                .font(.system(size: 11, weight: .bold))
+                        }
                         thermalIndicator
                     }
                 }
                 .lineLimit(1)
+                .animation(settings.hudMotion.animation, value: settings.hudShowStorageInfo)
+                .animation(settings.hudMotion.animation, value: settings.hudShowBatteryInfo)
             }
 
             if recorder.isRecording && settings.recordAudio {
@@ -564,11 +601,13 @@ struct CameraScreen: View {
                     }
 
                     // Battery while filming — same indicator as idle HUD.
-                    Text("·")
-                        .foregroundColor(Palette.slateLight)
-                        .font(.system(size: 11, weight: .bold))
-                        .fixedSize()
-                    batteryIndicator
+                    if settings.hudShowBatteryInfo {
+                        Text("·")
+                            .foregroundColor(Palette.slateLight)
+                            .font(.system(size: 11, weight: .bold))
+                            .fixedSize()
+                        batteryIndicator
+                    }
 
                     if recorder.droppedFrames > 0 {
                         Text("\(recorder.droppedFrames)d")
@@ -854,17 +893,23 @@ struct CameraScreen: View {
         VStack(spacing: 8) {
             // Full-width drag pad (not a small button) so zooming never
             // requires precisely tapping a tiny target — see zoomControl.
-            zoomControl
-                .disabled(recorder.isSwitchingCamera || recorder.isSaving)
-                .opacity((recorder.isSwitchingCamera || recorder.isSaving) ? 0.35 : 1)
+            // Hiding this only removes the visible bar; pinch-to-zoom on
+            // the preview keeps working regardless.
+            if settings.hudShowZoomControl {
+                zoomControl
+                    .disabled(recorder.isSwitchingCamera || recorder.isSaving)
+                    .opacity((recorder.isSwitchingCamera || recorder.isSaving) ? 0.35 : 1)
+                    .transition(settings.hudMotion.transition)
+            }
 
-            if !recorder.isRecording && !recorder.isSaving {
+            if settings.hudShowModeSelector, !recorder.isRecording && !recorder.isSaving {
                 modeSelector
                     .disabled(recorder.isSwitchingCamera || recorder.isBursting)
                     .opacity((recorder.isSwitchingCamera || recorder.isBursting) ? 0.35 : 1)
                     .frame(maxWidth: .infinity, alignment: .center)
                     // Sit a bit lower above the shutter (same size/design).
                     .padding(.top, 6)
+                    .transition(settings.hudMotion.transition)
             }
 
             ZStack(alignment: .center) {
@@ -873,32 +918,37 @@ struct CameraScreen: View {
                 recordButton
 
                 HStack(alignment: .center, spacing: 12) {
-                    if !recorder.isRecording && !recorder.isSaving,
-                       let thumb = recorder.lastClipThumbnail ?? recorder.lastPhotoThumbnail {
-                        Button(action: { showGallery = true }) {
-                            Image(uiImage: thumb)
-                                .resizable()
-                                .aspectRatio(contentMode: .fill)
-                                .frame(width: 44, height: 44)
-                                .clipShape(Facet(sides: 6, rotation: .pi / 6))
-                                .overlay(Facet(sides: 6, rotation: .pi / 6).stroke(settings.accentColor.color.opacity(0.7), lineWidth: 1.5))
-                                .shadow(color: .black.opacity(0.3), radius: 5)
+                    if settings.hudShowGalleryThumbnail {
+                        Group {
+                            if !recorder.isRecording && !recorder.isSaving,
+                               let thumb = recorder.lastClipThumbnail ?? recorder.lastPhotoThumbnail {
+                                Button(action: { showGallery = true }) {
+                                    Image(uiImage: thumb)
+                                        .resizable()
+                                        .aspectRatio(contentMode: .fill)
+                                        .frame(width: 44, height: 44)
+                                        .clipShape(Facet(sides: 6, rotation: .pi / 6))
+                                        .overlay(Facet(sides: 6, rotation: .pi / 6).stroke(settings.accentColor.color.opacity(0.7), lineWidth: 1.5))
+                                        .shadow(color: .black.opacity(0.3), radius: 5)
+                                }
+                                .buttonStyle(.plain)
+                                // Same invisible hit-area expansion as the other HUD
+                                // icons (see facetButton's hitSlop) — the thumbnail's
+                                // visible size stays 44x44, only the tappable area grows.
+                                .contentShape(Rectangle().inset(by: -8))
+                            } else {
+                                facetButton(system: "square.stack.3d.up.fill", size: 44) { showGallery = true }
+                                    .disabled(recorder.isRecording || recorder.isSaving)
+                                    .opacity((recorder.isRecording || recorder.isSaving) ? 0.35 : 1)
+                            }
                         }
-                        .buttonStyle(.plain)
-                        // Same invisible hit-area expansion as the other HUD
-                        // icons (see facetButton's hitSlop) — the thumbnail's
-                        // visible size stays 44x44, only the tappable area grows.
-                        .contentShape(Rectangle().inset(by: -8))
-                    } else {
-                        facetButton(system: "square.stack.3d.up.fill", size: 44) { showGallery = true }
-                            .disabled(recorder.isRecording || recorder.isSaving)
-                            .opacity((recorder.isRecording || recorder.isSaving) ? 0.35 : 1)
+                        .transition(settings.hudMotion.transition)
                     }
 
                     Spacer()
 
                     // "..." button positioned between shutter and flip-camera button
-                    if !recorder.isRecording && !recorder.isSaving {
+                    if settings.hudShowProToolsButton, !recorder.isRecording && !recorder.isSaving {
                         Button(action: {
                             withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) {
                                 showProMenu.toggle()
@@ -917,21 +967,30 @@ struct CameraScreen: View {
                         .buttonStyle(.plain)
                         .disabled(recorder.isSwitchingCamera)
                         .opacity(recorder.isSwitchingCamera ? 0.35 : 1)
+                        .transition(settings.hudMotion.transition)
                     }
 
                     if recorder.isRecording {
+                        // The dim/moon button is a recording control, not a
+                        // hideable HUD element — always shown while filming.
                         facetButton(system: "moon.fill", size: 44) { enterDim() }
-                    } else {
+                    } else if settings.hudShowFlipCameraButton {
                         facetButton(system: "arrow.triangle.2.circlepath.camera.fill", size: 44) {
                             recorder.flipCamera()
                         }
                         .disabled(recorder.isSaving || recorder.isSwitchingCamera || recorder.isCapturingPhoto || recorder.isBursting || countdownRemaining > 0)
                         .opacity((recorder.isSaving || recorder.isSwitchingCamera || recorder.isCapturingPhoto || recorder.isBursting || countdownRemaining > 0) ? 0.35 : 1)
+                        .transition(settings.hudMotion.transition)
                     }
                 }
                 .padding(.horizontal, 4)
             }
         }
+        .animation(settings.hudMotion.animation, value: settings.hudShowZoomControl)
+        .animation(settings.hudMotion.animation, value: settings.hudShowModeSelector)
+        .animation(settings.hudMotion.animation, value: settings.hudShowGalleryThumbnail)
+        .animation(settings.hudMotion.animation, value: settings.hudShowProToolsButton)
+        .animation(settings.hudMotion.animation, value: settings.hudShowFlipCameraButton)
     }
 
     private func handleShutterTap() {
@@ -1346,7 +1405,7 @@ struct CameraScreen: View {
 
     private func startCountdown() {
         countdownRemaining = settings.countdownTimer.rawValue
-        let haptic = UIImpactFeedbackGenerator(style: .heavy)
+        let haptic = UIImpactFeedbackGenerator(style: settings.hapticIntensity.scaled(.heavy))
         haptic.prepare()
 
         countdownTimer?.invalidate()
