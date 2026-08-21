@@ -129,7 +129,16 @@ extension CameraRecorder {
         // that's what made front-camera burst photos come out flipped.
         // The image is built un-mirrored below; wantsMirroredSave is applied
         // as an explicit horizontal flip afterward, only when needed.
-        let orientation = physicalOrientation.imageOrientation(mirrored: false)
+        //
+        // Separately: the front camera's sensor is physically mounted 180°
+        // rotated from the rear camera's (see PhysicalOrientation.rotated180
+        // in Settings.swift). The single-shot AVCapturePhotoOutput path
+        // never has to think about this — the connection API handles it —
+        // but burst mode tags rotation manually from the phone's tilt, so it
+        // has to apply that same 180° correction itself here or every
+        // front-camera burst photo comes out rotated a half-turn off.
+        let effectivePhysicalOrientation = isFrontCamera ? physicalOrientation.rotated180 : physicalOrientation
+        let orientation = effectivePhysicalOrientation.imageOrientation(mirrored: false)
         let wantsMirroredSave = isFrontCamera && !settings.saveSelfiesUnmirrored
         let targetMP = settings.photoMegapixels.megapixels
 
