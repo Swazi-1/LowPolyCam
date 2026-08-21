@@ -858,8 +858,8 @@ struct CameraScreen: View {
 
     private var bottomHUD: some View {
         VStack(spacing: 8) {
-            // Native-camera-style zoom dial: a single "1x" pill the user
-            // drags left/right instead of a persistent slider + preset row.
+            // Full-width drag pad (not a small button) so zooming never
+            // requires precisely tapping a tiny target — see zoomControl.
             zoomControl
                 .disabled(recorder.isSwitchingCamera || recorder.isSaving)
                 .opacity((recorder.isSwitchingCamera || recorder.isSaving) ? 0.35 : 1)
@@ -1563,13 +1563,6 @@ struct CameraScreen: View {
     private let zoomDialMaxFactor: CGFloat = 8
     private let zoomDialMinFactor: CGFloat = 1
 
-    /// Points of horizontal drag it takes to roughly double (or halve) the
-    /// zoom factor. Tuned so a comfortable thumb swipe across the dial
-    /// covers the full 1x–8x range without feeling twitchy on short drags —
-    /// this is what makes small movements feel precise and long swipes feel
-    /// fast, the way the system Camera app's zoom dial behaves.
-    private let zoomDialPointsPerDoubling: CGFloat = 110
-
     private func zoomDialLabel(_ factor: CGFloat) -> String {
         if abs(factor - factor.rounded()) < 0.05 {
             return "\(Int(factor.rounded()))x"
@@ -1577,29 +1570,45 @@ struct CameraScreen: View {
         return String(format: "%.1fx", factor)
     }
 
-    /// The always-present "1x" dial that replaces the old always-visible
-    /// slider + 2x/5x preset row. Starts centered on 1x; dragging left
-    /// zooms out (floor 1x), dragging right zooms in (ceiling 8x, capped by
-    /// whatever the hardware actually supports).
+    /// A full-width invisible drag pad (not a tiny button) so you never have
+    /// to land your finger precisely on the "1x" pill to zoom — touch down
+    /// and drag ANYWHERE across this bar. Sensitivity is derived from the
+    /// pad's actual measured width so that swiping from the center out to
+    /// either edge always covers the complete 1x–8x range, regardless of
+    /// screen size. A tap that doesn't move never changes the zoom — only
+    /// dragging does, so an accidental tap never resets your zoom.
     private var zoomControl: some View {
-        Text(zoomDialLabel(recorder.zoomFactor))
-            .font(.system(size: 13, weight: .bold, design: .rounded))
-            .foregroundColor(.white)
-            .lineLimit(1)
-            .minimumScaleFactor(0.8)
-            .frame(width: 46, height: 46)
-            .background(
-                Circle()
-                    .fill(Palette.panel.opacity(0.88))
-                    .background(Circle().fill(Palette.slateDeep.opacity(usesLightweightMaterial ? 0.55 : 0.3)))
-            )
-            .overlay(
-                Circle().stroke(Color.white.opacity(0.16), lineWidth: 1)
-            )
-            .shadow(color: .black.opacity(0.3), radius: 8, y: 3)
-            .contentShape(Circle())
+        GeometryReader { geo in
+            // Half the pad's width is the travel available from the center
+            // (where the finger typically starts) out to one edge; dividing
+            // that by log2(max) gives the exact points-per-doubling needed
+            // so reaching the edge reaches 8x, not something short of it.
+            let halfWidth = max(geo.size.width / 2, 60)
+            let doublingsNeeded = log2(zoomDialMaxFactor / zoomDialMinFactor)
+            let pointsPerDoubling = halfWidth / doublingsNeeded
+
+            ZStack {
+                Text(zoomDialLabel(recorder.zoomFactor))
+                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                    .foregroundColor(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(
+                        Capsule()
+                            .fill(Palette.panel.opacity(0.88))
+                            .background(Capsule().fill(Palette.slateDeep.opacity(usesLightweightMaterial ? 0.55 : 0.3)))
+                    )
+                    .overlay(
+                        Capsule().stroke(Color.white.opacity(0.16), lineWidth: 1)
+                    )
+                    .shadow(color: .black.opacity(0.3), radius: 8, y: 3)
+            }
+            .frame(width: geo.size.width, height: geo.size.height)
+            .contentShape(Rectangle())
             .gesture(
-                DragGesture(minimumDistance: 2)
+                DragGesture(minimumDistance: 0)
                     .onChanged { value in
                         if !isZoomDialDragging {
                             isZoomDialDragging = true
@@ -1613,17 +1622,21 @@ struct CameraScreen: View {
                         // proportional zoom change wherever you are in the
                         // range, instead of 1x->2x taking the same distance
                         // as 7x->8x.
-                        let factor = zoomGestureBase * pow(2, value.translation.width / zoomDialPointsPerDoubling)
+                        let factor = zoomGestureBase * pow(2, value.translation.width / pointsPerDoubling)
                         let clamped = min(max(factor, zoomDialMinFactor), min(zoomDialMaxFactor, recorder.maxZoomFactor))
                         recorder.setZoom(factor: clamped)
                     }
                     .onEnded { _ in
+                        // Lifting the finger never snaps back to 1x — the zoom
+                        // stays wherever you dragged it to, exactly like the
+                        // native Camera app.
                         isZoomDialDragging = false
                         recorder.suppressVolumeTriggerBriefly()
                         scheduleHideZoomLabel()
                     }
             )
-            .frame(maxWidth: .infinity, alignment: .center)
+        }
+        .frame(height: 54)
     }
 
     private var zoomLabel: some View {
