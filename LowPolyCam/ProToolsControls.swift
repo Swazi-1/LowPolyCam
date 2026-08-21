@@ -205,12 +205,15 @@ private struct ProToolsToggleRow: View {
             ))
             .labelsHidden()
             .toggleStyle(SwitchToggleStyle(tint: accentColor))
-            // A fixed native-switch footprint prevents its right edge from
-            // being clipped by the Pro Tools drawer on iPhone 7 widths.
-            .frame(width: 51, height: 31, alignment: .trailing)
-            .fixedSize()
+            // Slightly undersized + anchored to the trailing edge so the
+            // switch's own intrinsic size (which `.fixedSize()` used to let
+            // win over this frame) can never poke past the drawer's edge on
+            // iPhone 7's narrower 375pt width.
+            .scaleEffect(0.92, anchor: .trailing)
+            .frame(width: 46, height: 28, alignment: .trailing)
         }
         .frame(minHeight: 44)
+        .padding(.trailing, 2)
     }
 }
 
