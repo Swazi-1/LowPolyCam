@@ -35,6 +35,7 @@ struct SettingsScreen: View {
     @State private var showHUDSheet = false
     @State private var showAboutSheet = false
     @State private var showCustomColorSheet = false
+    @State private var hapticStrengthExpanded = false
     @State private var presetHaptic = UISelectionFeedbackGenerator()
     @State private var freeBytesSnapshot: Int64 = 0
     @State private var isFrontSnapshot = false
@@ -685,7 +686,7 @@ struct SettingsScreen: View {
     private func assistToggleGroup(ids: [String]) -> some View {
         let bySpecId = Dictionary(uniqueKeysWithValues: assistToggles.map { ($0.id, $0) })
         let ordered = ids.compactMap { bySpecId[$0] }
-        return SettingsToggleGroup(specs: ordered, accentColor: settings.accentColor.color)
+        return SettingsToggleGroup(specs: ordered, accentColor: settings.accentColor.color, settings: settings)
     }
 
     private var videoAssistSection: some View {
@@ -877,12 +878,12 @@ struct SettingsScreen: View {
             List {
                 Section(header: sectionHeader("Camera HUD", icon: "camera.viewfinder"),
                         footer: Text("Hide anything you don't want cluttering the viewfinder. The shutter and this Settings button always stay visible.")) {
-                    SettingsToggleGroup(specs: hudToggles, accentColor: settings.accentColor.color)
+                    SettingsToggleGroup(specs: hudToggles, accentColor: settings.accentColor.color, settings: settings)
                 }
 
                 Section(header: sectionHeader("Info Pill", icon: "capsule.fill"),
                         footer: Text("The compact format readout shown while filming.")) {
-                    SettingsToggleGroup(specs: pillToggles, accentColor: settings.accentColor.color)
+                    SettingsToggleGroup(specs: pillToggles, accentColor: settings.accentColor.color, settings: settings)
                 }
 
                 Section(header: sectionHeader("Animation", icon: "wand.and.stars")) {
@@ -919,20 +920,90 @@ struct SettingsScreen: View {
                 Label("Shutter & dial sounds", systemImage: "speaker.wave.2.fill")
                     .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
             }
+            .onChange(of: settings.shutterSoundEnabled) { _ in
+                fireSettingsToggleHaptic(settings)
+            }
 
             Toggle(isOn: $settings.hapticFeedbackEnabled) {
                 Label("Haptic feedback", systemImage: "hand.tap.fill")
                     .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
             }
+            .onChange(of: settings.hapticFeedbackEnabled) { isOn in
+                // Only buzz on the way to "on" — buzzing after switching it
+                // off would be confusing (and pointless).
+                guard isOn else { return }
+                fireSettingsToggleHaptic(settings)
+            }
 
             if settings.hapticFeedbackEnabled {
-                SettingsPickerRow(
-                    title: "Haptic strength",
-                    icon: "waveform.path",
-                    accentColor: settings.accentColor.color,
-                    selection: $settings.hapticIntensity,
-                    label: { Text($0.label) }
-                )
+                hapticStrengthRow
+            }
+        }
+    }
+
+    /// Custom "Haptic strength" row. This intentionally does NOT use
+    /// `SettingsPickerRow` (a plain SwiftUI `Picker`) — inside a List that
+    /// pushes to a separate selection screen and pops back the instant you
+    /// tap an option, so you'd have to reopen it to compare strengths.
+    /// Here it expands in place, fires a real haptic of that strength the
+    /// moment you tap it (so you can *feel* the difference), and stays open
+    /// so you can try Light / Standard / Strong back to back — it only
+    /// collapses when you tap the row again.
+    private var hapticStrengthRow: some View {
+        VStack(spacing: 0) {
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    hapticStrengthExpanded.toggle()
+                }
+            }) {
+                HStack {
+                    Label("Haptic strength", systemImage: "waveform.path")
+                        .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
+                    Spacer()
+                    Text(settings.hapticIntensity.label)
+                        .font(.system(size: 15, design: .rounded))
+                        .foregroundColor(.secondary)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.secondary.opacity(0.5))
+                        .rotationEffect(.degrees(hapticStrengthExpanded ? 90 : 0))
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if hapticStrengthExpanded {
+                VStack(spacing: 0) {
+                    ForEach(HapticIntensity.allCases) { intensity in
+                        Button(action: {
+                            settings.hapticIntensity = intensity
+                            // Preview this exact strength right away — this is
+                            // the whole point of the row, so it needs its own
+                            // generator (not the shared selection one) and it
+                            // does NOT close the row afterward.
+                            UIImpactFeedbackGenerator(style: intensity.scaled(.medium)).impactOccurred()
+                        }) {
+                            HStack {
+                                Text(intensity.label)
+                                    .font(.system(size: 15, design: .rounded))
+                                Text(intensity.detail)
+                                    .font(.system(size: 12, design: .rounded))
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                                if settings.hapticIntensity == intensity {
+                                    Image(systemName: "checkmark")
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundColor(settings.accentColor.color)
+                                }
+                            }
+                            .padding(.leading, 40)
+                            .padding(.vertical, 6)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
     }
@@ -976,6 +1047,12 @@ struct SettingsScreen: View {
                 aboutRow(icon: "sparkles",
                          title: "Built for iPhone 7",
                          body: "Tuned for A10 and 2 GB RAM on iOS 15.8.x.")
+                aboutRow(icon: "volume.2.fill",
+                         title: "Volume Buttons",
+                         body: "Set what they do — shutter (photo tap / video toggle), always Burst, or always Record — under Capture Assist for each mode.")
+                aboutRow(icon: "hand.tap.fill",
+                         title: "Haptic Strength",
+                         body: "Tap Light / Standard / Strong under Sounds & Haptics to feel each one before picking.")
             }
             .listStyle(InsetGroupedListStyle())
             .navigationBarTitle("Good to Know", displayMode: .inline)
@@ -1183,6 +1260,9 @@ struct SettingsScreen: View {
             Toggle(isOn: $settings.photoReviewAfterCapture) {
                 Label("Review after capture", systemImage: "eye.fill")
                     .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
+            }
+            .onChange(of: settings.photoReviewAfterCapture) { _ in
+                fireSettingsToggleHaptic(settings)
             }
         }
     }
