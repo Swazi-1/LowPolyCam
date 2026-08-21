@@ -633,12 +633,6 @@ final class AppSettings: ObservableObject {
     /// on older devices (especially iPhone 7 / A10). When enabled it gently
     /// steers the encoder toward safer settings and strengthens auto-dim.
     @Setting("longevityMode") var longevityMode: Bool = false
-    // MARK: Zoom
-    /// Which preset zoom buttons show in the quick zoom row. 1x is always
-    /// shown (it's the native/default zoom) so there's no setting for it.
-    @Setting("zoomPresetHalfEnabled") var zoomPresetHalfEnabled: Bool = true
-    @Setting("zoomPreset2xEnabled") var zoomPreset2xEnabled: Bool = true
-    @Setting("zoomPreset5xEnabled") var zoomPreset5xEnabled: Bool = true
 
     /// Applies a capture preset. Forces video mode for recording-oriented presets.
     func applyPreset(_ preset: CapturePreset) {
