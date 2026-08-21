@@ -73,6 +73,25 @@ final class CameraRecorder: NSObject, ObservableObject {
     @Published var isCapturingPhoto = false
     @Published var availablePhotoMegapixels: [PhotoMegapixels] = PhotoMegapixels.allCases
     @Published var lastPhotoThumbnail: UIImage?
+    // MARK: Photo 2.0 — Burst mode
+    /// True while a burst sequence is actively firing frames.
+    @Published var isBursting = false
+    /// Frames captured so far in the current burst (for the on-screen counter).
+    @Published var burstShotsTaken = 0
+    /// Total frames requested for the current burst (settings.burstCount at
+    /// the moment the burst started — snapshotted so a mid-burst settings
+    /// change can't desync the counter).
+    @Published var burstShotsTotal = 0
+    /// URLs (Files) or nothing (Photos, which has no stable local URL) for
+    /// the most recently completed burst, freshest first. Used to seed the
+    /// post-capture review sheet with "swipe through this burst".
+    @Published var lastBurstReviewItems: [PhotoReviewItem] = []
+    /// The single most recent capture (single shot or last burst frame),
+    /// used to open the post-capture review sheet.
+    @Published var lastPhotoReviewItem: PhotoReviewItem?
+    /// Bumped every time a fresh capture (single or burst) finishes, so the
+    /// UI can open the review sheet exactly once per capture via onChange.
+    @Published var photoReviewToken: Int = 0
 
     // Thermal state
     @Published var thermalState: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState
