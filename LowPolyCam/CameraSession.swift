@@ -394,6 +394,15 @@ extension CameraRecorder {
         // Per-resolution slow-mo FPS support (key fix for Bug 2).
         var slowByRes: [Resolution: Set<SlowMoFrameRate>] = [:]
         var slowResolutions = Set<Resolution>()
+        // Per-resolution *video* FPS support. Built the same way as `slowByRes`
+        // below: a resolution's supported rates only ever grow from a full scan
+        // of every format, independent of whichever resolution is currently
+        // selected. Without this, `rates` (scoped to `targetDims`, i.e. the
+        // resolution active *right now*) got stored as if it were the device's
+        // entire fps capability — so recording 4K (30 fps only on this device
+        // class) permanently wiped 60 fps from the list for every resolution,
+        // including 1080p/720p which really do support it.
+        var ratesByRes: [Resolution: Set<FrameRate>] = [:]
 
         for format in device.formats {
             let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
@@ -408,6 +417,30 @@ extension CameraRecorder {
                     }) {
                         rates.insert(rate)
                     }
+                }
+            }
+
+            // Same rate test as above, but recorded against every standard
+            // resolution this format actually covers, not just `targetDims`.
+            var ratesForThisVideoFormat = Set<FrameRate>()
+            for rate in FrameRate.allCases {
+                let fps = Double(rate.value)
+                if format.videoSupportedFrameRateRanges.contains(where: {
+                    $0.minFrameRate <= (fps + 0.5) && (fps - 0.5) <= $0.maxFrameRate
+                }) {
+                    ratesForThisVideoFormat.insert(rate)
+                }
+            }
+            if !ratesForThisVideoFormat.isEmpty {
+                var coveredRes: [Resolution] = []
+                if h >= 2160 { coveredRes.append(.p2160) }
+                if h >= 1080 { coveredRes.append(.p1080) }
+                if h >= 720 { coveredRes.append(.p720) }
+                if h >= 480 { coveredRes.append(.p480) }
+                coveredRes.append(.p320)
+                coveredRes.append(.p144)
+                for res in coveredRes {
+                    ratesByRes[res, default: []].formUnion(ratesForThisVideoFormat)
                 }
             }
 
@@ -480,6 +513,7 @@ extension CameraRecorder {
         let slowSupported = !slowByRes.isEmpty
         let photoMPOut = supportedPhotoMP.isEmpty ? [PhotoMegapixels.mp2] : supportedPhotoMP
         let slowByResOut = slowByRes
+        let ratesByResOut = ratesByRes
 
         let previousPosition = lastCapabilitiesCameraPosition
         lastCapabilitiesCameraPosition = device.position
@@ -489,6 +523,7 @@ extension CameraRecorder {
             self.availableSlowMoRates = slowRatesOut
             self.availableSlowMoResolutions = slowResOut
             self.slowRatesByResolution = slowByResOut
+            self.frameRatesByResolution = ratesByResOut
             self.isSlowMoSupportedOnCurrentLens = slowSupported
             self.availablePhotoMegapixels = photoMPOut
 
