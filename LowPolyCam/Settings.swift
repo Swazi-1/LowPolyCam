@@ -143,6 +143,65 @@ enum PhotoMegapixels: Double, CaseIterable, Identifiable, SettingStorable {
     var label: String { "\(Int(rawValue))MP" }
 }
 
+// MARK: - Burst Mode (Photo 2.0)
+
+/// Number of frames captured in one burst-mode press. Kept small — this is
+/// a 2015-class A10 chip with 2 GB RAM; each frame still goes through the
+/// same HEIC encode + Photos write as a normal still, so a burst is really
+/// N stills fired back-to-back rather than a dedicated high-speed pipeline.
+enum BurstCount: Int, CaseIterable, Identifiable, SettingStorable {
+    case count5 = 5
+    case count10 = 10
+    case count15 = 15
+
+    var id: Int { rawValue }
+    var label: String { "\(rawValue)" }
+}
+
+/// Saved photo file format. HEIC is smaller and is what stock Camera uses;
+/// JPEG is offered for maximum compatibility with older apps/services.
+enum PhotoFormat: String, CaseIterable, Identifiable, SettingStorable {
+    case heic, jpeg
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .heic: return "HEIC"
+        case .jpeg: return "JPEG"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .heic: return "Smaller files · matches Camera app"
+        case .jpeg: return "Maximum compatibility"
+        }
+    }
+}
+
+/// Photo aspect ratio. `.full` uses the sensor's native still aspect (4:3 on
+/// iPhone 7); `.square` crops to 1:1 for the preview grid + saved file.
+enum PhotoAspect: String, CaseIterable, Identifiable, SettingStorable {
+    case full, square
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .full: return "4:3"
+        case .square: return "1:1"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .full: return "Full sensor frame"
+        case .square: return "Cropped to a square"
+        }
+    }
+}
+
 // MARK: - Frame rate
 
 enum FrameRate: Int, CaseIterable, Identifiable, SettingStorable {
@@ -534,6 +593,16 @@ final class AppSettings: ObservableObject {
     @Setting("shutterSoundEnabled") var shutterSoundEnabled: Bool = true
     @Setting("photoMegapixels") var photoMegapixels: PhotoMegapixels = .mp12
     @Setting("saveSelfiesUnmirrored") var saveSelfiesUnmirrored: Bool = false
+    // MARK: Photo 2.0
+    /// Number of frames captured while the shutter is held in burst mode.
+    @Setting("burstCount") var burstCount: BurstCount = .count10
+    /// Saved still-photo file format (HEIC vs JPEG).
+    @Setting("photoFormat") var photoFormat: PhotoFormat = .heic
+    /// Saved/previewed still-photo aspect ratio.
+    @Setting("photoAspect") var photoAspect: PhotoAspect = .full
+    /// Shows the full-screen review sheet immediately after a photo/burst
+    /// finishes capturing, mirroring stock Camera's post-shutter review.
+    @Setting("photoReviewAfterCapture") var photoReviewAfterCapture: Bool = false
     // Screen-flash confirmation removed from Settings UI; key kept only so
     // upgrading users' old value still applies (see CameraScreen.swift).
     @Setting("captureFlashConfirmation") var captureFlashConfirmation: Bool = false
