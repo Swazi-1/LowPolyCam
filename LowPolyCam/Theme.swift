@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // MARK: - Hex Color
 
@@ -9,6 +10,44 @@ extension Color {
                   green: Double((hex >> 8)  & 0xFF) / 255,
                   blue:  Double( hex        & 0xFF) / 255,
                   opacity: opacity)
+    }
+
+    /// Parses a 6-digit RGB hex string (optional leading "#"), used to load
+    /// the user's custom accent color from `AppSettings.customAccentColorHex`.
+    /// Falls back to `fallback` (Dial Lavender by default) if unparsable.
+    init(hexString: String, fallback: UInt32 = 0xC4A8E8) {
+        var s = hexString.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.hasPrefix("#") { s.removeFirst() }
+        if s.count == 6, let value = UInt32(s, radix: 16) {
+            self.init(hex: value)
+        } else {
+            self.init(hex: fallback)
+        }
+    }
+
+    /// Best-effort 6-digit RGB hex string for persisting a color picked via
+    /// SwiftUI's `ColorPicker` (which only ever hands back a `Color`).
+    func toHexString() -> String {
+        let ui = UIColor(self)
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        ui.getRed(&r, green: &g, blue: &b, alpha: &a)
+        return String(format: "%02X%02X%02X",
+                      Int((r * 255).rounded()), Int((g * 255).rounded()), Int((b * 255).rounded()))
+    }
+
+    /// Returns a lighter ("bright") or darker ("deep") variant of this color
+    /// by scaling HSB brightness — mirrors how the built-in accent presets
+    /// each hand-author a bright/deep pair, but derived automatically for
+    /// any custom color the user picks.
+    func brightnessScaled(_ multiplier: Double) -> Color {
+        let ui = UIColor(self)
+        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        ui.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+        let newB = min(1, max(0, b * CGFloat(multiplier)))
+        // Lightening a color also reads better with a touch less saturation
+        // (matches the airier look of the hand-tuned "bright" presets).
+        let newS = multiplier > 1 ? max(0, s * 0.82) : s
+        return Color(hue: Double(h), saturation: Double(newS), brightness: Double(newB), opacity: Double(a))
     }
 }
 
