@@ -25,6 +25,10 @@ struct CameraScreen: View {
     // Zoom
     @State private var zoomGestureBase: CGFloat = 1
     @State private var isPinching = false
+    // True while the user's finger is down on the 1x zoom dial dragging it
+    // left/right — separate from `isPinching` (two-finger pinch on the
+    // preview) so the two gestures never fight over `zoomGestureBase`.
+    @State private var isZoomDialDragging = false
     @State private var lastRecordButtonTap = Date.distantPast
     @State private var showZoomLabel = false
     @State private var zoomLabelHideToken = 0
@@ -54,7 +58,7 @@ struct CameraScreen: View {
     @State private var startHaptic = UIImpactFeedbackGenerator(style: .medium)
     @State private var stopHaptic = UIImpactFeedbackGenerator(style: .light)
     @State private var levelHaptic = UISelectionFeedbackGenerator()
-    // Reused instead of created per-render (see zoomPresetRow/modeSelector) —
+    // Reused instead of created per-render (see zoomControl/modeSelector) —
     // allocating + preparing a new UIFeedbackGenerator on every SwiftUI body
     // re-evaluation is wasted work that adds up on slower A10-class devices.
     @State private var zoomHaptic = UISelectionFeedbackGenerator()
@@ -695,7 +699,7 @@ struct CameraScreen: View {
     /// display order. This is the single place to touch when adding,
     /// removing, or reordering a Pro Tools control.
     private var proToolsDrawerControls: [ProToolControl] {
-        var controls: [ProToolControl] = [
+        let controls: [ProToolControl] = [
             .chips(ProToolControl.ChipsSpec(
                 id: "timer",
                 icon: "timer",
@@ -739,44 +743,11 @@ struct CameraScreen: View {
                 }
             ))
         ]
-        let zoomSpec = zoomPresetCustomizationSpec
-        if !zoomSpec.items.isEmpty {
-            controls.append(.chips(zoomSpec))
-        }
         return controls
     }
 
-    /// Which quick-zoom buttons appear in `zoomPresetRow`. Each chip toggles
-    /// its setting on/off (this is a multi-select row, not exclusive like
-    /// Timer above) and only offers presets the current lens can actually
-    /// reach.
-    private var zoomPresetCustomizationSpec: ProToolControl.ChipsSpec {
-        var items: [ProToolControl.ChipsSpec.Item] = []
-        if recorder.minZoomFactor <= 0.6 {
-            items.append(.init(id: "0.5x", label: "0.5x", selected: settings.zoomPresetHalfEnabled) {
-                settings.zoomPresetHalfEnabled.toggle()
-            })
-        }
-        if recorder.maxZoomFactor >= 1.9 {
-            items.append(.init(id: "2x", label: "2x", selected: settings.zoomPreset2xEnabled) {
-                settings.zoomPreset2xEnabled.toggle()
-            })
-        }
-        if recorder.maxZoomFactor >= 4.9 {
-            items.append(.init(id: "5x", label: "5x", selected: settings.zoomPreset5xEnabled) {
-                settings.zoomPreset5xEnabled.toggle()
-            })
-        }
-        return ProToolControl.ChipsSpec(
-            id: "zoomPresets",
-            icon: "camera.metering.center.weighted",
-            title: "Zoom presets",
-            items: items
-        )
-    }
-
     private var proToolsDrawer: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 3) {
             HStack {
                 HStack(spacing: 8) {
                     Image(systemName: "slider.horizontal.3")
@@ -791,36 +762,29 @@ struct CameraScreen: View {
                     withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) { showProMenu = false }
                 }) {
                     Image(systemName: "xmark")
-                        .font(.system(size: 11, weight: .bold))
+                        .font(.system(size: 10, weight: .bold))
                         .foregroundColor(.white.opacity(0.7))
-                        .frame(width: 26, height: 26)
+                        .frame(width: 22, height: 22)
                         .background(Palette.slateMid)
                         .clipShape(Circle())
                 }
                 .buttonStyle(.plain)
             }
-            .padding(.bottom, 6)
+            .padding(.bottom, 2)
 
-            // Capped height + internal scroll so adding more controls later
-            // can never push the drawer (or the close button) off-screen.
-            // Raised from the old 0.42/340 cap, which forced a scroll to
-            // reach White balance even with just the original 4 controls on
-            // iPhone 7's 667pt-tall screen — this cap comfortably fits all
-            // current controls (Timer, Level meter, Exposure, White
-            // balance, Zoom presets) with the drawer's own header still
-            // visible above, while still protecting against a future
-            // control list overflowing the screen.
-            ScrollView(.vertical, showsIndicators: false) {
-                ProToolsControlList(
-                    controls: proToolsDrawerControls,
-                    accentColor: settings.accentColor.color,
-                    hapticsEnabled: settings.hapticFeedbackEnabled
-                )
-            }
-            .frame(maxHeight: min(UIScreen.main.bounds.height * 0.66, 460))
+            // No ScrollView: with the zoom-presets row gone, the remaining
+            // controls (Timer, Level meter, Exposure, White balance) fit
+            // without scrolling even on iPhone 7's 667pt-tall screen, and
+            // the drawer's own compact row spacing (see ProToolsControls.swift)
+            // keeps it that way as a hard requirement, not just today's fit.
+            ProToolsControlList(
+                controls: proToolsDrawerControls,
+                accentColor: settings.accentColor.color,
+                hapticsEnabled: settings.hapticFeedbackEnabled
+            )
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 14)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(Palette.slateDeep.opacity(0.97))
@@ -894,15 +858,9 @@ struct CameraScreen: View {
 
     private var bottomHUD: some View {
         VStack(spacing: 8) {
-            // Smooth continuous zoom control, sitting just above the preset
-            // row so a precise drag is available alongside the quick-tap
-            // presets rather than only the presets.
-            zoomSlider
-                .disabled(recorder.isSwitchingCamera || recorder.isSaving)
-                .opacity((recorder.isSwitchingCamera || recorder.isSaving) ? 0.35 : 1)
-
-            // Zoom preset row stays visible & interactive during recording
-            zoomPresetRow
+            // Native-camera-style zoom dial: a single "1x" pill the user
+            // drags left/right instead of a persistent slider + preset row.
+            zoomControl
                 .disabled(recorder.isSwitchingCamera || recorder.isSaving)
                 .opacity((recorder.isSwitchingCamera || recorder.isSaving) ? 0.35 : 1)
 
@@ -933,6 +891,10 @@ struct CameraScreen: View {
                                 .shadow(color: .black.opacity(0.3), radius: 5)
                         }
                         .buttonStyle(.plain)
+                        // Same invisible hit-area expansion as the other HUD
+                        // icons (see facetButton's hitSlop) — the thumbnail's
+                        // visible size stays 44x44, only the tappable area grows.
+                        .contentShape(Rectangle().inset(by: -8))
                     } else {
                         facetButton(system: "square.stack.3d.up.fill", size: 44) { showGallery = true }
                             .disabled(recorder.isRecording || recorder.isSaving)
@@ -1140,8 +1102,10 @@ struct CameraScreen: View {
             .frame(width: 82, height: 82)
         }
         .buttonStyle(.plain)
-        // Visual size stays 82; expand the touch target ~14pt each side.
-        .frame(width: 110, height: 110)
+        // Visual size stays 82 (ring is 76pt); expand the touch target a bit
+        // further than before so it's comfortably larger than the visible
+        // colored ring on every side.
+        .frame(width: 118, height: 118)
         .contentShape(Circle())
         .disabled(recorder.isSaving || recorder.isSwitchingCamera || recorder.isCapturingPhoto)
         .animation(.spring(response: 0.35, dampingFraction: 0.7), value: recorder.isRecording)
@@ -1591,157 +1555,81 @@ struct CameraScreen: View {
         .allowsHitTesting(false)
     }
 
-    private var zoomPresets: [CGFloat] {
-        var options: [CGFloat] = []
-        if recorder.minZoomFactor <= 0.6 && settings.zoomPresetHalfEnabled { options.append(0.5) }
-        options.append(1)
-        if recorder.maxZoomFactor >= 1.9 && settings.zoomPreset2xEnabled { options.append(2) }
-        if recorder.maxZoomFactor >= 4.9 && settings.zoomPreset5xEnabled { options.append(5) }
-        return options
+    // MARK: Zoom dial (drag-to-zoom, like the native Camera app's "1x" pill)
+
+    /// Hard ceiling for the drag gesture, per spec — independent of whatever
+    /// `recorder.maxZoomFactor` the hardware reports, then clamped to it so
+    /// we never ask the session for more zoom than the lens can deliver.
+    private let zoomDialMaxFactor: CGFloat = 8
+    private let zoomDialMinFactor: CGFloat = 1
+
+    /// Points of horizontal drag it takes to roughly double (or halve) the
+    /// zoom factor. Tuned so a comfortable thumb swipe across the dial
+    /// covers the full 1x–8x range without feeling twitchy on short drags —
+    /// this is what makes small movements feel precise and long swipes feel
+    /// fast, the way the system Camera app's zoom dial behaves.
+    private let zoomDialPointsPerDoubling: CGFloat = 110
+
+    private func zoomDialLabel(_ factor: CGFloat) -> String {
+        if abs(factor - factor.rounded()) < 0.05 {
+            return "\(Int(factor.rounded()))x"
+        }
+        return String(format: "%.1fx", factor)
     }
 
-    // MARK: Smooth zoom slider
-
-    /// True once the live zoom factor is past what the single physical
-    /// (wide) lens on iPhone 7 can resolve natively — i.e. any zoom beyond
-    /// 1x here is a digital crop, not a switch to another lens.
-    private var isDigitalZoom: Bool {
-        recorder.zoomFactor > recorder.opticalZoomCeiling + 0.02
-    }
-
-    private var zoomSliderBinding: Binding<Double> {
-        Binding(
-            get: { Double(recorder.zoomFactor) },
-            set: { recorder.setZoom(factor: CGFloat($0)) }
-        )
-    }
-
-    private var zoomSlider: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "minus.magnifyingglass")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(.white.opacity(0.55))
-
-            Slider(
-                value: zoomSliderBinding,
-                in: Double(recorder.minZoomFactor)...Double(max(recorder.minZoomFactor + 0.01, recorder.maxZoomFactor)),
-                onEditingChanged: { editing in
-                    if editing {
+    /// The always-present "1x" dial that replaces the old always-visible
+    /// slider + 2x/5x preset row. Starts centered on 1x; dragging left
+    /// zooms out (floor 1x), dragging right zooms in (ceiling 8x, capped by
+    /// whatever the hardware actually supports).
+    private var zoomControl: some View {
+        Text(zoomDialLabel(recorder.zoomFactor))
+            .font(.system(size: 13, weight: .bold, design: .rounded))
+            .foregroundColor(.white)
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
+            .frame(width: 46, height: 46)
+            .background(
+                Circle()
+                    .fill(Palette.panel.opacity(0.88))
+                    .background(Circle().fill(Palette.slateDeep.opacity(usesLightweightMaterial ? 0.55 : 0.3)))
+            )
+            .overlay(
+                Circle().stroke(Color.white.opacity(0.16), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.3), radius: 8, y: 3)
+            .contentShape(Circle())
+            .gesture(
+                DragGesture(minimumDistance: 2)
+                    .onChanged { value in
+                        if !isZoomDialDragging {
+                            isZoomDialDragging = true
+                            zoomGestureBase = recorder.zoomFactor
+                            if settings.hapticFeedbackEnabled { zoomHaptic.selectionChanged() }
+                        }
                         showZoomLabel = true
                         recorder.suppressVolumeTriggerBriefly()
-                    } else {
+                        // Exponential mapping (not linear) so the feel matches
+                        // native iOS: the same finger travel produces a
+                        // proportional zoom change wherever you are in the
+                        // range, instead of 1x->2x taking the same distance
+                        // as 7x->8x.
+                        let factor = zoomGestureBase * pow(2, value.translation.width / zoomDialPointsPerDoubling)
+                        let clamped = min(max(factor, zoomDialMinFactor), min(zoomDialMaxFactor, recorder.maxZoomFactor))
+                        recorder.setZoom(factor: clamped)
+                    }
+                    .onEnded { _ in
+                        isZoomDialDragging = false
                         recorder.suppressVolumeTriggerBriefly()
                         scheduleHideZoomLabel()
                     }
-                }
             )
-            .tint(settings.accentColor.color)
-
-            Image(systemName: "plus.magnifyingglass")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(.white.opacity(0.55))
-
-            if isDigitalZoom {
-                Text("DIGITAL")
-                    .font(.system(size: 9, weight: .black, design: .rounded))
-                    .foregroundColor(.white.opacity(0.9))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(Capsule().fill(Palette.record.opacity(0.85)))
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(
-            Capsule()
-                .fill(Palette.panel.opacity(0.7))
-                .background(Capsule().fill(Palette.slateDeep.opacity(usesLightweightMaterial ? 0.5 : 0.28)))
-        )
-        .overlay(Capsule().stroke(Color.white.opacity(0.1), lineWidth: 1))
-    }
-
-    private func zoomLabel(for preset: CGFloat) -> String {
-        if preset == preset.rounded() {
-            return "\(Int(preset))x"
-        }
-        return String(format: "%.1fx", preset)
-    }
-
-    private var zoomPresetRow: some View {
-        HStack(spacing: 6) {
-            ForEach(zoomPresets, id: \.self) { preset in
-                let isSelected = abs(recorder.zoomFactor - preset) < 0.05
-                Button(action: {
-                    zoomHaptic.selectionChanged()
-                    if settings.shutterSoundEnabled { SoundPlayer.play(.dial) }
-                    recorder.suppressVolumeTriggerBriefly()
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                        recorder.setZoom(factor: preset)
-                    }
-                    showZoomLabel = true
-                    scheduleHideZoomLabel()
-                }) {
-                    Text(zoomLabel(for: preset))
-                        .font(.system(size: 12, weight: .bold, design: .rounded))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.7)
-                        .foregroundColor(isSelected ? Palette.slateDeep : .white.opacity(0.85))
-                        .frame(width: 36, height: 36)
-                        .background(
-                            Group {
-                                if isSelected {
-                                    Circle()
-                                        .fill(
-                                            LinearGradient(
-                                                colors: [settings.accentColor.bright, settings.accentColor.color],
-                                                startPoint: .topLeading,
-                                                endPoint: .bottomTrailing
-                                            )
-                                        )
-                                        .shadow(color: settings.accentColor.color.opacity(0.45), radius: 6)
-                                } else {
-                                    Circle()
-                                        .fill(Palette.slateMid.opacity(0.65))
-                                }
-                            }
-                        )
-                        .overlay(
-                            Circle()
-                                .stroke(isSelected ? Color.clear : Color.white.opacity(0.12), lineWidth: 1)
-                        )
-                }
-                .buttonStyle(.plain)
-                .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isSelected)
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(
-            Capsule()
-                .fill(Palette.panel.opacity(0.88))
-                .background(Capsule().fill(Palette.slateDeep.opacity(usesLightweightMaterial ? 0.55 : 0.3)))
-        )
-        .overlay(
-            Capsule()
-                .stroke(Color.white.opacity(0.12), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.3), radius: 10, y: 4)
-        // Keep the control centered without forcing full-bleed width that can
-        // push neighboring bottom-HUD elements toward the screen edges.
-        .frame(maxWidth: .infinity, alignment: .center)
+            .frame(maxWidth: .infinity, alignment: .center)
     }
 
     private var zoomLabel: some View {
-        HStack(spacing: 6) {
-            Text(String(format: "%.1fx", recorder.zoomFactor))
-                .font(.system(size: 15, weight: .bold, design: .rounded))
-                .foregroundColor(.white)
-            if isDigitalZoom {
-                Text("Digital zoom")
-                    .font(.system(size: 11, weight: .semibold, design: .rounded))
-                    .foregroundColor(.white.opacity(0.75))
-            }
-        }
+        Text(zoomDialLabel(recorder.zoomFactor))
+            .font(.system(size: 15, weight: .bold, design: .rounded))
+            .foregroundColor(.white)
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
             .background(
