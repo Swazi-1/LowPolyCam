@@ -65,7 +65,7 @@ extension CameraRecorder {
         // like a jackhammer, not a shutter) and use a single lighter tick
         // fired once from startBurstCapture's caller instead.
         if settings.hapticFeedbackEnabled && !isBurstFrame {
-            let hapticGen = UIImpactFeedbackGenerator(style: .medium)
+            let hapticGen = UIImpactFeedbackGenerator(style: settings.hapticIntensity.scaled(.medium))
             hapticGen.prepare()
             hapticGen.impactOccurred()
         }
