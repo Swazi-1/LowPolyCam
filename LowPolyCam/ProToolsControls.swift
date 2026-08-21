@@ -154,7 +154,7 @@ struct ProToolsControlList: View {
                         view
                     }
                 }
-                .padding(.vertical, 12)
+                .padding(.vertical, 6)
 
                 if index < controls.count - 1 {
                     Divider().overlay(Color.white.opacity(0.08))
@@ -173,11 +173,11 @@ private struct ProToolsIconBadge: View {
 
     var body: some View {
         Image(systemName: icon)
-            .font(.system(size: 13, weight: .semibold))
+            .font(.system(size: 12, weight: .semibold))
             .foregroundColor(.white)
-            .frame(width: 28, height: 28)
+            .frame(width: 24, height: 24)
             .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(accentColor)
             )
     }
@@ -188,10 +188,10 @@ private struct ProToolsToggleRow: View {
     let accentColor: Color
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             ProToolsIconBadge(icon: spec.icon, accentColor: accentColor)
             Text(spec.title)
-                .font(.system(size: 15, weight: .medium, design: .rounded))
+                .font(.system(size: 14, weight: .medium, design: .rounded))
                 .foregroundColor(.white.opacity(0.92))
                 .lineLimit(1)
                 .minimumScaleFactor(0.85)
@@ -209,10 +209,10 @@ private struct ProToolsToggleRow: View {
             // switch's own intrinsic size (which `.fixedSize()` used to let
             // win over this frame) can never poke past the drawer's edge on
             // iPhone 7's narrower 375pt width.
-            .scaleEffect(0.92, anchor: .trailing)
-            .frame(width: 46, height: 28, alignment: .trailing)
+            .scaleEffect(0.85, anchor: .trailing)
+            .frame(width: 42, height: 24, alignment: .trailing)
         }
-        .frame(minHeight: 44)
+        .frame(minHeight: 34)
         .padding(.trailing, 2)
     }
 }
@@ -224,22 +224,22 @@ private struct ProToolsChipsRow: View {
     let haptic: UISelectionFeedbackGenerator
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 12) {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
                 ProToolsIconBadge(icon: spec.icon, accentColor: accentColor)
                 Text(spec.title)
-                    .font(.system(size: 15, weight: .medium, design: .rounded))
+                    .font(.system(size: 14, weight: .medium, design: .rounded))
                     .foregroundColor(.white.opacity(0.92))
                 Spacer()
             }
 
-            let chips = HStack(spacing: 8) {
+            let chips = HStack(spacing: 6) {
                 ForEach(spec.items) { item in
                     chip(item)
                 }
                 if !spec.scrollsHorizontally { Spacer(minLength: 0) }
             }
-            .padding(.leading, 40) // aligns under the title, past the icon badge
+            .padding(.leading, 34) // aligns under the title, past the icon badge
 
             if spec.scrollsHorizontally {
                 ScrollView(.horizontal, showsIndicators: false) { chips }
@@ -259,8 +259,8 @@ private struct ProToolsChipsRow: View {
                 .foregroundColor(item.selected ? Palette.slateDeep : .white.opacity(0.85))
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 5)
                 .background(
                     Capsule()
                         .fill(item.selected ? accentColor : Palette.slateMid.opacity(0.6))
@@ -278,15 +278,15 @@ private struct ProToolsSliderRow: View {
     let accentColor: Color
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 12) {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 10) {
                 ProToolsIconBadge(icon: spec.icon, accentColor: accentColor)
                 Text(spec.title)
-                    .font(.system(size: 15, weight: .medium, design: .rounded))
+                    .font(.system(size: 14, weight: .medium, design: .rounded))
                     .foregroundColor(.white.opacity(0.92))
                 Spacer()
                 Text(spec.valueLabel(spec.value.wrappedValue))
-                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                    .font(.system(size: 12, weight: .bold, design: .rounded))
                     .foregroundColor(accentColor)
                     .monospacedDigit()
                 if abs(spec.value.wrappedValue - spec.defaultValue) > 0.01 {
@@ -295,9 +295,9 @@ private struct ProToolsSliderRow: View {
                         spec.onChange?(spec.defaultValue)
                     }) {
                         Image(systemName: "arrow.counterclockwise")
-                            .font(.system(size: 11, weight: .bold))
+                            .font(.system(size: 10, weight: .bold))
                             .foregroundColor(.white.opacity(0.75))
-                            .frame(width: 22, height: 22)
+                            .frame(width: 20, height: 20)
                             .background(Circle().fill(Palette.slateMid))
                     }
                     .buttonStyle(.plain)
@@ -305,7 +305,7 @@ private struct ProToolsSliderRow: View {
             }
             Slider(value: spec.value, in: spec.range, step: spec.step)
                 .tint(accentColor)
-                .padding(.leading, 40) // aligns under the title, past the icon badge
+                .padding(.leading, 34) // aligns under the title, past the icon badge
                 .onChange(of: spec.value.wrappedValue) { val in
                     spec.onChange?(val)
                 }
@@ -322,17 +322,17 @@ private struct ProToolsNavigationRow: View {
 
     var body: some View {
         Button(action: spec.action) {
-            HStack(spacing: 12) {
+            HStack(spacing: 10) {
                 ProToolsIconBadge(icon: spec.icon, accentColor: accentColor)
                 Text(spec.title)
-                    .font(.system(size: 15, weight: .medium, design: .rounded))
+                    .font(.system(size: 14, weight: .medium, design: .rounded))
                     .foregroundColor(.white.opacity(0.92))
                 Spacer()
                 Text(spec.valueLabel)
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
                     .foregroundColor(.white.opacity(0.55))
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(size: 11, weight: .semibold))
                     .foregroundColor(.white.opacity(0.35))
             }
             .contentShape(Rectangle())
