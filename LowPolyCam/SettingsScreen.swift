@@ -711,7 +711,7 @@ struct SettingsScreen: View {
                 icon: "grid",
                 accentColor: settings.accentColor.color,
                 selection: $settings.gridStyle,
-                label: { Text($0.label) }
+                label: { (v: GridStyle) -> Text in Text(v.label) }
             )
             pickerDetailCaption(settings.gridStyle.detail)
         }
@@ -779,7 +779,7 @@ struct SettingsScreen: View {
     /// Camera HUD group — the pill itself, plus the readouts that actually
     /// render inside it (battery / storage & time left), rather than being
     /// separate viewfinder chrome.
-    private var pillElementIds: Set<HUDElement> = [.infoPill, .batteryInfo, .storageInfo]
+    private var pillElementIds: Set<HUDElement> { [.infoPill, .batteryInfo, .storageInfo] }
 
     /// One `SettingsToggleSpec` per `HUDElement`, built generically from
     /// `AppSettings.binding(for:)` so adding a new hideable element later
@@ -859,14 +859,16 @@ struct SettingsScreen: View {
                 }
 
                 Section(header: sectionHeader("Animation", icon: "wand.and.stars")) {
-                    SettingsPickerRow(
-                        title: "HUD animation",
-                        icon: "wand.and.stars",
-                        accentColor: settings.accentColor.color,
-                        selection: $settings.hudMotion,
-                        label: { Text($0.label) }
-                    )
-                    pickerDetailCaption(settings.hudMotion.detail)
+                    VStack(alignment: .leading, spacing: 0) {
+                        SettingsPickerRow(
+                            title: "HUD animation",
+                            icon: "wand.and.stars",
+                            accentColor: settings.accentColor.color,
+                            selection: $settings.hudMotion,
+                            label: { (v: HUDMotion) -> Text in Text(v.label) }
+                        )
+                        pickerDetailCaption(settings.hudMotion.detail)
+                    }
                 }
             }
             .listStyle(InsetGroupedListStyle())
