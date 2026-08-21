@@ -268,8 +268,8 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
             return false
         }
 
-        // Core Image scaler — works back to iOS 5, unlike VTPixelTransferSession
-        // (iOS 16+ only), so it runs fine on an iPhone 7 capped at iOS 15.8.8.
+        // Core Image scaling is hardware-backed on the supported device and
+        // keeps the low-resolution recording path independent of newer APIs.
         let sourceImage = CIImage(cvPixelBuffer: sourceBuffer)
         let scaleX = CGFloat(plan.width) / CGFloat(sourceWidth)
         let scaleY = CGFloat(plan.height) / CGFloat(sourceHeight)
