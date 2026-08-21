@@ -66,29 +66,11 @@ extension CameraRecorder {
         // saved photo can come out noticeably darker/flatter than what was seen
         // live, especially in low light, because the discrete still capture was
         // otherwise using a plainer single-frame render.
-        if #available(iOS 13.0, *) {
-            photoOutput.maxPhotoQualityPrioritization = .quality
-        }
-        if #available(iOS 16.0, *) {
-            // Use the TRUE max across all formats — device.activeFormat only reflects
-            // whatever video format is currently applied (often ~1080p/2MP), not the
-            // sensor's real max still-photo resolution.
-            let maxDims = device.formats
-                .flatMap { $0.supportedMaxPhotoDimensions }
-                .max { Int($0.width) * Int($0.height) < Int($1.width) * Int($1.height) }
-            if let maxDims = maxDims {
-                photoOutput.maxPhotoDimensions = maxDims
-            }
-        } else {
-            // iOS <16 path (this is what iPhone 7 / iOS 15.8 actually uses).
-            // NOTE: we deliberately do NOT switch activeFormat here anymore — on
-            // iOS <16, activeFormat drives BOTH the live preview AND still capture,
-            // so permanently locking it to a high-res-optimized format made the live
-            // preview blurry/pixelated. The high-res format swap now happens only
-            // briefly, right before actually taking the photo (see capturePhoto()),
-            // and is restored immediately after — keeping the live preview smooth.
-            photoOutput.isHighResolutionCaptureEnabled = true
-        }
+        photoOutput.maxPhotoQualityPrioritization = .quality
+        // On the iPhone 7 capture stack, activeFormat drives both the preview and
+        // the still image. The high-resolution format is therefore selected only
+        // for the instant of capture, then the lightweight preview format returns.
+        photoOutput.isHighResolutionCaptureEnabled = true
     }
 
     func configureVideoConnection() {
@@ -694,4 +676,3 @@ extension CameraRecorder {
 
 
 }
-
