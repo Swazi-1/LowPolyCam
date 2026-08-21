@@ -630,13 +630,7 @@ final class CameraRecorder: NSObject, ObservableObject {
                 obs.onVolumeTrigger = { [weak self] in
                     DispatchQueue.main.async {
                         guard let self = self else { return }
-                        // Volume shutter must match the current mode — photo
-                        // mode used to start a video recording by mistake.
-                        if self.settings.cameraMode == .photo {
-                            self.capturePhoto()
-                        } else {
-                            self.toggleRecording()
-                        }
+                        self.performVolumeButtonAction()
                     }
                 }
                 obs.start()
@@ -644,6 +638,29 @@ final class CameraRecorder: NSObject, ObservableObject {
             } else {
                 self.volumeObserver?.start()
             }
+        }
+    }
+
+    /// Dispatches a volume-button press per the user's chosen behavior.
+    /// `.shutter` keeps the original mode-matched behavior (photo tap /
+    /// video record toggle) — photo mode used to start a video recording
+    /// by mistake, so that pairing is preserved as the default. `.burst`
+    /// and `.recording` opt into a fixed action regardless of mode.
+    private func performVolumeButtonAction() {
+        switch settings.volumeButtonAction {
+        case .shutter:
+            if settings.cameraMode == .photo {
+                capturePhoto()
+            } else {
+                toggleRecording()
+            }
+        case .burst:
+            // Burst capture rides on AVCapturePhotoOutput, so it works from
+            // any mode; its own guards (not already recording/bursting/etc.)
+            // make this a no-op if a burst isn't currently possible.
+            startBurstCapture()
+        case .recording:
+            toggleRecording()
         }
     }
 
@@ -677,6 +694,12 @@ final class CameraRecorder: NSObject, ObservableObject {
             }
             self.sessionQueue.async {
                 if !self.isConfigured {
+                    // Reopen on whichever camera was last active instead of
+                    // always resetting to the rear camera, when opted in.
+                    // Must happen before configureSession() reads `position`.
+                    if self.settings.keepLastCamera {
+                        self.position = self.settings.lastCameraPosition.avPosition
+                    }
                     DebugLog.write("start() configureSession() beginning")
                     self.configureSession()
                     self.isConfigured = true
