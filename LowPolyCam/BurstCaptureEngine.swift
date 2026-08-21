@@ -114,8 +114,23 @@ extension CameraRecorder {
         // Snapshot everything the frame callback needs up front — it fires
         // on videoQueue, off the main thread, and must not touch
         // `settings`/`self` properties that could change mid-burst.
-        let mirrored = isFrontCamera && !settings.saveSelfiesUnmirrored
-        let orientation = physicalOrientation.imageOrientation(mirrored: mirrored)
+        //
+        // IMPORTANT: unlike the normal AVCapturePhotoOutput still-capture
+        // path, the buffers burst mode reads come from `videoOutput`'s own
+        // connection, which configureVideoConnection() (CameraSession.swift)
+        // deliberately forces to isVideoMirrored = false ALWAYS — front or
+        // back camera — because that connection also feeds recorded video,
+        // and a saved video file must never be mirrored. So every raw frame
+        // burst mode receives is already true-to-sensor or already
+        // orientation-only, i.e. NOT mirrored, regardless of camera. Tagging
+        // orientation with `mirrored: true` here (matching the front-camera
+        // check the way the AVCapturePhotoOutput path does) was applying a
+        // mirror flip to a buffer that was never mirrored to begin with —
+        // that's what made front-camera burst photos come out flipped.
+        // The image is built un-mirrored below; wantsMirroredSave is applied
+        // as an explicit horizontal flip afterward, only when needed.
+        let orientation = physicalOrientation.imageOrientation(mirrored: false)
+        let wantsMirroredSave = isFrontCamera && !settings.saveSelfiesUnmirrored
         let targetMP = settings.photoMegapixels.megapixels
 
         var collectedImages: [UIImage] = []
@@ -145,6 +160,7 @@ extension CameraRecorder {
                     // comment on frameContext above for why this can't wait.
                     let image = Self.image(from: pixelBuffer,
                                             orientation: orientation,
+                                            mirrored: wantsMirroredSave,
                                             targetMegapixels: targetMP,
                                             context: frameContext)
                     bufferLock.lock()
@@ -223,8 +239,14 @@ extension CameraRecorder {
     /// UIImage — the same downscale-to-target-megapixels behavior
     /// PhotoCaptureProcessor applies to a normal still, so burst photos are
     /// sized consistently with single shots at the same MP setting.
+    ///
+    /// `mirrored` applies a real horizontal flip (not just an EXIF/UIImage
+    /// orientation flag) so it survives HEIC/JPEG re-encoding — burst photos
+    /// have no camera-original file to fall back on the way a normal still
+    /// capture does, so the flip has to be baked into the pixels here.
     private static func image(from pixelBuffer: CVPixelBuffer,
                               orientation: UIImage.Orientation,
+                              mirrored: Bool,
                               targetMegapixels: Double,
                               context: CIContext) -> UIImage? {
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
@@ -233,15 +255,22 @@ extension CameraRecorder {
 
         let currentPixels = Double(cgImage.width * cgImage.height)
         let targetPixels = targetMegapixels * 1_000_000
-        guard targetPixels > 0, currentPixels > targetPixels * 1.02 else { return full }
+        let needsDownscale = targetPixels > 0 && currentPixels > targetPixels * 1.02
+        guard needsDownscale || mirrored else { return full }
 
-        let scale = (targetPixels / currentPixels).squareRoot()
+        let scale = needsDownscale ? (targetPixels / currentPixels).squareRoot() : 1
         let newWidth = max(1, Int((Double(cgImage.width) * scale).rounded()))
         let newHeight = max(1, Int((Double(cgImage.height) * scale).rounded()))
+        let drawSize = CGSize(width: newWidth, height: newHeight)
 
-        UIGraphicsBeginImageContextWithOptions(CGSize(width: newWidth, height: newHeight), true, 1)
+        UIGraphicsBeginImageContextWithOptions(drawSize, true, 1)
         defer { UIGraphicsEndImageContext() }
-        full.draw(in: CGRect(x: 0, y: 0, width: newWidth, height: newHeight))
+        guard let ctx = UIGraphicsGetCurrentContext() else { return full }
+        if mirrored {
+            ctx.translateBy(x: drawSize.width, y: 0)
+            ctx.scaleBy(x: -1, y: 1)
+        }
+        full.draw(in: CGRect(origin: .zero, size: drawSize))
         return UIGraphicsGetImageFromCurrentImageContext() ?? full
     }
 }
