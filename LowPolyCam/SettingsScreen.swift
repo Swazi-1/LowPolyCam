@@ -973,7 +973,7 @@ struct SettingsScreen: View {
             .buttonStyle(.plain)
 
             if hapticStrengthExpanded {
-                VStack(spacing: 0) {
+                VStack(spacing: 6) {
                     ForEach(HapticIntensity.allCases) { intensity in
                         Button(action: {
                             settings.hapticIntensity = intensity
@@ -997,12 +997,13 @@ struct SettingsScreen: View {
                                 }
                             }
                             .padding(.leading, 40)
-                            .padding(.vertical, 6)
+                            .padding(.vertical, 10)
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                     }
                 }
+                .padding(.top, 4)
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
