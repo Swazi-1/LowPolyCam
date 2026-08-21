@@ -734,6 +734,11 @@ struct SettingsScreen: View {
                 Label("Haptic feedback", systemImage: "hand.tap.fill")
                     .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
             }
+
+            Toggle(isOn: $settings.minuteTickEnabled) {
+                Label("Minute tick while recording", systemImage: "timer")
+                    .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
+            }
         }
     }
 
