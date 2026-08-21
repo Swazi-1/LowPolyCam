@@ -38,6 +38,15 @@ struct CameraScreen: View {
     /// lock rather than a plain focus/expose tap — drawn in a different
     /// color so the two moments are visually distinct.
     @State private var focusReticleIsLock = false
+    /// True for the brief "just landed, still oversized" instant right
+    /// after a tap; flips false a beat later to trigger the converge-in
+    /// spring. Separate from `focusPoint` so the pop + settle can be its
+    /// own two-stage motion instead of one flat fade/scale.
+    @State private var focusReticleExpanded = true
+    /// Drives the slow breathing pulse shown only while a tap-and-hold
+    /// lock is active on screen, so a lock visibly reads as "still on"
+    /// rather than a static box.
+    @State private var focusReticlePulsing = false
 
     // Notice Auto-Dismiss
     @State private var noticeHideToken = 0
@@ -413,8 +422,23 @@ struct CameraScreen: View {
         }
     }
 
+    /// Whether the pill's "~X h/min left" estimate should render this frame
+    /// — its own toggle, storage-derived data available, and not Photo mode
+    /// (a photo count estimate would need a different formula entirely).
+    private var showsTimeRemainingInPill: Bool {
+        settings.hudShowTimeRemaining && settings.cameraMode != .photo && plan.megabytesPerHour > 0
+    }
+
     private var compactInfoPill: some View {
-        VStack(spacing: 3) {
+        // Precomputed once per render so the separator dots between pill
+        // segments below can each ask "did anything before me render?"
+        // without repeating these conditions inline.
+        let showStorage = settings.hudShowStorageInfo
+        let showTimeRemaining = showsTimeRemainingInPill
+        let showBattery = settings.hudShowBatteryInfo && recorder.batteryPercent >= 0
+        let showThermal = recorder.thermalState != .nominal && recorder.thermalState != .fair
+
+        return VStack(spacing: 3) {
             if recorder.isRecording || recorder.isSaving {
                 recordingStatusRow
             } else {
@@ -427,6 +451,14 @@ struct CameraScreen: View {
                             .padding(.vertical, 2.5)
                             .background(settings.accentColor.bright)
                             .clipShape(Capsule())
+
+                        if settings.hudShowMegapixels {
+                            Text(settings.photoMegapixels.label)
+                                .font(.system(size: 12, weight: .bold, design: .rounded))
+                                .foregroundColor(.white.opacity(0.92))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.75)
+                        }
 
                         if recorder.isCapturingPhoto {
                             ProgressView().tint(settings.accentColor.bright).scaleEffect(0.6)
@@ -482,7 +514,7 @@ struct CameraScreen: View {
                 .lineLimit(1)
 
                 HStack(spacing: 5) {
-                    if settings.hudShowStorageInfo {
+                    if showStorage {
                         HStack(spacing: 3) {
                             Image(systemName: "internaldrive")
                                 .font(.system(size: 9, weight: .semibold))
@@ -493,27 +525,29 @@ struct CameraScreen: View {
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.7)
                         }
+                    }
 
-                        if settings.cameraMode != .photo, plan.megabytesPerHour > 0 {
-                            let hoursLeft = Double(max(0, recorder.freeBytes - 300_000_000)) / 1_000_000.0 / plan.megabytesPerHour
+                    if showTimeRemaining {
+                        let hoursLeft = Double(max(0, recorder.freeBytes - 300_000_000)) / 1_000_000.0 / plan.megabytesPerHour
+                        if showStorage {
                             Text("·")
                                 .foregroundColor(Palette.slateLight)
                                 .font(.system(size: 11, weight: .bold))
-                            HStack(spacing: 3) {
-                                Image(systemName: "clock")
-                                    .font(.system(size: 9, weight: .semibold))
-                                    .foregroundColor(Palette.slateLight)
-                                Text("~" + Fmt.hours(hoursLeft))
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundColor(.white.opacity(0.68))
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.7)
-                            }
+                        }
+                        HStack(spacing: 3) {
+                            Image(systemName: "clock")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundColor(Palette.slateLight)
+                            Text("~" + Fmt.hours(hoursLeft))
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(.white.opacity(0.68))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.7)
                         }
                     }
 
-                    if settings.hudShowBatteryInfo, recorder.batteryPercent >= 0 {
-                        if settings.hudShowStorageInfo {
+                    if showBattery {
+                        if showStorage || showTimeRemaining {
                             Text("·")
                                 .foregroundColor(Palette.slateLight)
                                 .font(.system(size: 11, weight: .bold))
@@ -521,8 +555,8 @@ struct CameraScreen: View {
                         batteryIndicator
                     }
 
-                    if recorder.thermalState != .nominal && recorder.thermalState != .fair {
-                        if settings.hudShowStorageInfo || settings.hudShowBatteryInfo {
+                    if showThermal {
+                        if showStorage || showTimeRemaining || showBattery {
                             Text("·")
                                 .foregroundColor(Palette.slateLight)
                                 .font(.system(size: 11, weight: .bold))
@@ -533,6 +567,7 @@ struct CameraScreen: View {
                 .lineLimit(1)
                 .animation(settings.hudMotion.animation, value: settings.hudShowStorageInfo)
                 .animation(settings.hudMotion.animation, value: settings.hudShowBatteryInfo)
+                .animation(settings.hudMotion.animation, value: settings.hudShowTimeRemaining)
             }
 
             if recorder.isRecording && settings.recordAudio {
@@ -1692,10 +1727,15 @@ struct CameraScreen: View {
 
     private var focusReticle: some View {
         let reticleColor = focusReticleIsLock ? Palette.amber : settings.accentColor.bright
+        // Settled scale is 1.0, plus a slow ±6% breathing pulse only while
+        // a lock is actively held on screen — a plain focus tap never pulses.
+        let settledScale: CGFloat = (focusReticleIsLock && focusReticlePulsing) ? 1.06 : 1.0
         return ZStack {
             // Thin square outline — classic camera-app focus box, not a hexagon.
+            // Slightly thicker for that first "just landed" instant, thinning
+            // as it settles, mirroring how stock camera apps snap a focus box in.
             RoundedRectangle(cornerRadius: 4, style: .continuous)
-                .stroke(reticleColor, lineWidth: 1.2)
+                .stroke(reticleColor, lineWidth: focusReticleExpanded ? 1.8 : 1.2)
                 .frame(width: 64, height: 64)
 
             // Small corner tick marks for that "locking on" feel.
@@ -1723,23 +1763,49 @@ struct CameraScreen: View {
                     .offset(x: 30, y: -30)
             }
         }
-        .shadow(color: reticleColor.opacity(0.5), radius: 4)
-        .scaleEffect(focusPoint == nil ? 1.3 : 1.0)
+        .shadow(color: reticleColor.opacity(focusReticleExpanded ? 0.7 : 0.4), radius: focusReticleExpanded ? 8 : 3)
+        // Two-stage motion: the box pops in slightly oversized (a snappy
+        // "acquired" moment), then converges to its resting size a beat
+        // later — closer to how stock camera apps animate focus acquisition
+        // than a single flat fade. `focusPoint == nil` still governs the
+        // overall appear/disappear so it fades out from wherever it was.
+        .scaleEffect(focusPoint == nil ? 1.4 : (focusReticleExpanded ? 1.25 : settledScale))
         .opacity(focusPoint == nil ? 0 : 1)
-        .animation(.spring(response: 0.3, dampingFraction: 0.6), value: focusPoint)
+        .animation(.spring(response: 0.32, dampingFraction: 0.62), value: focusReticleExpanded)
+        .animation(.easeInOut(duration: 0.9), value: focusReticlePulsing)
+        .animation(.spring(response: 0.26, dampingFraction: 0.7), value: focusPoint)
     }
 
     private func showFocusReticle(at point: CGPoint, locked: Bool) {
         focusHideToken += 1
         let token = focusHideToken
         focusReticleIsLock = locked
+        focusReticleExpanded = true
+        focusReticlePulsing = false
         focusPoint = point
+
+        // Let the oversized "just landed" frame render for one beat, then
+        // converge to resting size — the pop-then-settle read that makes a
+        // focus acquisition feel deliberate rather than just a fade-in box.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            guard focusHideToken == token else { return }
+            focusReticleExpanded = false
+            if locked {
+                // Continuous gentle pulse for as long as the lock reticle
+                // stays visible, so an active lock visibly reads as "on".
+                withAnimation(Animation.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
+                    focusReticlePulsing = true
+                }
+            }
+        }
+
         // Give a lock confirmation a beat longer on screen than a plain
         // focus tap, since it's confirming a mode change, not just a spot.
         let holdDuration: Double = locked ? 1.3 : 0.9
         DispatchQueue.main.asyncAfter(deadline: .now() + holdDuration) {
             if focusHideToken == token {
                 focusPoint = nil
+                focusReticlePulsing = false
             }
         }
     }
