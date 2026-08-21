@@ -167,12 +167,7 @@ extension CameraRecorder {
             // Swapping to the still format here makes burst frames match
             // single-shot photos.
             var didSwapForStill = false
-            if #available(iOS 16.0, *) {
-                // iOS 16+ still handles this via maxPhotoDimensions on the
-                // discrete photo path; burst mode's live-frame aspect there
-                // already follows the still-capable active format, so no
-                // swap is needed.
-            } else if let device = self.cameraInput?.device {
+            if let device = self.cameraInput?.device {
                 let stillFormat = CameraFormatSelector.bestPhotoStillFormat(for: device, maxPreviewHeight: 1080, fps: 30)
                 if let stillFormat = stillFormat {
                     let stillDims = stillFormat.highResolutionStillImageDimensions
