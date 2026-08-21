@@ -669,6 +669,14 @@ struct SettingsScreen: View {
                 title: "Live recording stats",
                 icon: "waveform.path.ecg",
                 isOn: $settings.showRecordingStats
+            ),
+            // Reopens on whichever camera (front/rear) was active last,
+            // instead of always resetting to the rear camera on launch.
+            SettingsToggleSpec(
+                id: "keepLastCamera",
+                title: "Keep last camera",
+                icon: "arrow.triangle.2.circlepath.camera",
+                isOn: $settings.keepLastCamera
             )
         ]
     }
@@ -684,7 +692,8 @@ struct SettingsScreen: View {
         Section(header: sectionHeader("Capture Assist", icon: "viewfinder")) {
             assistToggleGroup(ids: ["stabilisation"])
             assistGrid
-            assistToggleGroup(ids: ["levelMeter", "autoDim", "longevity", "recordingStats"])
+            assistToggleGroup(ids: ["levelMeter", "autoDim", "longevity", "recordingStats", "keepLastCamera"])
+            volumeButtonPicker
         }
     }
 
@@ -692,7 +701,8 @@ struct SettingsScreen: View {
         Section(header: sectionHeader("Capture Assist", icon: "viewfinder"),
                 footer: Text("Video-only options (split, HEVC presets) are hidden in Slow-Mo.")) {
             assistGrid
-            assistToggleGroup(ids: ["levelMeter", "longevity", "recordingStats"])
+            assistToggleGroup(ids: ["levelMeter", "longevity", "recordingStats", "keepLastCamera"])
+            volumeButtonPicker
         }
     }
 
@@ -700,7 +710,24 @@ struct SettingsScreen: View {
         Section(header: sectionHeader("Capture Assist", icon: "viewfinder"),
                 footer: Text("Video settings are hidden while you are in Photo mode.")) {
             assistGrid
-            assistToggleGroup(ids: ["levelMeter"])
+            assistToggleGroup(ids: ["levelMeter", "keepLastCamera"])
+            volumeButtonPicker
+        }
+    }
+
+    /// Volume-button behavior picker — lives at the tail of Capture Assist
+    /// in every mode (same section, same spot) rather than a dedicated
+    /// top-level section, since it's a small one-row preference.
+    private var volumeButtonPicker: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            SettingsPickerRow(
+                title: "Volume button",
+                icon: "volume.2.fill",
+                accentColor: settings.accentColor.color,
+                selection: $settings.volumeButtonAction,
+                label: { (v: VolumeButtonAction) -> Text in Text(v.label) }
+            )
+            pickerDetailCaption(settings.volumeButtonAction.detail)
         }
     }
 
@@ -779,7 +806,7 @@ struct SettingsScreen: View {
     /// Camera HUD group — the pill itself, plus the readouts that actually
     /// render inside it (battery / storage & time left), rather than being
     /// separate viewfinder chrome.
-    private var pillElementIds: Set<HUDElement> { [.infoPill, .batteryInfo, .storageInfo] }
+    private var pillElementIds: Set<HUDElement> { [.infoPill, .batteryInfo, .storageInfo, .megapixels, .timeRemaining] }
 
     /// One `SettingsToggleSpec` per `HUDElement`, built generically from
     /// `AppSettings.binding(for:)` so adding a new hideable element later
@@ -1097,7 +1124,7 @@ struct SettingsScreen: View {
                      body: "No background filming on iOS. Use the moon button to dim.")
             aboutRow(icon: "hand.tap.fill",
                      title: "Shortcuts",
-                     body: "Double-tap preview to flip cameras. Volume keys = shutter.")
+                     body: "Double-tap preview to flip cameras. Volume keys = shutter (change this under Capture Assist).")
             aboutRow(icon: "leaf.fill",
                      title: "Longevity Mode",
                      body: "Tuned for iPhone 7 & older chips — cooler, longer, smaller files.")
