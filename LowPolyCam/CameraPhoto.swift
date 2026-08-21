@@ -90,7 +90,6 @@ extension CameraRecorder {
         // others want it saved exactly as the sensor sees it. New setting controls this.
         let mirrored = isFrontCamera && !settings.saveSelfiesUnmirrored
         let orientation = physicalOrientation.videoOrientation
-        let rotationAngle = physicalOrientation.videoRotationAngle
 
         sessionQueue.async {
             // On iOS 15 the active format drives both preview AND still aspect
@@ -99,9 +98,7 @@ extension CameraRecorder {
             // for the capture, then restore the preview format so the live
             // view stays sharp (not pixelated) the rest of the time.
             var didSwapForStill = false
-            if #available(iOS 16.0, *) {
-                // iOS 16+ uses maxPhotoDimensions; no format swap needed.
-            } else if let device = self.cameraInput?.device {
+            if let device = self.cameraInput?.device {
                 let stillFormat = CameraFormatSelector.bestPhotoStillFormat(for: device, maxPreviewHeight: 1080, fps: 30)
                 if let stillFormat = stillFormat {
                     let stillDims = stillFormat.highResolutionStillImageDimensions
@@ -128,53 +125,25 @@ extension CameraRecorder {
                     photoSettings = AVCapturePhotoSettings()
                 }
 
-                if #available(iOS 16.0, *) {
-                    // AVCapturePhotoSettings.maxPhotoDimensions defaults to the
-                    // *smallest* supported size, not the max. Explicitly request
-                    // the full-sensor dimensions that configurePhotoOutput() set
-                    // on the output, so we capture at true max resolution (e.g.
-                    // 12MP). PhotoCaptureProcessor then downsamples to the user's
-                    // chosen photoMegapixels target when encoding.
-                    photoSettings.maxPhotoDimensions = self.photoOutput.maxPhotoDimensions
-                } else {
-                    photoSettings.isHighResolutionPhotoEnabled = self.photoOutput.isHighResolutionCaptureEnabled
-                }
+                photoSettings.isHighResolutionPhotoEnabled = self.photoOutput.isHighResolutionCaptureEnabled
                 photoSettings.flashMode = .off
                 // Match the live preview's rendering: request the same top quality
                 // tier the output is configured for (Smart HDR / multi-frame fusion),
                 // and let the system apply still-image stabilization if it decides
                 // the scene needs it. Previously neither was set, so the discrete
                 // still capture rendered flatter/darker than the live feed.
-                if #available(iOS 13.0, *) {
-                    photoSettings.photoQualityPrioritization = .quality
-                }
+                photoSettings.photoQualityPrioritization = .quality
                 if self.photoOutput.isStillImageStabilizationSupported {
                     photoSettings.isAutoStillImageStabilizationEnabled = true
                 }
 
                 if let connection = self.photoOutput.connection(with: .video) {
-                    // videoOrientation/isVideoMirrored are deprecated as of iOS 17 and
-                    // are silently ignored on the photo connection there — the still
-                    // then saves with the sensor's raw landscape buffer and EXIF
-                    // orientation 1, which is the "rotated/flipped" photo bug. Use the
-                    // replacement videoRotationAngle/isVideoMirrored(for photo) API
-                    // when available, and only fall back to the old API pre-iOS 17.
-                    if #available(iOS 17.0, *) {
-                        if connection.isVideoRotationAngleSupported(rotationAngle) {
-                            connection.videoRotationAngle = rotationAngle
-                        }
-                        if connection.isVideoMirroringSupported {
-                            connection.automaticallyAdjustsVideoMirroring = false
-                            connection.isVideoMirrored = mirrored
-                        }
-                    } else {
-                        if connection.isVideoOrientationSupported {
-                            connection.videoOrientation = orientation
-                        }
-                        if connection.isVideoMirroringSupported {
-                            connection.automaticallyAdjustsVideoMirroring = false
-                            connection.isVideoMirrored = mirrored
-                        }
+                    if connection.isVideoOrientationSupported {
+                        connection.videoOrientation = orientation
+                    }
+                    if connection.isVideoMirroringSupported {
+                        connection.automaticallyAdjustsVideoMirroring = false
+                        connection.isVideoMirrored = mirrored
                     }
                 }
 
@@ -355,5 +324,3 @@ extension CameraRecorder {
 
 
 }
-
-
