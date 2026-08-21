@@ -32,6 +32,10 @@ struct CameraScreen: View {
     // Tap to focus
     @State private var focusPoint: CGPoint?
     @State private var focusHideToken = 0
+    /// True while the reticle shown at `focusPoint` is for a tap-and-hold
+    /// lock rather than a plain focus/expose tap — drawn in a different
+    /// color so the two moments are visually distinct.
+    @State private var focusReticleIsLock = false
 
     // Notice Auto-Dismiss
     @State private var noticeHideToken = 0
@@ -69,9 +73,19 @@ struct CameraScreen: View {
                         withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { showProMenu = false }
                     }
                     recorder?.focusAndExpose(at: devicePoint)
-                    showFocusReticle(at: viewPoint)
+                    showFocusReticle(at: viewPoint, locked: false)
                 }, onDoubleTap: { [weak recorder] in
                     recorder?.flipCamera()
+                }, onLongPress: { [weak recorder] devicePoint, viewPoint in
+                    guard let recorder else { return }
+                    if settings.hapticFeedbackEnabled { zoomHaptic.selectionChanged() }
+                    recorder.lockFocus(at: devicePoint)
+                    showFocusReticle(at: viewPoint, locked: true)
+                }, onTwoFingerLongPress: { [weak recorder] devicePoint, viewPoint in
+                    guard let recorder else { return }
+                    if settings.hapticFeedbackEnabled { zoomHaptic.selectionChanged() }
+                    recorder.lockExposure(at: devicePoint)
+                    showFocusReticle(at: viewPoint, locked: true)
                 })
                 .gesture(
                     MagnificationGesture()
@@ -150,6 +164,12 @@ struct CameraScreen: View {
             } else {
                 VStack(spacing: 0) {
                     topHUD
+
+                    if recorder.focusLocked || recorder.exposureLocked {
+                        focusExposureLockBar
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                            .padding(.top, 8)
+                    }
 
                     if let notice = recorder.notice {
                         noticeBar(notice)
@@ -675,7 +695,7 @@ struct CameraScreen: View {
     /// display order. This is the single place to touch when adding,
     /// removing, or reordering a Pro Tools control.
     private var proToolsDrawerControls: [ProToolControl] {
-        [
+        var controls: [ProToolControl] = [
             .chips(ProToolControl.ChipsSpec(
                 id: "timer",
                 icon: "timer",
@@ -719,6 +739,40 @@ struct CameraScreen: View {
                 }
             ))
         ]
+        let zoomSpec = zoomPresetCustomizationSpec
+        if !zoomSpec.items.isEmpty {
+            controls.append(.chips(zoomSpec))
+        }
+        return controls
+    }
+
+    /// Which quick-zoom buttons appear in `zoomPresetRow`. Each chip toggles
+    /// its setting on/off (this is a multi-select row, not exclusive like
+    /// Timer above) and only offers presets the current lens can actually
+    /// reach.
+    private var zoomPresetCustomizationSpec: ProToolControl.ChipsSpec {
+        var items: [ProToolControl.ChipsSpec.Item] = []
+        if recorder.minZoomFactor <= 0.6 {
+            items.append(.init(id: "0.5x", label: "0.5x", selected: settings.zoomPresetHalfEnabled) {
+                settings.zoomPresetHalfEnabled.toggle()
+            })
+        }
+        if recorder.maxZoomFactor >= 1.9 {
+            items.append(.init(id: "2x", label: "2x", selected: settings.zoomPreset2xEnabled) {
+                settings.zoomPreset2xEnabled.toggle()
+            })
+        }
+        if recorder.maxZoomFactor >= 4.9 {
+            items.append(.init(id: "5x", label: "5x", selected: settings.zoomPreset5xEnabled) {
+                settings.zoomPreset5xEnabled.toggle()
+            })
+        }
+        return ProToolControl.ChipsSpec(
+            id: "zoomPresets",
+            icon: "camera.metering.center.weighted",
+            title: "Zoom presets",
+            items: items
+        )
     }
 
     private var proToolsDrawer: some View {
@@ -749,6 +803,13 @@ struct CameraScreen: View {
 
             // Capped height + internal scroll so adding more controls later
             // can never push the drawer (or the close button) off-screen.
+            // Raised from the old 0.42/340 cap, which forced a scroll to
+            // reach White balance even with just the original 4 controls on
+            // iPhone 7's 667pt-tall screen — this cap comfortably fits all
+            // current controls (Timer, Level meter, Exposure, White
+            // balance, Zoom presets) with the drawer's own header still
+            // visible above, while still protecting against a future
+            // control list overflowing the screen.
             ScrollView(.vertical, showsIndicators: false) {
                 ProToolsControlList(
                     controls: proToolsDrawerControls,
@@ -756,7 +817,7 @@ struct CameraScreen: View {
                     hapticsEnabled: settings.hapticFeedbackEnabled
                 )
             }
-            .frame(maxHeight: min(UIScreen.main.bounds.height * 0.42, 340))
+            .frame(maxHeight: min(UIScreen.main.bounds.height * 0.66, 460))
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 14)
@@ -833,6 +894,13 @@ struct CameraScreen: View {
 
     private var bottomHUD: some View {
         VStack(spacing: 8) {
+            // Smooth continuous zoom control, sitting just above the preset
+            // row so a precise drag is available alongside the quick-tap
+            // presets rather than only the presets.
+            zoomSlider
+                .disabled(recorder.isSwitchingCamera || recorder.isSaving)
+                .opacity((recorder.isSwitchingCamera || recorder.isSaving) ? 0.35 : 1)
+
             // Zoom preset row stays visible & interactive during recording
             zoomPresetRow
                 .disabled(recorder.isSwitchingCamera || recorder.isSaving)
@@ -1352,6 +1420,51 @@ struct CameraScreen: View {
         countdownRemaining = 0
     }
 
+    /// Persistent "what's locked" pill — stays up the whole time a lock is
+    /// active (unlike the reticle flash, which fades in ~1s), since AF/AE
+    /// lock can otherwise be a silent state that's easy to forget is on and
+    /// then blame for a blurry/blown-out shot. Tapping either badge (or the
+    /// whole pill) releases both locks and returns to continuous AF/AE.
+    private var focusExposureLockBar: some View {
+        HStack(spacing: 10) {
+            if recorder.focusLocked {
+                lockChip(label: "AF LOCK", icon: "camera.metering.spot")
+            }
+            if recorder.exposureLocked {
+                lockChip(label: "AE LOCK", icon: "sun.max.fill")
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(
+            Capsule()
+                .fill(Palette.panel.opacity(0.9))
+                .background(Capsule().fill(Palette.slateDeep.opacity(usesLightweightMaterial ? 0.55 : 0.3)))
+        )
+        .overlay(Capsule().stroke(Palette.amber.opacity(0.5), lineWidth: 1))
+        .shadow(color: .black.opacity(0.35), radius: 10, x: 0, y: 4)
+        .onTapGesture {
+            if settings.hapticFeedbackEnabled { levelHaptic.selectionChanged() }
+            if recorder.focusLocked { recorder.unlockFocus() }
+            if recorder.exposureLocked { recorder.unlockExposure() }
+        }
+    }
+
+    private func lockChip(label: String, icon: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 10, weight: .bold))
+            Image(systemName: "lock.fill")
+                .font(.system(size: 8, weight: .bold))
+            Text(label)
+                .font(.system(size: 11, weight: .black, design: .rounded))
+        }
+        .foregroundColor(Palette.slateDeep)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Capsule().fill(Palette.amber))
+    }
+
     private func noticeBar(_ text: String) -> some View {
         HStack(spacing: 8) {
             Image(systemName: "info.circle.fill")
@@ -1480,11 +1593,71 @@ struct CameraScreen: View {
 
     private var zoomPresets: [CGFloat] {
         var options: [CGFloat] = []
-        if recorder.minZoomFactor <= 0.6 { options.append(0.5) }
+        if recorder.minZoomFactor <= 0.6 && settings.zoomPresetHalfEnabled { options.append(0.5) }
         options.append(1)
-        if recorder.maxZoomFactor >= 1.9 { options.append(2) }
-        if recorder.maxZoomFactor >= 4.9 { options.append(5) }
+        if recorder.maxZoomFactor >= 1.9 && settings.zoomPreset2xEnabled { options.append(2) }
+        if recorder.maxZoomFactor >= 4.9 && settings.zoomPreset5xEnabled { options.append(5) }
         return options
+    }
+
+    // MARK: Smooth zoom slider
+
+    /// True once the live zoom factor is past what the single physical
+    /// (wide) lens on iPhone 7 can resolve natively — i.e. any zoom beyond
+    /// 1x here is a digital crop, not a switch to another lens.
+    private var isDigitalZoom: Bool {
+        recorder.zoomFactor > recorder.opticalZoomCeiling + 0.02
+    }
+
+    private var zoomSliderBinding: Binding<Double> {
+        Binding(
+            get: { Double(recorder.zoomFactor) },
+            set: { recorder.setZoom(factor: CGFloat($0)) }
+        )
+    }
+
+    private var zoomSlider: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "minus.magnifyingglass")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(.white.opacity(0.55))
+
+            Slider(
+                value: zoomSliderBinding,
+                in: Double(recorder.minZoomFactor)...Double(max(recorder.minZoomFactor + 0.01, recorder.maxZoomFactor)),
+                onEditingChanged: { editing in
+                    if editing {
+                        showZoomLabel = true
+                        recorder.suppressVolumeTriggerBriefly()
+                    } else {
+                        recorder.suppressVolumeTriggerBriefly()
+                        scheduleHideZoomLabel()
+                    }
+                }
+            )
+            .tint(settings.accentColor.color)
+
+            Image(systemName: "plus.magnifyingglass")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(.white.opacity(0.55))
+
+            if isDigitalZoom {
+                Text("DIGITAL")
+                    .font(.system(size: 9, weight: .black, design: .rounded))
+                    .foregroundColor(.white.opacity(0.9))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(Palette.record.opacity(0.85)))
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(
+            Capsule()
+                .fill(Palette.panel.opacity(0.7))
+                .background(Capsule().fill(Palette.slateDeep.opacity(usesLightweightMaterial ? 0.5 : 0.28)))
+        )
+        .overlay(Capsule().stroke(Color.white.opacity(0.1), lineWidth: 1))
     }
 
     private func zoomLabel(for preset: CGFloat) -> String {
@@ -1559,9 +1732,16 @@ struct CameraScreen: View {
     }
 
     private var zoomLabel: some View {
-        Text(String(format: "%.1fx", recorder.zoomFactor))
-            .font(.system(size: 15, weight: .bold, design: .rounded))
-            .foregroundColor(.white)
+        HStack(spacing: 6) {
+            Text(String(format: "%.1fx", recorder.zoomFactor))
+                .font(.system(size: 15, weight: .bold, design: .rounded))
+                .foregroundColor(.white)
+            if isDigitalZoom {
+                Text("Digital zoom")
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundColor(.white.opacity(0.75))
+            }
+        }
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
             .background(
@@ -1589,36 +1769,53 @@ struct CameraScreen: View {
     }
 
     private var focusReticle: some View {
-        ZStack {
+        let reticleColor = focusReticleIsLock ? Palette.amber : settings.accentColor.bright
+        return ZStack {
             // Thin square outline — classic camera-app focus box, not a hexagon.
             RoundedRectangle(cornerRadius: 4, style: .continuous)
-                .stroke(settings.accentColor.bright, lineWidth: 1.2)
+                .stroke(reticleColor, lineWidth: 1.2)
                 .frame(width: 64, height: 64)
 
             // Small corner tick marks for that "locking on" feel.
             ForEach(0..<4) { i in
                 Rectangle()
-                    .fill(settings.accentColor.bright)
+                    .fill(reticleColor)
                     .frame(width: 8, height: 2)
                     .offset(x: (i % 2 == 0 ? -1 : 1) * 28, y: (i < 2 ? -1 : 1) * 32)
             }
 
             // Small center dot to mark the exact focus point.
             Circle()
-                .fill(settings.accentColor.bright)
+                .fill(reticleColor)
                 .frame(width: 4, height: 4)
+
+            // A small padlock badge on top-right of the box for tap-and-hold
+            // locks, so the reticle itself communicates "locked" without
+            // needing to read the AF/AE pill elsewhere on screen.
+            if focusReticleIsLock {
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundColor(Palette.slateDeep)
+                    .padding(3)
+                    .background(Circle().fill(reticleColor))
+                    .offset(x: 30, y: -30)
+            }
         }
-        .shadow(color: settings.accentColor.color.opacity(0.5), radius: 4)
+        .shadow(color: reticleColor.opacity(0.5), radius: 4)
         .scaleEffect(focusPoint == nil ? 1.3 : 1.0)
         .opacity(focusPoint == nil ? 0 : 1)
         .animation(.spring(response: 0.3, dampingFraction: 0.6), value: focusPoint)
     }
 
-    private func showFocusReticle(at point: CGPoint) {
+    private func showFocusReticle(at point: CGPoint, locked: Bool) {
         focusHideToken += 1
         let token = focusHideToken
+        focusReticleIsLock = locked
         focusPoint = point
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
+        // Give a lock confirmation a beat longer on screen than a plain
+        // focus tap, since it's confirming a mode change, not just a spot.
+        let holdDuration: Double = locked ? 1.3 : 0.9
+        DispatchQueue.main.asyncAfter(deadline: .now() + holdDuration) {
             if focusHideToken == token {
                 focusPoint = nil
             }
