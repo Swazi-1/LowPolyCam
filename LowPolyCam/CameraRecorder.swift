@@ -68,6 +68,18 @@ final class CameraRecorder: NSObject, ObservableObject {
     @Published var zoomFactor: CGFloat = 1
     @Published var maxZoomFactor: CGFloat = 1
     @Published var minZoomFactor: CGFloat = 1
+    /// Zoom factor (UI units, 1x = the physical wide lens) beyond which the
+    /// image is no longer coming straight off the sensor at native
+    /// resolution but is being digitally cropped/interpolated. iPhone 7 has
+    /// a single physical (wide) lens, so this is always 1x — there is no
+    /// second optical lens for the system to switch to.
+    @Published var opticalZoomCeiling: CGFloat = 1
+    /// True while focus is locked at a fixed point (tap-and-hold on the
+    /// preview) instead of continuously re-focusing.
+    @Published var focusLocked = false
+    /// True while exposure is locked at a fixed point (two-finger
+    /// tap-and-hold on the preview) instead of continuously re-metering.
+    @Published var exposureLocked = false
     @Published var audioLevel: Float = 0
     @Published var lastClipThumbnail: UIImage?
     @Published var lastClipURL: URL?
