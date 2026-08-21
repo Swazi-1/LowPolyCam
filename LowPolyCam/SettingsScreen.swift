@@ -33,6 +33,7 @@ struct SettingsScreen: View {
     @State private var appliedPresetId: String? = nil
     @State private var showPresetsSheet = false
     @State private var showAboutSheet = false
+    @State private var showCustomColorSheet = false
     @State private var presetHaptic = UISelectionFeedbackGenerator()
     @State private var freeBytesSnapshot: Int64 = 0
     @State private var isFrontSnapshot = false
@@ -52,6 +53,9 @@ struct SettingsScreen: View {
                 summarySection
 
                 if isFrontSnapshot { frontCameraBanner }
+
+                // Same in every mode — the live HUD chrome isn't mode-specific.
+                hudCustomizationSection
 
                 // Strict mode separation — nothing that does not affect the active mode.
                 switch settings.cameraMode {
@@ -103,6 +107,9 @@ struct SettingsScreen: View {
             }
             .sheet(isPresented: $showAboutSheet) {
                 aboutSheet
+            }
+            .sheet(isPresented: $showCustomColorSheet) {
+                customColorSheet
             }
         }
         .navigationViewStyle(StackNavigationViewStyle())
@@ -721,10 +728,46 @@ struct SettingsScreen: View {
         .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 8, trailing: 16))
     }
 
+    // MARK: - Camera HUD
+
+    /// One `SettingsToggleSpec` per `HUDElement`, built generically from
+    /// `AppSettings.binding(for:)` so adding a new hideable element later
+    /// is a one-line change in `HUDElement` + `AppSettings`, not here.
+    private var hudToggles: [SettingsToggleSpec] {
+        HUDElement.allCases.map { element in
+            SettingsToggleSpec(
+                id: element.id,
+                title: element.title,
+                icon: element.icon,
+                isOn: settings.binding(for: element)
+            )
+        }
+    }
+
+    private var hudCustomizationSection: some View {
+        Section(header: sectionHeader("Camera HUD", icon: "camera.viewfinder"),
+                footer: Text("Hide anything you don't want cluttering the viewfinder. The shutter and this Settings button always stay visible.")) {
+            SettingsToggleGroup(specs: hudToggles, accentColor: settings.accentColor.color)
+
+            SettingsPickerRow(
+                title: "HUD animation",
+                icon: "wand.and.stars",
+                accentColor: settings.accentColor.color,
+                selection: $settings.hudMotion,
+                label: { Text($0.label) }
+            )
+        }
+    }
+
     // MARK: - Feedback (sounds / haptics)
 
     private var feedbackSection: some View {
-        Section(header: sectionHeader("Sounds & Haptics", icon: "speaker.wave.2.fill")) {
+        Section(header: sectionHeader("Sounds & Haptics", icon: "speaker.wave.2.fill"),
+                footer: Group {
+                    if settings.hapticFeedbackEnabled {
+                        Text("Intensity applies to shutter, record start/stop, and countdown taps.")
+                    }
+                }) {
             Toggle(isOn: $settings.shutterSoundEnabled) {
                 Label("Shutter & dial sounds", systemImage: "speaker.wave.2.fill")
                     .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
@@ -733,6 +776,16 @@ struct SettingsScreen: View {
             Toggle(isOn: $settings.hapticFeedbackEnabled) {
                 Label("Haptic feedback", systemImage: "hand.tap.fill")
                     .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
+            }
+
+            if settings.hapticFeedbackEnabled {
+                SettingsPickerRow(
+                    title: "Haptic strength",
+                    icon: "waveform.path",
+                    accentColor: settings.accentColor.color,
+                    selection: $settings.hapticIntensity,
+                    label: { Text($0.label) }
+                )
             }
         }
     }
@@ -797,23 +850,46 @@ struct SettingsScreen: View {
                         Button(action: {
                             settings.accentColor = color
                             presetHaptic.selectionChanged()
+                            // Custom swatch: opens the color picker on every tap, whether
+                            // this is the first pick or a re-tap to adjust the hue.
+                            if color == .custom {
+                                showCustomColorSheet = true
+                            }
                         }) {
                             VStack(spacing: 6) {
-                                Circle()
-                                    .fill(
-                                        LinearGradient(
-                                            colors: [color.bright, color.color],
-                                            startPoint: .topLeading,
-                                            endPoint: .bottomTrailing
-                                        )
-                                    )
-                                    .frame(width: 36, height: 36)
-                                    .overlay(
+                                Group {
+                                    if color == .custom {
+                                        ZStack {
+                                            Circle()
+                                                .fill(
+                                                    LinearGradient(
+                                                        colors: [color.bright, color.color],
+                                                        startPoint: .topLeading,
+                                                        endPoint: .bottomTrailing
+                                                    )
+                                                )
+                                            Image(systemName: "eyedropper.halffull")
+                                                .font(.system(size: 12, weight: .bold))
+                                                .foregroundColor(.white)
+                                        }
+                                    } else {
                                         Circle()
-                                            .stroke(Color.white, lineWidth: isSelected ? 2.5 : 0)
-                                    )
-                                    .shadow(color: color.color.opacity(isSelected ? 0.45 : 0.12),
-                                            radius: isSelected ? 6 : 2)
+                                            .fill(
+                                                LinearGradient(
+                                                    colors: [color.bright, color.color],
+                                                    startPoint: .topLeading,
+                                                    endPoint: .bottomTrailing
+                                                )
+                                            )
+                                    }
+                                }
+                                .frame(width: 36, height: 36)
+                                .overlay(
+                                    Circle()
+                                        .stroke(Color.white, lineWidth: isSelected ? 2.5 : 0)
+                                )
+                                .shadow(color: color.color.opacity(isSelected ? 0.45 : 0.12),
+                                        radius: isSelected ? 6 : 2)
                                 Text(shortAccentName(color))
                                     .font(.system(size: 11, weight: isSelected ? .bold : .medium, design: .rounded))
                                     .foregroundColor(isSelected ? color.bright : .secondary)
@@ -836,7 +912,32 @@ struct SettingsScreen: View {
         case .ice: return "Ice"
         case .aurora: return "Aurora"
         case .coral: return "Coral"
+        case .custom: return "Custom"
         }
+    }
+
+    private var customColorSheet: some View {
+        NavigationView {
+            List {
+                Section(footer: Text("Pick any color for the shutter ring, highlights, and controls throughout the camera UI.")) {
+                    ColorPicker(selection: Binding(
+                        get: { settings.customColor },
+                        set: { newColor in
+                            settings.customAccentColorHex = newColor.toHexString()
+                            settings.accentColor = .custom
+                        }
+                    ), supportsOpacity: false) {
+                        Label("Custom accent color", systemImage: "eyedropper.halffull")
+                            .labelStyle(SettingsLabelStyle(color: settings.customColor))
+                    }
+                }
+            }
+            .listStyle(InsetGroupedListStyle())
+            .navigationBarTitle("Custom Color", displayMode: .inline)
+            .navigationBarItems(trailing: Button("Done") { showCustomColorSheet = false })
+        }
+        .navigationViewStyle(StackNavigationViewStyle())
+        .accentColor(settings.customColor)
     }
 
     // MARK: - Advanced
