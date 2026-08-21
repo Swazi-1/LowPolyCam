@@ -667,33 +667,57 @@ struct CameraScreen: View {
             // squeezed the flash/settings icons off to the side. A second
             // row grows the pill down instead of sideways, matching how the
             // idle-state pill already stacks its two info rows.
-            if recorder.isRecording && settings.showRecordingStats {
+            if recorder.isRecording && (settings.showRecordingStats || showsTimeRemainingInPill) {
                 HStack(spacing: 5) {
-                    HStack(spacing: 3) {
-                        Image(systemName: "speedometer")
-                            .font(.system(size: 9, weight: .semibold))
+                    if settings.showRecordingStats {
+                        HStack(spacing: 3) {
+                            Image(systemName: "speedometer")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundColor(Palette.slateLight)
+                            Text(recorder.recordingStats.measuredFPSLabel)
+                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                .foregroundColor(.white.opacity(0.68))
+                        }
+                        Text("·")
                             .foregroundColor(Palette.slateLight)
-                        Text(recorder.recordingStats.measuredFPSLabel)
-                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                            .foregroundColor(.white.opacity(0.68))
+                            .font(.system(size: 11, weight: .bold))
+                        HStack(spacing: 3) {
+                            Image(systemName: "waveform")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundColor(Palette.slateLight)
+                            // Real on-disk bitrate is unavailable for the first
+                            // few seconds of every clip (AVAssetWriter only
+                            // flushes bytes at each movie-fragment boundary), so
+                            // fall back to the configured target bitrate instead
+                            // of showing a bare "--" the whole time.
+                            Text(recorder.recordingStats.currentBitrateBps > 0
+                                 ? recorder.recordingStats.currentBitrateLabel
+                                 : RecordingStatsSnapshot.formatBitrate(Double(plan.videoBitrate)) + "*")
+                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                .foregroundColor(.white.opacity(0.68))
+                        }
                     }
-                    Text("·")
-                        .foregroundColor(Palette.slateLight)
-                        .font(.system(size: 11, weight: .bold))
-                    HStack(spacing: 3) {
-                        Image(systemName: "waveform")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundColor(Palette.slateLight)
-                        // Real on-disk bitrate is unavailable for the first
-                        // few seconds of every clip (AVAssetWriter only
-                        // flushes bytes at each movie-fragment boundary), so
-                        // fall back to the configured target bitrate instead
-                        // of showing a bare "--" the whole time.
-                        Text(recorder.recordingStats.currentBitrateBps > 0
-                             ? recorder.recordingStats.currentBitrateLabel
-                             : RecordingStatsSnapshot.formatBitrate(Double(plan.videoBitrate)) + "*")
-                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                            .foregroundColor(.white.opacity(0.68))
+
+                    // "~X h/min left" — was only ever built in the idle
+                    // (non-recording) branch above, so it vanished the
+                    // instant recording started even though the HUD toggle
+                    // for it was on. Same formula, same look, just also
+                    // rendered while recorder.isRecording is true.
+                    if showsTimeRemainingInPill {
+                        if settings.showRecordingStats {
+                            Text("·")
+                                .foregroundColor(Palette.slateLight)
+                                .font(.system(size: 11, weight: .bold))
+                        }
+                        let hoursLeft = Double(max(0, recorder.freeBytes - 300_000_000)) / 1_000_000.0 / plan.megabytesPerHour
+                        HStack(spacing: 3) {
+                            Image(systemName: "clock")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundColor(Palette.slateLight)
+                            Text("~" + Fmt.hours(hoursLeft))
+                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                .foregroundColor(.white.opacity(0.68))
+                        }
                     }
                 }
                 .lineLimit(1)
