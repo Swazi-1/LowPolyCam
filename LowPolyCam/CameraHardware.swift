@@ -249,6 +249,11 @@ extension CameraRecorder {
     /// re-racks. autoFocus forces a focus cycle; subject-area monitoring then
     /// returns to continuous AF once the scene changes.
     func focusAndExpose(at point: CGPoint) {
+        // A normal tap always means "focus here normally" — if AE/AF Lock
+        // (long-press) was active, a plain tap is how the user exits it,
+        // same as stock Camera.
+        DispatchQueue.main.async { self.focusExposureLocked = false }
+        guard !settings.manualFocusEnabled else { return }
         let clamped = CGPoint(
             x: min(max(point.x, 0), 1),
             y: min(max(point.y, 0), 1)
@@ -260,10 +265,99 @@ extension CameraRecorder {
     }
 
     func resetFocusAndExposureToAuto() {
+        DispatchQueue.main.async { self.focusExposureLocked = false }
         applyFocusAndExposure(at: CGPoint(x: 0.5, y: 0.5),
                               focus: .continuousAutoFocus,
                               exposure: .continuousAutoExposure,
                               monitorSubjectArea: false)
+    }
+
+    // MARK: AE/AF Lock (long-press)
+    //
+    // Mirrors stock Camera's "tap and hold to lock AE/AF": the sensor
+    // autofocuses/auto-exposes at the pressed point same as a normal tap,
+    // then — once the lens has had a moment to converge — both are frozen
+    // in place with `.locked` mode until the next plain tap. No extra
+    // GPU/CPU work versus a normal tap-to-focus, just native AVFoundation
+    // calls, so this is free on A10.
+    func lockFocusAndExposure(at point: CGPoint) {
+        guard !settings.manualFocusEnabled else { return }
+        let clamped = CGPoint(x: min(max(point.x, 0), 1), y: min(max(point.y, 0), 1))
+        sessionQueue.async {
+            guard let device = self.cameraInput?.device else { return }
+            do {
+                try device.lockForConfiguration()
+                if device.isFocusPointOfInterestSupported { device.focusPointOfInterest = clamped }
+                if device.isExposurePointOfInterestSupported { device.exposurePointOfInterest = clamped }
+                if device.isFocusModeSupported(.autoFocus) { device.focusMode = .autoFocus }
+                if device.isExposureModeSupported(.autoExpose) { device.exposureMode = .autoExpose }
+                // Don't let a scene change silently pop us back to auto
+                // while the user thinks focus/exposure are locked.
+                device.isSubjectAreaChangeMonitoringEnabled = false
+                device.unlockForConfiguration()
+            } catch { }
+
+            // Give the lens ~0.4s to converge on the tapped point before
+            // freezing it — matches how stock Camera's AE/AF lock behaves.
+            self.sessionQueue.asyncAfter(deadline: .now() + 0.4) {
+                guard let device = self.cameraInput?.device else { return }
+                do {
+                    try device.lockForConfiguration()
+                    if device.isFocusModeSupported(.locked) { device.focusMode = .locked }
+                    if device.isExposureModeSupported(.locked) { device.exposureMode = .locked }
+                    device.unlockForConfiguration()
+                    DispatchQueue.main.async { self.focusExposureLocked = true }
+                } catch { }
+            }
+        }
+    }
+
+    // MARK: Manual Focus (Pro Tools)
+    //
+    // Uses the same native `setFocusModeLocked(lensPosition:)` API stock
+    // Camera's manual focus uses — a single float, no extra GPU/CPU cost,
+    // safe on A10. `lensPosition` is 0 (closest) to 1 (infinity).
+
+    func setManualFocus(enabled: Bool) {
+        guard enabled else {
+            resetFocusAndExposureToAuto()
+            return
+        }
+        let position = settings.manualFocusLensPosition
+        sessionQueue.async {
+            guard let device = self.cameraInput?.device else { return }
+            guard device.isLockingFocusWithCustomLensPositionSupported else {
+                DispatchQueue.main.async {
+                    self.notice = "Manual focus unsupported here"
+                    self.settings.manualFocusEnabled = false
+                }
+                return
+            }
+            do {
+                try device.lockForConfiguration()
+                device.setFocusModeLocked(lensPosition: position, completionHandler: nil)
+                device.isSubjectAreaChangeMonitoringEnabled = false
+                device.unlockForConfiguration()
+                DispatchQueue.main.async { self.focusExposureLocked = false }
+            } catch { }
+        }
+    }
+
+    func setManualFocusLensPosition(_ position: Float) {
+        // The Pro Tools slider's binding already writes the clamped value
+        // straight into `settings.manualFocusLensPosition` — this only
+        // needs to push it to the hardware, not write it back (writing it
+        // back here would fight the live slider drag).
+        let clamped = max(0, min(position, 1))
+        sessionQueue.async {
+            guard let device = self.cameraInput?.device,
+                  device.isLockingFocusWithCustomLensPositionSupported else { return }
+            do {
+                try device.lockForConfiguration()
+                device.setFocusModeLocked(lensPosition: clamped, completionHandler: nil)
+                device.unlockForConfiguration()
+            } catch { }
+        }
     }
 
     func applyFocusAndExposure(at point: CGPoint,
