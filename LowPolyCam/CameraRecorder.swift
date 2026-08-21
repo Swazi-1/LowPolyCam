@@ -55,6 +55,16 @@ final class CameraRecorder: NSObject, ObservableObject {
     @Published var isSwitchingMode = false
     @Published var stabilizationSupported = true
     @Published var availableFrameRates: [FrameRate] = FrameRate.allCases
+    /// Per-resolution map of video FPS support, built once from a full scan of
+    /// every format the lens offers (not just whichever resolution happened to
+    /// be selected when the scan ran). `availableFrameRates` above is only a
+    /// snapshot for the *currently selected* resolution — using it to decide
+    /// what's available at a *different* resolution is what caused 60 fps to
+    /// look permanently locked after recording 4K (which has no 60 fps format
+    /// on this device class): the 4K-only scan got treated as the device's
+    /// entire capability. This map fixes that by keeping every resolution's
+    /// support independent, same idea as `slowRatesByResolution` below.
+    var frameRatesByResolution: [Resolution: Set<FrameRate>] = [:]
     @Published var availableResolutions: [Resolution] = Resolution.allCases
     @Published var availableSlowMoRates: [SlowMoFrameRate] = SlowMoFrameRate.allCases
     @Published var availableSlowMoResolutions: [Resolution] = [.p1080, .p720]
