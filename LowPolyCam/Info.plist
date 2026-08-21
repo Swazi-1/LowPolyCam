@@ -47,6 +47,8 @@
 	<string>LowPolyCam records sound with your video. You can turn this off in the app's settings.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>LowPolyCam saves your recordings to Photos when you choose that in its settings.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>LowPolyCam shows your photos and videos in its camera-library screen.</string>
 
 	<key>UIFileSharingEnabled</key>
 	<true/>
