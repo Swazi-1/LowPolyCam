@@ -32,6 +32,7 @@ struct SettingsScreen: View {
 
     @State private var appliedPresetId: String? = nil
     @State private var showPresetsSheet = false
+    @State private var showHUDSheet = false
     @State private var showAboutSheet = false
     @State private var showCustomColorSheet = false
     @State private var presetHaptic = UISelectionFeedbackGenerator()
@@ -39,6 +40,10 @@ struct SettingsScreen: View {
     @State private var isFrontSnapshot = false
     @State private var availableResolutions: [Resolution] = Resolution.allCases
     @State private var availableFrameRates: [FrameRate] = FrameRate.allCases
+    /// Full per-resolution fps capability (see `CameraRecorder.frameRatesByResolution`).
+    /// Lets the frame-rate row re-scope instantly on `settings.resolution`
+    /// changes instead of only refreshing next time Settings is reopened.
+    @State private var frameRatesByResolution: [Resolution: Set<FrameRate>] = [:]
     @State private var availableSlowMoRates: [SlowMoFrameRate] = SlowMoFrameRate.allCases
     @State private var availableSlowMoResolutions: [Resolution] = [.p1080, .p720]
     @State private var availablePhotoMegapixels: [PhotoMegapixels] = PhotoMegapixels.allCases
@@ -54,15 +59,15 @@ struct SettingsScreen: View {
 
                 if isFrontSnapshot { frontCameraBanner }
 
-                // Same in every mode — the live HUD chrome isn't mode-specific.
-                hudCustomizationSection
-
                 // Strict mode separation — nothing that does not affect the active mode.
                 switch settings.cameraMode {
                 case .video:
                     quickPresetsEntrySection
                     videoCaptureSection
                     outputSection
+                    // Same in every mode — the live HUD chrome isn't mode-specific.
+                    // Sits between Output and Capture Assist in every mode.
+                    hudEntrySection
                     videoAssistSection
                     advancedSection
                 case .slowMo:
@@ -70,6 +75,7 @@ struct SettingsScreen: View {
                     slowMoResolutionSection
                     videoQualitySection
                     slowMoOutputSection
+                    hudEntrySection
                     slowMoAssistSection
                     advancedSection
                 case .photo:
@@ -79,6 +85,7 @@ struct SettingsScreen: View {
                     photoBurstSection
                     photoFormatSection
                     photoOutputSection
+                    hudEntrySection
                     photoAssistSection
                 }
 
@@ -105,6 +112,9 @@ struct SettingsScreen: View {
             .sheet(isPresented: $showPresetsSheet) {
                 presetsSheet
             }
+            .sheet(isPresented: $showHUDSheet) {
+                hudSheet
+            }
             .sheet(isPresented: $showAboutSheet) {
                 aboutSheet
             }
@@ -127,6 +137,19 @@ struct SettingsScreen: View {
             }
             recorder.updateCaptureFormat()
         }
+        .onChange(of: settings.resolution) { newRes in
+            // Same fix as slow-mo above: re-scope the video fps chips to the
+            // newly selected resolution right away, from the already-known
+            // per-resolution map — instead of leaving the previous
+            // resolution's fps list (e.g. 4K's 30-fps-only scan) applied
+            // until Settings is closed and reopened.
+            let rates = frameRatesByResolution[newRes] ?? Set(FrameRate.allCases)
+            availableFrameRates = FrameRate.allCases.filter { rates.contains($0) }
+            if !availableFrameRates.contains(settings.frameRate) {
+                settings.frameRate = availableFrameRates.contains(.fps30)
+                    ? .fps30 : (availableFrameRates.first ?? .fps30)
+            }
+        }
     }
 
     private func syncCapabilitiesFromRecorder() {
@@ -134,7 +157,15 @@ struct SettingsScreen: View {
         freeBytesSnapshot = recorder.freeBytes
         isFrontSnapshot = recorder.isFrontCamera
         availableResolutions = recorder.availableResolutions
-        availableFrameRates = recorder.availableFrameRates
+        frameRatesByResolution = recorder.frameRatesByResolution
+        // Scope to the resolution that's actually selected right now, from the
+        // full per-resolution map — not whatever `recorder.availableFrameRates`
+        // last happened to be scoped to.
+        if let rates = frameRatesByResolution[settings.resolution] {
+            availableFrameRates = FrameRate.allCases.filter { rates.contains($0) }
+        } else {
+            availableFrameRates = recorder.availableFrameRates
+        }
         availableSlowMoRates = recorder.availableSlowMoRates
         availableSlowMoResolutions = recorder.availableSlowMoResolutions
         availablePhotoMegapixels = recorder.availablePhotoMegapixels
@@ -728,13 +759,15 @@ struct SettingsScreen: View {
         .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 8, trailing: 16))
     }
 
-    // MARK: - Camera HUD
+    // MARK: - Camera HUD (entry + sheet, same pattern as Quick Presets)
 
     /// One `SettingsToggleSpec` per `HUDElement`, built generically from
     /// `AppSettings.binding(for:)` so adding a new hideable element later
     /// is a one-line change in `HUDElement` + `AppSettings`, not here.
+    /// Split from the info pill (see `pillToggles`) so the sheet can group
+    /// "chrome around the viewfinder" separately from "what's in the pill".
     private var hudToggles: [SettingsToggleSpec] {
-        HUDElement.allCases.map { element in
+        HUDElement.allCases.filter { $0 != .infoPill }.map { element in
             SettingsToggleSpec(
                 id: element.id,
                 title: element.title,
@@ -744,19 +777,82 @@ struct SettingsScreen: View {
         }
     }
 
-    private var hudCustomizationSection: some View {
-        Section(header: sectionHeader("Camera HUD", icon: "camera.viewfinder"),
-                footer: Text("Hide anything you don't want cluttering the viewfinder. The shutter and this Settings button always stay visible.")) {
-            SettingsToggleGroup(specs: hudToggles, accentColor: settings.accentColor.color)
-
-            SettingsPickerRow(
-                title: "HUD animation",
-                icon: "wand.and.stars",
-                accentColor: settings.accentColor.color,
-                selection: $settings.hudMotion,
-                label: { Text($0.label) }
+    /// Info-pill-specific toggles only. Currently just the pill's own
+    /// visibility, kept in its own group so pill-specific options (content,
+    /// style, etc.) have an obvious home later without mixing back into the
+    /// general HUD element list above.
+    private var pillToggles: [SettingsToggleSpec] {
+        HUDElement.allCases.filter { $0 == .infoPill }.map { element in
+            SettingsToggleSpec(
+                id: element.id,
+                title: element.title,
+                icon: element.icon,
+                isOn: settings.binding(for: element)
             )
         }
+    }
+
+    private var hudEntrySection: some View {
+        Section {
+            Button(action: { showHUDSheet = true }) {
+                HStack(spacing: 12) {
+                    Image(systemName: "camera.viewfinder")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.white)
+                        .frame(width: 28, height: 28)
+                        .background(
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(settings.accentColor.color)
+                        )
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Camera HUD")
+                            .font(.system(size: 16, weight: .semibold, design: .rounded))
+                            .foregroundColor(.primary)
+                        Text("Overlay elements, info pill, animation")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.secondary.opacity(0.5))
+                }
+                .padding(.vertical, 4)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var hudSheet: some View {
+        NavigationView {
+            List {
+                Section(header: sectionHeader("Camera HUD", icon: "camera.viewfinder"),
+                        footer: Text("Hide anything you don't want cluttering the viewfinder. The shutter and this Settings button always stay visible.")) {
+                    SettingsToggleGroup(specs: hudToggles, accentColor: settings.accentColor.color)
+                }
+
+                Section(header: sectionHeader("Info Pill", icon: "capsule.fill"),
+                        footer: Text("The compact format readout shown while filming.")) {
+                    SettingsToggleGroup(specs: pillToggles, accentColor: settings.accentColor.color)
+                }
+
+                Section(header: sectionHeader("Animation", icon: "wand.and.stars")) {
+                    SettingsPickerRow(
+                        title: "HUD animation",
+                        icon: "wand.and.stars",
+                        accentColor: settings.accentColor.color,
+                        selection: $settings.hudMotion,
+                        label: { Text($0.label) }
+                    )
+                }
+            }
+            .listStyle(InsetGroupedListStyle())
+            .navigationBarTitle("Camera HUD", displayMode: .inline)
+            .navigationBarItems(trailing: Button("Done") { showHUDSheet = false })
+        }
+        .navigationViewStyle(StackNavigationViewStyle())
+        .accentColor(settings.accentColor.color)
     }
 
     // MARK: - Feedback (sounds / haptics)
