@@ -633,17 +633,6 @@ final class AppSettings: ObservableObject {
     /// on older devices (especially iPhone 7 / A10). When enabled it gently
     /// steers the encoder toward safer settings and strengthens auto-dim.
     @Setting("longevityMode") var longevityMode: Bool = false
-    /// Plays a light haptic tick every full minute of recording — no GPU/CPU
-    /// cost beyond a once-a-second integer check, safe on A10.
-    @Setting("minuteTickEnabled") var minuteTickEnabled: Bool = false
-    /// Manual focus mode: when on, focus is pinned at `manualFocusLensPosition`
-    /// instead of continuous autofocus. Uses the same native
-    /// `AVCaptureDevice.setFocusModeLocked(lensPosition:)` API as autofocus —
-    /// no extra GPU/CPU work, so it's safe on A10.
-    @Setting("manualFocusEnabled") var manualFocusEnabled: Bool = false
-    /// 0 = closest focus, 1 = farthest (infinity). Only applied while
-    /// `manualFocusEnabled` is on.
-    @Setting("manualFocusLensPosition") var manualFocusLensPosition: Float = 0.5
 
     /// Applies a capture preset. Forces video mode for recording-oriented presets.
     func applyPreset(_ preset: CapturePreset) {
