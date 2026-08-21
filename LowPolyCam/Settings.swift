@@ -11,6 +11,25 @@ enum PhysicalOrientation {
     case landscapeRight
     case portraitUpsideDown
 
+    /// The front camera's sensor is mounted 180° rotated relative to the
+    /// rear camera inside the phone's housing (true across iPhones,
+    /// including iPhone 7). AVCapturePhotoOutput's connection API already
+    /// accounts for this automatically, which is why single-shot photos on
+    /// either camera come out correctly rotated. Burst mode bypasses that
+    /// connection-level rotation entirely — it reads raw sensor buffers
+    /// straight off AVCaptureVideoDataOutput and tags orientation manually
+    /// from the phone's physical tilt — so it must apply this same 180°
+    /// correction itself when the active camera is the front one, or every
+    /// front-camera burst photo comes out rotated a half-turn from correct.
+    var rotated180: PhysicalOrientation {
+        switch self {
+        case .portrait: return .portraitUpsideDown
+        case .portraitUpsideDown: return .portrait
+        case .landscapeLeft: return .landscapeRight
+        case .landscapeRight: return .landscapeLeft
+        }
+    }
+
     var rotationAngle: Double {
         switch self {
         case .portrait: return 0
