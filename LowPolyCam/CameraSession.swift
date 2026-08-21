@@ -631,6 +631,10 @@ extension CameraRecorder {
                 // previous camera is restored in that case.
                 self.isFrontCamera = (self.position == .front)
                 self.isSwitchingCamera = false
+                // Kept up to date on every flip regardless of whether "Keep
+                // last camera" is on, so the value is ready the instant that
+                // toggle gets turned on — it's only *applied* at launch.
+                self.settings.lastCameraPosition = CameraFacing(self.position)
                 // Restarting samples the current system volume and ignores the
                 // initial KVO noise, so a camera-input swap cannot be mistaken
                 // for a volume-button shutter press.
