@@ -50,6 +50,9 @@ final class CameraRecorder: NSObject, ObservableObject {
     @Published var frontFlashEnabled = false
     @Published var isFrontCamera = false
     @Published var isSwitchingCamera = false
+    /// True while changing Video / Photo / Slow-Mo formats. The UI uses this
+    /// to cover the unavoidable sensor renegotiation with a short fade.
+    @Published var isSwitchingMode = false
     @Published var stabilizationSupported = true
     @Published var availableFrameRates: [FrameRate] = FrameRate.allCases
     @Published var availableResolutions: [Resolution] = Resolution.allCases
@@ -92,10 +95,9 @@ final class CameraRecorder: NSObject, ObservableObject {
     /// Bumped every time a fresh capture (single or burst) finishes, so the
     /// UI can open the review sheet exactly once per capture via onChange.
     @Published var photoReviewToken: Int = 0
-    /// The temporary video-frame delegate used only while a fast burst is
-    /// being collected (see BurstCaptureEngine.swift). nil whenever no
-    /// burst is in flight.
-    var activeBurstGrabber: BurstFrameGrabber?
+    /// Full-resolution bursts are a sequence of still captures. Cancellation
+    /// finishes the current still cleanly, then restores the preview format.
+    var burstCancellationRequested = false
 
     // Thermal state
     @Published var thermalState: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState
