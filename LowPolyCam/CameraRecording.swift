@@ -34,6 +34,13 @@ extension CameraRecorder {
 
         if settings.saveLocation == .photos { ensurePhotosAccess() }
 
+        // Same audio-route/KVO-noise guard as photo capture (see
+        // CameraPhoto.swift): the start/stop shutter sounds below can cause
+        // a spurious "volume changed" read a moment later, which — with the
+        // volume button mapped to Shutter or Burst — would misfire as an
+        // extra photo/burst right after starting a recording.
+        suppressVolumeTriggerBriefly(duration: 1.2)
+
         var newPlan = Encoder.plan(for: settings)
 
         stopRequested = false
@@ -52,6 +59,11 @@ extension CameraRecorder {
         spaceTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             self?.refreshFreeSpace()
         }
+        // Refresh immediately instead of waiting for the first 5s tick above —
+        // otherwise the HUD's "~X min left" estimate keeps showing the stale
+        // idle-timer value (up to 20s old) for the first few seconds of a
+        // recording before it catches up.
+        refreshFreeSpace()
 
         notice = nil
         elapsed = 0
@@ -146,6 +158,11 @@ extension CameraRecorder {
 
         let myToken = recordingSessionToken
         DebugLog.write("===== stopRecording() called token=\(myToken) =====")
+
+        // Same guard as startRecording()/capturePhoto() — the stop sound
+        // below can otherwise register as a false volume-button press a
+        // moment later.
+        suppressVolumeTriggerBriefly(duration: 1.2)
 
         if settings.shutterSoundEnabled { SoundPlayer.play(.stop) }
         // Keep sample-buffer delegates attached and keep writing for a short
