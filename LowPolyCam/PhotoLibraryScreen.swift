@@ -1,3 +1,11 @@
+//
+//  PhotoLibraryScreen.swift
+//  LowPolyCam
+//
+//  Updated for iOS 27 / Xcode 27 / Swift 6.4.
+//  Swift 6 complete concurrency · Observation · Liquid Glass · RotationCoordinator
+//
+
 import SwiftUI
 import Photos
 import AVKit
@@ -12,7 +20,7 @@ import UniformTypeIdentifiers
 /// of the original file(s), and a swipeable full-screen viewer instead of a
 /// single locked preview.
 struct PhotoLibraryScreen: View {
-    @Environment(\.presentationMode) private var presentation
+    @Environment(\.dismiss) private var dismiss
 
     @State private var assets: [PHAsset] = []
     @State private var authorization: PHAuthorizationStatus = .notDetermined
@@ -28,7 +36,7 @@ struct PhotoLibraryScreen: View {
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 2), count: 3)
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             ZStack {
                 Palette.slateDeep.ignoresSafeArea()
 
@@ -50,16 +58,17 @@ struct PhotoLibraryScreen: View {
                     ProgressView().tint(.white).scaleEffect(1.2)
                 }
             }
-            .navigationBarTitle("Library", displayMode: .inline)
-            .navigationBarItems(leading: leadingBar, trailing: trailingBar)
+            .navigationTitle("Library")
+            .toolbarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) { leadingBar }
+                ToolbarItem(placement: .topBarTrailing) { trailingBar }
                 ToolbarItemGroup(placement: .bottomBar) {
                     bottomBar
                 }
             }
         }
-        .navigationViewStyle(StackNavigationViewStyle())
-        .accentColor(Palette.violet)
+        .tint(Palette.violet)
         .onAppear(perform: requestAccessAndLoad)
         .fullScreenCover(item: $previewSelection) { selection in
             PhotoLibraryPreview(
@@ -98,7 +107,7 @@ struct PhotoLibraryScreen: View {
         Button("Done") {
             isSelecting = false
             selection.removeAll()
-            presentation.wrappedValue.dismiss()
+            dismiss()
         }
     }
 
@@ -215,11 +224,10 @@ struct PhotoLibraryScreen: View {
         let current = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         authorization = current
         if current == .notDetermined {
-            PHPhotoLibrary.requestAuthorization(for: .readWrite) { status in
-                DispatchQueue.main.async {
-                    authorization = status
-                    if status == .authorized || status == .limited { loadAssets() }
-                }
+            Task {
+                let status = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
+                authorization = status
+                if status == .authorized || status == .limited { loadAssets() }
             }
         } else if current == .authorized || current == .limited {
             loadAssets()
@@ -234,7 +242,7 @@ struct PhotoLibraryScreen: View {
             var loaded: [PHAsset] = []
             loaded.reserveCapacity(result.count)
             result.enumerateObjects { asset, _, _ in loaded.append(asset) }
-            DispatchQueue.main.async { assets = loaded }
+            Task { @MainActor in assets = loaded }
         }
     }
 
@@ -253,7 +261,7 @@ struct PhotoLibraryScreen: View {
         PHPhotoLibrary.shared().performChanges({
             PHAssetChangeRequest.deleteAssets(toDelete as NSArray)
         }) { success, error in
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 guard success else {
                     // User cancelling the system confirmation also lands
                     // here with a nil error — only surface real failures.
@@ -284,7 +292,7 @@ struct PhotoLibraryScreen: View {
         guard !toShare.isEmpty, !isPreparingShare else { return }
         isPreparingShare = true
         exportForSharing(toShare) { urls in
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 isPreparingShare = false
                 guard !urls.isEmpty else { return }
                 shareRequest = ShareRequest(items: urls)
@@ -305,7 +313,7 @@ struct PhotoLibraryScreen: View {
                 guard let resource = preferredResource(for: asset) else { continue }
                 let ext = fileExtension(for: resource)
                 let tmpURL = FileManager.default.temporaryDirectory
-                    .appendingPathComponent(UUID().uuidString)
+                    .appending(path:(UUID().uuidString)
                     .appendingPathExtension(ext)
 
                 group.enter()
@@ -437,7 +445,7 @@ private struct PhotoLibraryPreview: View {
     let startIndex: Int
     let onDelete: (PHAsset) -> Void
 
-    @Environment(\.presentationMode) private var presentation
+    @Environment(\.dismiss) private var dismiss
     @State private var index: Int
     @State private var shareRequest: PreviewShareRequest?
     @State private var isPreparingShare = false
@@ -484,7 +492,7 @@ private struct PhotoLibraryPreview: View {
     private var topBar: some View {
         HStack {
             Spacer()
-            Button(action: { presentation.wrappedValue.dismiss() }) {
+            Button(action: { dismiss() }) {
                 Image(systemName: "xmark")
                     .font(.system(size: 15, weight: .bold))
                     .foregroundColor(.white)
@@ -528,7 +536,7 @@ private struct PhotoLibraryPreview: View {
         // just make sure paging past the deleted item doesn't run off the
         // end of the (now stale, one item too long) local `assets` array.
         if assets.count <= 1 {
-            presentation.wrappedValue.dismiss()
+            dismiss()
         }
     }
 
@@ -544,12 +552,12 @@ private struct PhotoLibraryPreview: View {
         let ext = UTType(resource.uniformTypeIdentifier)?.preferredFilenameExtension
             ?? (resource.type == .video ? "mov" : "jpg")
         let tmpURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString)
+            .appending(path:(UUID().uuidString)
             .appendingPathExtension(ext)
         let options = PHAssetResourceRequestOptions()
         options.isNetworkAccessAllowed = true
         PHAssetResourceManager.default().writeData(for: resource, toFile: tmpURL, options: options) { error in
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 isPreparingShare = false
                 guard error == nil else { return }
                 shareRequest = PreviewShareRequest(item: tmpURL)
@@ -617,7 +625,7 @@ private struct PhotoLibraryPreviewPage: View {
         options.isNetworkAccessAllowed = true
         PHCachingImageManager.default().requestAVAsset(forVideo: asset, options: options) { avAsset, _, _ in
             guard let avAsset = avAsset else { return }
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 player = AVPlayer(playerItem: AVPlayerItem(asset: avAsset))
             }
         }
