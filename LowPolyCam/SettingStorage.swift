@@ -7,13 +7,13 @@
 //
 
 import Foundation
-import Observation
+import Combine
 
 // MARK: - Settings persistence kit
 //
-// `@Setting` is now a *struct* wrapper so `@Observable` AppSettings tracks
-// every write automatically. The old class wrapper had to poke Combine's
-// `objectWillChange` by hand — that path is gone with Observation.
+// `@Setting` remains a lightweight struct wrapper, but AppSettings is an
+// ObservableObject on iOS 15. The enclosing-instance subscript below forwards
+// writes through ObservableObjectPublisher so SwiftUI bindings update too.
 
 /// Anything a `@Setting` can persist to `UserDefaults`. Bool/Int/Float/
 /// Double/String conform directly below; any `RawRepresentable` enum with
@@ -72,9 +72,8 @@ extension SettingStorable where Self: RawRepresentable, Self.RawValue == Double 
     func saveSetting(to store: UserDefaults, key: String) { store.set(rawValue, forKey: key) }
 }
 
-/// One persisted, Observation-tracked setting. Mutating `wrappedValue`
-/// mutates the struct storage on the enclosing `@Observable` class, which
-/// is what SwiftUI now subscribes to — no Combine publisher required.
+/// One persisted setting. When this wrapper is used on an ObservableObject,
+/// the enclosing-instance subscript publishes before changing the stored value.
 @propertyWrapper
 struct Setting<Value: SettingStorable>: Sendable {
     private let key: String
@@ -92,6 +91,21 @@ struct Setting<Value: SettingStorable>: Sendable {
         set {
             value = newValue
             newValue.saveSetting(to: store, key: key)
+        }
+    }
+
+    static subscript<EnclosingSelf: ObservableObject>(
+        _enclosingInstance instance: EnclosingSelf,
+        wrapped wrappedKeyPath: ReferenceWritableKeyPath<EnclosingSelf, Value>,
+        storage storageKeyPath: ReferenceWritableKeyPath<EnclosingSelf, Setting<Value>>
+    ) -> Value where EnclosingSelf.ObjectWillChangePublisher == ObservableObjectPublisher {
+        get {
+            instance[keyPath: storageKeyPath].value
+        }
+        set {
+            instance.objectWillChange.send()
+            instance[keyPath: storageKeyPath].value = newValue
+            newValue.saveSetting(to: instance[keyPath: storageKeyPath].store, key: instance[keyPath: storageKeyPath].key)
         }
     }
 }
