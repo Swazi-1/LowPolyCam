@@ -1,4 +1,13 @@
+//
+//  RecordingStatsSystem.swift
+//  LowPolyCam
+//
+//  Updated for iOS 27 / Xcode 27 / Swift 6.4.
+//  Swift 6 complete concurrency · Observation · Liquid Glass · RotationCoordinator
+//
+
 import Foundation
+import Observation
 import CoreMedia
 import QuartzCore // CACurrentMediaTime()
 
@@ -11,10 +20,9 @@ import QuartzCore // CACurrentMediaTime()
 /// frame dropped / file grew by N bytes) and only computes/publishes
 /// numbers — so it cannot destabilize the capture pipeline.
 ///
-/// iOS 15.8 / Swift 5 only: plain ObservableObject + @Published (no
-/// Observation framework, no async/await, no Swift Concurrency actors),
-/// matching the rest of the app's target.
-struct RecordingStatsSnapshot {
+/// iOS 27 / Swift 6.4: snapshot is a Sendable value type; the tracker is
+/// isolation-safe and published through CameraRecorder's @Observable state.
+struct RecordingStatsSnapshot: Sendable, Equatable {
     /// Frames actually appended to the writer since recording started.
     var framesAppended: Int = 0
     /// Frames dropped/discarded since recording started (mirrors
@@ -73,11 +81,9 @@ struct RecordingStatsSnapshot {
 /// never touches the camera session, the writer, or any lock the capture
 /// path depends on.
 ///
-/// Not marked ObservableObject on purpose — callers that want @Published
-/// delivery (like CameraRecorder) read `snapshot` on their own timer/tick
-/// and publish it through their own @Published property, exactly like
-/// elapsed/droppedFrames already work. This keeps RecordingStatsTracker
-/// reusable in a plain non-SwiftUI context too (e.g. unit tests).
+/// Not @Observable on purpose — CameraRecorder publishes `snapshot`
+/// through its own tracked properties so this tracker stays reusable
+/// outside SwiftUI (tests, CLI diagnostics).
 final class RecordingStatsTracker {
 
     private(set) var snapshot = RecordingStatsSnapshot()
