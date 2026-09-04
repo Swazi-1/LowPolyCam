@@ -1,9 +1,17 @@
+//
+//  CaptureModePolicies.swift
+//  LowPolyCam
+//
+//  Updated for iOS 27 / Xcode 27 / Swift 6.4.
+//  Swift 6 complete concurrency · Observation · Liquid Glass · RotationCoordinator
+//
+
 import AVFoundation
 import Foundation
 
 /// High-level capture mode. Maps to the three user-facing camera modes and
 /// drives format selection + recording behaviour without mixing the pipelines.
-enum CaptureModePolicy {
+enum CaptureModePolicy: Sendable {
     case photo
     case video
     case slowMo
@@ -18,7 +26,7 @@ enum CaptureModePolicy {
 }
 
 /// Target sensor size + fps for a given mode. Pure data — no session mutation.
-struct CaptureFormatRequest {
+struct CaptureFormatRequest: Sendable {
     let width: Int
     let height: Int
     let fps: Double
