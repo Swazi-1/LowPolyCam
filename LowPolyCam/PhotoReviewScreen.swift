@@ -7,7 +7,6 @@
 //
 
 import SwiftUI
-import Observation
 import UIKit
 
 // MARK: - Photo 2.0: Post-Capture Review
@@ -26,7 +25,7 @@ import UIKit
 // shifts as the user swipes between burst frames of different sizes.
 
 struct PhotoReviewScreen: View {
-    @Bindable var settings: AppSettings
+    @ObservedObject var settings: AppSettings
     let item: PhotoReviewItem?
     let burstItems: [PhotoReviewItem]
 
@@ -46,7 +45,7 @@ struct PhotoReviewScreen: View {
     private var isBurst: Bool { burstItems.count > 1 }
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             ZStack {
                 Palette.slateDeep.ignoresSafeArea()
 
@@ -79,9 +78,9 @@ struct PhotoReviewScreen: View {
                 }
             }
             .navigationTitle(isBurst ? "Burst Review" : "Review")
-            .toolbarTitleDisplayMode(.inline)
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Done") { dismiss() }
                 }
             }
