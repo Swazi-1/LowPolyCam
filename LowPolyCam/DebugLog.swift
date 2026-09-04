@@ -14,7 +14,7 @@ import Foundation
 enum DebugLog {
     static let url: URL = {
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        return dir.appending(path: "recording_debug_log.txt")
+        return dir.appendingPathComponent("recording_debug_log.txt")
     }()
 
     private static let dateFormatter = ISO8601DateFormatter()
@@ -29,7 +29,7 @@ enum DebugLog {
         guard let data = line.data(using: .utf8) else { return }
         ioQueue.async {
             if handle == nil {
-                let path = url.path(percentEncoded: false)
+                let path = url.path
                 if !FileManager.default.fileExists(atPath: path) {
                     FileManager.default.createFile(atPath: path, contents: nil)
                 }
