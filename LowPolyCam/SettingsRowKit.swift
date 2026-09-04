@@ -1,4 +1,13 @@
+//
+//  SettingsRowKit.swift
+//  LowPolyCam
+//
+//  Updated for iOS 27 / Xcode 27 / Swift 6.4.
+//  Swift 6 complete concurrency · Observation · Liquid Glass · RotationCoordinator
+//
+
 import SwiftUI
+import Observation
 import UIKit
 
 // MARK: - Settings row kit
@@ -18,7 +27,7 @@ import UIKit
 //
 // HOW TO ADD A NEW TOGGLE SETTING
 // ---------------------------------
-// 1. Add the `@Published var` to AppSettings in Settings.swift (see the
+// 1. Add the `@Setting` property to AppSettings in Settings.swift (see the
 //    "HOW TO ADD A NEW SETTING" comment there).
 // 2. In SettingsScreen.swift, add one `SettingsToggleSpec` to the relevant
 //    section's array (e.g. `videoAssistToggles`), or call
@@ -78,6 +87,12 @@ struct SettingsToggleRow: View {
         )) {
             Label(spec.title, systemImage: spec.icon)
                 .labelStyle(SettingsLabelStyle(color: accentColor))
+        }
+        .sensoryFeedback(
+            .impact(weight: settings.hapticIntensity.sensoryWeight, intensity: settings.hapticIntensity.sensoryIntensity),
+            trigger: spec.isOn.wrappedValue
+        ) { _, _ in
+            settings.hapticFeedbackEnabled
         }
     }
 }
