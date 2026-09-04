@@ -58,7 +58,7 @@ final class PreviewView: UIView {
             .compactMap({ $0 as? AVCaptureDeviceInput })
             .first(where: { $0.device.hasMediaType(.video) }) else { return }
 
-        if rotationCoordinator?.device.uniqueID == input.device.uniqueID { return }
+        if rotationCoordinator?.device?.uniqueID == input.device.uniqueID { return }
         rotationObservation?.invalidate()
 
         let coordinator = AVCaptureDevice.RotationCoordinator(
