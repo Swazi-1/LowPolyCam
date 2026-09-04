@@ -240,6 +240,8 @@ extension CameraRecorder {
             return (PhotoEncoder.encodeJPEG(image, metadata: metadata), false)
         }()
         let resolvedData = encoded.data
+        let photoExtension = encoded.isHEIC ? "heic" : "jpg"
+        let photoFileName = CaptureFileNamer.nextFileName(extension: photoExtension)
 
         func finishReview(url: URL?) {
             Task { @MainActor in
@@ -261,14 +263,7 @@ extension CameraRecorder {
                     completion?()
                     return
                 }
-                let f = DateFormatter()
-                f.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-                let ext = encoded.isHEIC ? "heic" : "jpg"
-                // Seconds-only names can collide when two photos finish saving
-                // quickly. A suffix guarantees the later atomic write cannot
-                // silently replace the first photo.
-                let suffix = String(format: "%04X", UInt16.random(in: 0...0xFFFF))
-                let url = Self.clipsDirectory.appendingPathComponent("LowPolyCam_\(f.string(from: Date()))_\(suffix).\(ext)")
+                let url = Self.clipsDirectory.appendingPathComponent(photoFileName)
                 do {
                     try data.write(to: url, options: .atomic)
                     Task { @MainActor in
@@ -300,6 +295,7 @@ extension CameraRecorder {
         PHPhotoLibrary.shared().performChanges({
             let request = PHAssetCreationRequest.forAsset()
             let options = PHAssetResourceCreationOptions()
+            options.originalFilename = photoFileName
             request.addResource(with: .photo, data: data, options: options)
         }) { [weak self] success, _ in
             Task { @MainActor in

@@ -471,7 +471,7 @@ struct CameraScreen: View {
                             .background(settings.accentColor.bright)
                             .clipShape(Capsule())
 
-                        let sensorFPS = recorder.activeSensorFPS > 0
+                        let sensorFPS = recorder.activeSensorFPS >= 100
                             ? Int(recorder.activeSensorFPS.rounded())
                             : settings.slowMoFrameRate.value
                         Text("\(sensorFPS) fps")
@@ -1323,6 +1323,7 @@ struct CameraScreen: View {
         // new format. This makes Video ⇄ Photo ⇄ Slow-Mo feel intentional on
         // iPhone 7 rather than showing the preview's transient frozen frame.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            recorder.activeSensorFPS = 0
             settings.cameraMode = mode
             recorder.updateCaptureFormat {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.10) {
@@ -1727,7 +1728,7 @@ struct CameraScreen: View {
             .frame(width: geo.size.width, height: geo.size.height)
             .contentShape(Rectangle())
             .gesture(
-                DragGesture(minimumDistance: 0)
+                DragGesture(minimumDistance: 3)
                     .onChanged { value in
                         if !isZoomDialDragging {
                             isZoomDialDragging = true
@@ -1740,7 +1741,7 @@ struct CameraScreen: View {
                         // proportional zoom change wherever you are in the
                         // range, instead of 1x->2x taking the same distance
                         // as 7x->8x.
-                        let factor = zoomGestureBase * pow(2, value.translation.width / pointsPerDoubling)
+                        let factor = zoomGestureBase * pow(2, -value.translation.width / pointsPerDoubling)
                         let clamped = min(max(factor, zoomDialMinFactor), min(zoomDialMaxFactor, recorder.maxZoomFactor))
                         recorder.setZoom(factor: clamped)
                     }
@@ -1752,6 +1753,11 @@ struct CameraScreen: View {
                         recorder.suppressVolumeTriggerBriefly()
                     }
             )
+            .onTapGesture {
+                recorder.suppressVolumeTriggerBriefly()
+                recorder.setZoom(factor: 1)
+                if settings.hapticFeedbackEnabled { zoomHaptic.selectionChanged() }
+            }
         }
         .frame(height: 54)
     }

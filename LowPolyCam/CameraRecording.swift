@@ -15,6 +15,46 @@ import AudioToolbox
 import ImageIO
 import VideoToolbox
 
+enum CaptureFileNamer {
+    private static let lock = NSLock()
+    private static let sequenceKey = "nextIMGSequence"
+
+    static func nextFileName(extension fileExtension: String) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+
+        var highest = max(0, UserDefaults.standard.integer(forKey: sequenceKey) - 1)
+
+        func include(_ fileName: String) {
+            let stem = URL(fileURLWithPath: fileName).deletingPathExtension().lastPathComponent.uppercased()
+            guard stem.hasPrefix("IMG_") else { return }
+            let digits = stem.dropFirst(4).prefix { $0.isNumber }
+            if let value = Int(digits) { highest = max(highest, value) }
+        }
+
+        if let localFiles = try? FileManager.default.contentsOfDirectory(
+            at: CameraRecorder.clipsDirectory,
+            includingPropertiesForKeys: nil
+        ) {
+            localFiles.forEach { include($0.lastPathComponent) }
+        }
+
+        let photoStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        if photoStatus == .authorized || photoStatus == .limited {
+            let assets = PHAsset.fetchAssets(with: nil)
+            assets.enumerateObjects { asset, _, _ in
+                PHAssetResource.assetResources(for: asset).forEach {
+                    include($0.originalFilename)
+                }
+            }
+        }
+
+        let next = highest + 1
+        UserDefaults.standard.set(next + 1, forKey: sequenceKey)
+        return String(format: "IMG_%04d.%@", next, fileExtension.uppercased())
+    }
+}
+
 extension CameraRecorder {
 
     // MARK: Recording control
@@ -872,6 +912,7 @@ extension CameraRecorder {
                 let request = PHAssetCreationRequest.forAsset()
                 let options = PHAssetResourceCreationOptions()
                 options.shouldMoveFile = false
+                options.originalFilename = url.lastPathComponent
                 request.addResource(with: .video, fileURL: url, options: options)
             } completionHandler: { [weak self] success, error in
                 if success {
@@ -959,19 +1000,7 @@ extension CameraRecorder {
     }
 
     static func newClipURL() -> URL {
-        let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-        // A plain timestamp string only has 1-second resolution, so if
-        // startSegment somehow runs more than once in the same second
-        // (e.g. duplicate dispatches racing on ioQueue), two writers could
-        // both try to create/open the exact same file path at once —
-        // AVAssetWriter's startWriting() then fails with "Cannot Save"
-        // (AVFoundationErrorDomain -11823 / NSOSStatusErrorDomain -12412)
-        // because the OS won't let two writers claim the same file. A short
-        // random suffix guarantees uniqueness even if that race happens, as
-        // a defense-in-depth alongside the dedicated startSegment guard.
-        let suffix = String(format: "%04X", UInt16.random(in: 0...0xFFFF))
-        return clipsDirectory.appendingPathComponent("LowPolyCam_\(f.string(from: Date()))_\(suffix).mov")
+        clipsDirectory.appendingPathComponent(CaptureFileNamer.nextFileName(extension: "mov"))
     }
 
     // MARK: Video Matrix Orientation

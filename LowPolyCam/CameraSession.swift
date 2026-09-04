@@ -160,7 +160,7 @@ extension CameraRecorder {
     func applyActiveFormat(forRecording: Bool = false, forceLowestIdlePreview: Bool = false) -> Bool {
         Task { @MainActor in self.volumeObserver?.ignoreTemporarily() }
         ensureCorrectCameraDevice(for: settings.cameraMode)
-        guard let device = cameraInput?.device else { return false }
+        guard var device = cameraInput?.device else { return false }
 
         let isSlow = settings.cameraMode == .slowMo && isSlowMoSupportedOnCurrentLens
         var dims: (w: Int, h: Int)
@@ -221,6 +221,21 @@ extension CameraRecorder {
         let policy = CaptureModePolicy(cameraMode: settings.cameraMode)
         let request = CaptureFormatRequest(width: dims.w, height: dims.h, fps: targetFPS, policy: policy)
         var format = CaptureModeFormatRouter.selectFormat(device: device, request: request)
+
+        // Some virtual dual-wide devices expose 0.5x/1x switching but omit
+        // their 4K60 format even though the physical wide camera supports it.
+        // Route only that unsupported combination to the physical wide lens;
+        // lower rates stay on the virtual device so 0.5x remains available.
+        if format == nil,
+           position == .back,
+           settings.cameraMode == .video,
+           targetFPS >= 59,
+           let physicalWide = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
+           let physicalFormat = CaptureModeFormatRouter.selectFormat(device: physicalWide, request: request) {
+            switchCameraInput(to: physicalWide)
+            device = physicalWide
+            format = physicalFormat
+        }
 
         if format == nil && targetFPS == 60 {
             format = CameraFormatSelector.bestVideoFormat(for: device, width: dims.w, height: dims.h, fps: 30)
@@ -500,6 +515,37 @@ extension CameraRecorder {
             }
         }
 
+        // Advertise normal-video rates supplied by a virtual camera's
+        // constituent lenses too. This is what makes 4K60 selectable on
+        // iPhone 11 when the dual-wide virtual device itself only lists 4K30.
+        if settings.cameraMode != .slowMo {
+            for constituent in device.constituentDevices {
+                for format in constituent.formats {
+                    let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+                    let h = Int(dims.height)
+                    let formatRates = FrameRate.allCases.filter { rate in
+                        let fps = Double(rate.value)
+                        return format.videoSupportedFrameRateRanges.contains {
+                            $0.minFrameRate <= fps + 0.5 && $0.maxFrameRate >= fps - 0.5
+                        }
+                    }
+                    var covered: [Resolution] = []
+                    if h >= 2160 { covered.append(.p2160) }
+                    if h >= 1080 { covered.append(.p1080) }
+                    if h >= 720 { covered.append(.p720) }
+                    if h >= 480 { covered.append(.p480) }
+                    covered.append(contentsOf: [.p320, .p144])
+                    for resolution in covered {
+                        ratesByRes[resolution, default: []].formUnion(formatRates)
+                    }
+                }
+            }
+            let selectedResolution = settings.resolution
+            if let constituentRates = ratesByRes[selectedResolution] {
+                rates.formUnion(constituentRates)
+            }
+        }
+
         let supportedRates = FrameRate.allCases.filter { rates.contains($0) }
         let isFront = (device.position == .front)
         let canDo1080 = widestPixels >= 1920 * 1080
@@ -542,6 +588,7 @@ extension CameraRecorder {
         let previousPosition = lastCapabilitiesCameraPosition
         lastCapabilitiesCameraPosition = device.position
         Task { @MainActor in
+            self.activeSensorFPS = 0
             self.availableFrameRates = finalRates
             self.availableResolutions = resolutions
             self.availableSlowMoRates = slowRatesOut
@@ -592,11 +639,15 @@ extension CameraRecorder {
                     }
                 }
             }
-        }
 
-        // Default to preview (low-power) rate. Recording path will re-apply
-        // the full target rate just before frames start flowing.
-        applyActiveFormat(forRecording: false)
+            // Apply only after the published mode/rate fallbacks above have
+            // completed. The previous immediate call raced this MainActor
+            // block, which is why the HUD could say 30 or keep a yellow 240
+            // while the sensor was already running at another slow-mo rate.
+            self.sessionQueue.async {
+                self.applyActiveFormat(forRecording: false)
+            }
+        }
     }
 
     func syncMicInput() {
@@ -734,7 +785,7 @@ extension CameraRecorder {
     }
 
     var wantsPhysicalWideForFrameRate: Bool {
-        settings.cameraMode == .slowMo
+        false
     }
 
     var wantsPhysicalWideLens: Bool {

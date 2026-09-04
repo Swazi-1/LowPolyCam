@@ -422,15 +422,10 @@ struct SettingsScreen: View {
 
     private var frameRateSection: some View {
         Section(header: sectionHeader("Frame Rate", icon: "timer"),
-                footer: Text(settings.resolution == .p2160
-                             ? "4K is limited to 30 fps on this iPhone."
-                             : "60 fps looks smoother and uses more space.")) {
-            let rateItems: [FrameRate] = isFrontSnapshot
-                ? availableFrameRates.filter { !(settings.resolution == .p2160 && $0 == .fps60) }
-                : FrameRate.allCases
+                footer: Text("Only frame rates supported by the active camera are selectable.")) {
+            let rateItems: [FrameRate] = isFrontSnapshot ? availableFrameRates : FrameRate.allCases
             chipRow(rateItems.map { f in
                 let enabled = availableFrameRates.contains(f)
-                    && !(settings.resolution == .p2160 && f == .fps60)
                 return ChipItem(id: "fr-\(f.id)", label: f.label,
                                  enabled: enabled,
                                  selected: settings.frameRate == f) {
