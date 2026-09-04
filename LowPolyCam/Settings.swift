@@ -8,7 +8,7 @@
 
 import Foundation
 import AVFoundation
-import Observation
+import Combine
 import SwiftUI
 import UIKit
 
@@ -641,22 +641,6 @@ enum HapticIntensity: String, CaseIterable, Identifiable, SettingStorable {
         }
     }
 
-    /// iOS 17+ SwiftUI `.sensoryFeedback` weight mapped from the same setting.
-    var sensoryWeight: SensoryFeedback.Weight {
-        switch self {
-        case .light: return .light
-        case .standard: return .medium
-        case .strong: return .heavy
-        }
-    }
-
-    var sensoryIntensity: Double {
-        switch self {
-        case .light: return 0.45
-        case .standard: return 0.72
-        case .strong: return 1.0
-        }
-    }
 }
 
 // MARK: - Quick Capture Presets
@@ -802,8 +786,7 @@ enum WhiteBalancePreset: String, CaseIterable, Identifiable, SettingStorable {
 //      CameraScreen.swift. See ProToolsControls.swift.
 // No other file needs to change — both UIs render from these declarative
 // lists rather than needing a new hand-built row per setting.
-@Observable
-final class AppSettings {
+final class AppSettings: ObservableObject {
 
     static let shared = AppSettings()
 
