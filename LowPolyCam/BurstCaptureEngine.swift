@@ -1,3 +1,11 @@
+//
+//  BurstCaptureEngine.swift
+//  LowPolyCam
+//
+//  Updated for iOS 27 / Xcode 27 / Swift 6.4.
+//  Swift 6 complete concurrency · Observation · Liquid Glass · RotationCoordinator
+//
+
 import AVFoundation
 
 // MARK: - Full-resolution burst capture
@@ -30,7 +38,7 @@ extension CameraRecorder {
         sessionQueue.async { [weak self] in
             guard let self = self else { return }
             let begin = { [weak self] in
-                DispatchQueue.main.async { self?.captureNextHighResolutionBurstFrame() }
+                Task { @MainActor in self?.captureNextHighResolutionBurstFrame() }
             }
 
             // Switch to the highest still-capable format once for the whole
@@ -42,8 +50,8 @@ extension CameraRecorder {
                 return
             }
 
-            let current = device.activeFormat.highResolutionStillImageDimensions
-            let target = stillFormat.highResolutionStillImageDimensions
+            let current = device.activeFormat.largestStillDimensions
+            let target = stillFormat.largestStillDimensions
             let needsSwitch = Int(target.width) * Int(target.height) > Int(current.width) * Int(current.height) + 500_000
             guard needsSwitch else {
                 begin()
@@ -75,7 +83,7 @@ extension CameraRecorder {
         }
 
         capturePhotoInternal(isBurstFrame: true) { [weak self] in
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 guard let self = self else { return }
                 self.burstShotsTaken += 1
 
@@ -84,7 +92,7 @@ extension CameraRecorder {
                 } else {
                     // Yield one turn between stills so the progress UI stays
                     // responsive and AVCapturePhotoOutput can re-arm cleanly.
-                    DispatchQueue.main.async {
+                    Task { @MainActor in
                         self.captureNextHighResolutionBurstFrame()
                     }
                 }
