@@ -1,3 +1,11 @@
+//
+//  PhotoCaptureSystem.swift
+//  LowPolyCam
+//
+//  Updated for iOS 27 / Xcode 27 / Swift 6.4.
+//  Swift 6 complete concurrency · Observation · Liquid Glass · RotationCoordinator
+//
+
 import AVFoundation
 import UIKit
 import Photos
@@ -8,7 +16,7 @@ import ImageIO
 /// Handles a single AVCapturePhotoOutput capture, decoding the delivered
 /// image and downscaling it to the requested megapixel target while
 /// preserving orientation and capture metadata.
-final class PhotoCaptureProcessor: NSObject, AVCapturePhotoCaptureDelegate {
+final class PhotoCaptureProcessor: NSObject, AVCapturePhotoCaptureDelegate, @unchecked Sendable {
 
     private let targetMegapixels: Double
     private let willCapture: () -> Void
