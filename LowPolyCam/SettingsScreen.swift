@@ -187,29 +187,37 @@ struct SettingsScreen: View {
 
     private var summarySection: some View {
         Section {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(settings.cameraMode.label)
-                        .font(.system(size: 15, weight: .bold, design: .rounded))
-                    Spacer()
-                    Text(compactPlanLabel)
-                        .font(.system(size: 13, weight: .semibold, design: .rounded))
-                        .foregroundColor(settings.accentColor.color)
+            HStack(spacing: 11) {
+                Image(systemName: settings.cameraMode == .photo ? "camera.fill" : "video.fill")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundColor(.white)
+                    .frame(width: 32, height: 32)
+                    .background(settings.accentColor.color, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(settings.cameraMode.label) · \(compactPlanLabel)")
+                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                    if settings.cameraMode != .photo {
+                        Text("\(shortQualityLabel(settings.quality)) · \(settings.saveLocation.label) · ~\(Int(plan.megabytesPerHour.rounded())) MB/h")
+                            .font(.system(size: 11, weight: .medium, design: .rounded))
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    } else {
+                        Text(settings.saveLocation.label)
+                            .font(.system(size: 11, weight: .medium, design: .rounded))
+                            .foregroundColor(.secondary)
+                    }
                 }
-                if settings.cameraMode != .photo {
-                    Text("\(shortQualityLabel(settings.quality)) · \(settings.saveLocation.label) · Split \(shortSplitLabel(settings.splitInterval))")
-                        .font(.system(size: 13, weight: .medium, design: .rounded))
-                        .foregroundColor(.secondary)
-                    Text("~\(Int(plan.megabytesPerHour.rounded())) MB/h · \(Fmt.size(freeBytesSnapshot)) free")
-                        .font(.system(size: 12, weight: .medium, design: .rounded))
-                        .foregroundColor(.secondary.opacity(0.9))
-                } else {
-                    Text("\(settings.photoMegapixels.label) · \(settings.saveLocation.label)")
-                        .font(.system(size: 13, weight: .medium, design: .rounded))
+                Spacer(minLength: 6)
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text(Fmt.size(freeBytesSnapshot))
+                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                        .foregroundColor(settings.accentColor.color)
+                    Text("free")
+                        .font(.system(size: 10, weight: .medium, design: .rounded))
                         .foregroundColor(.secondary)
                 }
             }
-            .padding(.vertical, 2)
+            .padding(.vertical, 1)
         }
     }
 
@@ -247,12 +255,9 @@ struct SettingsScreen: View {
             }
 
             labeledChipRow(title: "Frame rate") {
-                let rateItems: [FrameRate] = isFrontSnapshot
-                    ? availableFrameRates.filter { !(settings.resolution == .p2160 && $0 == .fps60) }
-                    : FrameRate.allCases
+                let rateItems: [FrameRate] = isFrontSnapshot ? availableFrameRates : FrameRate.allCases
                 chipRow(rateItems.map { f in
                     let enabled = availableFrameRates.contains(f)
-                        && !(settings.resolution == .p2160 && f == .fps60)
                     return ChipItem(id: "fr-\(f.id)", label: f.label,
                                      enabled: enabled,
                                      selected: settings.frameRate == f) {
@@ -1337,7 +1342,7 @@ struct SettingsScreen: View {
 
     private func chipRow(_ items: [ChipItem]) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 ForEach(items) { item in
                     Button(action: {
                         guard item.enabled else { return }
@@ -1346,7 +1351,7 @@ struct SettingsScreen: View {
                     }) {
                         HStack(spacing: 4) {
                             Text(item.label)
-                                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                                .font(.system(size: 12, weight: .semibold, design: .rounded))
                             if !item.enabled {
                                 Image(systemName: "lock.fill")
                                     .font(.system(size: 9, weight: .bold))
@@ -1356,8 +1361,8 @@ struct SettingsScreen: View {
                             item.selected && item.enabled ? .white
                             : (item.enabled ? .primary : .secondary.opacity(0.5))
                         )
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
                         .background(
                             Capsule()
                                 .fill(item.selected && item.enabled

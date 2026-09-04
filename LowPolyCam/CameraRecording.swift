@@ -98,7 +98,12 @@ extension CameraRecorder {
             // Replacing this plan with sensor dimensions was why 480p/360p/
             // 144p saved as arbitrary 4:3 formats instead of their labels.
             DebugLog.write("[plan] encode \(newPlan.width)x\(newPlan.height) @\(newPlan.frameRate)fps")
-            let transform = Self.transform(width: newPlan.width, height: newPlan.height, isFront: self.isFrontCamera)
+            let transform = Self.transform(
+                width: newPlan.width,
+                height: newPlan.height,
+                isFront: self.isFrontCamera,
+                mirrorFront: !self.settings.saveSelfiesUnmirrored
+            )
 
             Task { @MainActor in
                 guard self.recordingSessionToken == myToken, !self.stopRequested else { return }
@@ -971,14 +976,17 @@ extension CameraRecorder {
 
     // MARK: Video Matrix Orientation
 
-    static func transform(width: Int, height: Int, isFront: Bool) -> CGAffineTransform {
-        let w = CGFloat(width)
+    static func transform(width: Int, height: Int, isFront: Bool, mirrorFront: Bool) -> CGAffineTransform {
         let h = CGFloat(height)
 
-        if !isFront {
+        if !isFront || !mirrorFront {
             return CGAffineTransform(translationX: h, y: 0).rotated(by: .pi / 2)
         } else {
-            return CGAffineTransform(a: 0, b: -1, c: -1, d: 0, tx: h, ty: w)
+            // Front buffers already use the opposite sensor mounting. The old
+            // -90° transform mirrored them *and* added another half-turn,
+            // producing upside-down selfie slow-mo. This is the portrait
+            // mirror matrix (the same visual direction as the preview).
+            return CGAffineTransform(a: 0, b: 1, c: 1, d: 0, tx: 0, ty: 0)
         }
     }
 

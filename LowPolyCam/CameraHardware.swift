@@ -275,6 +275,17 @@ extension CameraRecorder {
                               focus: .autoFocus,
                               exposure: .autoExpose,
                               monitorSubjectArea: true)
+        // `autoExpose` is a one-shot measurement. Return to continuous AE/AF
+        // once that rack finishes so brightness keeps following the scene.
+        // Without this, a single tap could leave the front camera looking dark
+        // for the rest of a slow-motion take.
+        sessionQueue.asyncAfter(deadline: .now() + 0.7) { [weak self] in
+            guard let self, !self.focusLocked, !self.exposureLocked else { return }
+            self.applyFocusAndExposure(at: clamped,
+                                       focus: .continuousAutoFocus,
+                                       exposure: .continuousAutoExposure,
+                                       monitorSubjectArea: true)
+        }
     }
 
     func resetFocusAndExposureToAuto() {

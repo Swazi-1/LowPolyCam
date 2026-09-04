@@ -481,7 +481,7 @@ struct CameraScreen: View {
                             .lineLimit(1)
                             .minimumScaleFactor(0.75)
                     } else {
-                        Text(settings.resolution.label)
+                        Text("VIDEO")
                             .font(.system(size: 10, weight: .black, design: .rounded))
                             .foregroundColor(Palette.slateDeep)
                             .padding(.horizontal, 7)
@@ -495,7 +495,7 @@ struct CameraScreen: View {
                             )
                             .clipShape(Capsule())
 
-                        Text(qualityShortLabel)
+                        Text("\(settings.resolution.label) · \(settings.frameRate.label)")
                             .font(.system(size: 12, weight: .bold, design: .rounded))
                             .foregroundColor(.white.opacity(0.92))
                             .lineLimit(1)
@@ -949,6 +949,8 @@ struct CameraScreen: View {
             }
         }
         .tint(settings.accentColor.color)
+        .presentationDetents([.height(410)])
+        .presentationDragIndicator(.visible)
     }
 
     // MARK: Bottom HUD Bar (Live Zoom Always Visible)
@@ -1678,7 +1680,7 @@ struct CameraScreen: View {
     /// `recorder.maxZoomFactor` the hardware reports, then clamped to it so
     /// we never ask the session for more zoom than the lens can deliver.
     private let zoomDialMaxFactor: CGFloat = 8
-    private let zoomDialMinFactor: CGFloat = 1
+    private var zoomDialMinFactor: CGFloat { max(0.5, recorder.minZoomFactor) }
 
     private func zoomDialLabel(_ factor: CGFloat) -> String {
         if abs(factor - factor.rounded()) < 0.05 {

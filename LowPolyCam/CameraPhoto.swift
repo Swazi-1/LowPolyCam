@@ -125,7 +125,6 @@ extension CameraRecorder {
                     if stillArea > currentArea + 500_000 {
                         if self.applyUnifiedHardwareConfiguration(to: device, format: stillFormat, targetFPS: 30) {
                             self.lastAppliedFormatKey = nil // force restore after
-                            self.configurePhotoOutput()
                             didSwapForStill = true
                         }
                     }

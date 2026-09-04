@@ -72,7 +72,6 @@ extension CameraRecorder {
         }
 
         lastAppliedFormatKey = nil
-        configurePhotoOutput()
         waitForExposureSettled(device: device, timeout: 0.25, completion: begin)
     }
 

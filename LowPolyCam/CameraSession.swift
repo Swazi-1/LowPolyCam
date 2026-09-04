@@ -50,11 +50,14 @@ extension CameraRecorder {
 
         if session.canAddOutput(photoOutput) { session.addOutput(photoOutput) }
 
+        // Photo dimensions belong to the active camera format. Configure them
+        // while the capture graph is still being assembled; changing them after
+        // a live 4K60 format swap can make AVFoundation raise an exception.
+        configurePhotoOutput(for: cameraInput?.device)
         session.commitConfiguration()
 
         configureVideoConnection()
         refreshCapabilitiesThenApplyFormat()
-        configurePhotoOutput()
         refreshTorchState()
         resetFocusAndExposureToAuto()
         syncMicInput()
@@ -63,14 +66,17 @@ extension CameraRecorder {
 
     // MARK: Photo Output Configuration
 
-    func configurePhotoOutput() {
-        guard let device = cameraInput?.device else { return }
+    func configurePhotoOutput(for device: AVCaptureDevice? = nil) {
+        guard let device = device ?? cameraInput?.device else { return }
 
         photoOutput.maxPhotoQualityPrioritization = .quality
         if let largest = device.activeFormat.supportedMaxPhotoDimensions.max(by: {
             Int($0.width) * Int($0.height) < Int($1.width) * Int($1.height)
         }) {
-            photoOutput.maxPhotoDimensions = largest
+            let current = photoOutput.maxPhotoDimensions
+            if current.width != largest.width || current.height != largest.height {
+                photoOutput.maxPhotoDimensions = largest
+            }
         }
     }
 
@@ -245,7 +251,6 @@ extension CameraRecorder {
                     lastAppliedFormatKey = newKey
                     changed = true
                 }
-                configurePhotoOutput()
                 Task { @MainActor in self.volumeObserver?.ignoreTemporarily() }
                 return changed
             }
@@ -266,7 +271,6 @@ extension CameraRecorder {
             lastAppliedFormatKey = newKey
             changed = true
         }
-        configurePhotoOutput()
         Task { @MainActor in self.volumeObserver?.ignoreTemporarily() }
         return changed
     }
@@ -283,6 +287,11 @@ extension CameraRecorder {
             // 1. Format & Frame Rate — lock min AND max to the same duration so
             // the sensor runs at a fixed rate (prevents VFR / under-target fps files).
             device.activeFormat = format
+            // Keep the photo output's dimensions in the same atomic session
+            // transaction as its backing format. This avoids the 4K60 crash
+            // caused by briefly pairing an old still dimension with a new
+            // video format on iPhone 11-class cameras.
+            configurePhotoOutput(for: device)
 
             let desiredFPS = max(1.0, targetFPS.rounded())
             // Automatic low-light frame-rate switching conflicts with an exact
@@ -333,7 +342,7 @@ extension CameraRecorder {
             if device.isExposureModeSupported(.continuousAutoExposure) {
                 device.exposureMode = .continuousAutoExposure
             }
-            device.isSubjectAreaChangeMonitoringEnabled = false
+            device.isSubjectAreaChangeMonitoringEnabled = true
 
             // 3. Pro Settings (Exposure & White Balance)
             let minBias = device.minExposureTargetBias
