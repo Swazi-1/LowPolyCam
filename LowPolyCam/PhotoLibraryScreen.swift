@@ -36,7 +36,7 @@ struct PhotoLibraryScreen: View {
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 2), count: 3)
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             ZStack {
                 Palette.slateDeep.ignoresSafeArea()
 
@@ -59,10 +59,10 @@ struct PhotoLibraryScreen: View {
                 }
             }
             .navigationTitle("Library")
-            .toolbarTitleDisplayMode(.inline)
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { leadingBar }
-                ToolbarItem(placement: .topBarTrailing) { trailingBar }
+                ToolbarItem(placement: .navigationBarLeading) { leadingBar }
+                ToolbarItem(placement: .navigationBarTrailing) { trailingBar }
                 ToolbarItemGroup(placement: .bottomBar) {
                     bottomBar
                 }
@@ -313,7 +313,7 @@ struct PhotoLibraryScreen: View {
                 guard let resource = preferredResource(for: asset) else { continue }
                 let ext = fileExtension(for: resource)
                 let tmpURL = FileManager.default.temporaryDirectory
-                    .appending(path:(UUID().uuidString)
+                    .appendingPathComponent(UUID().uuidString)
                     .appendingPathExtension(ext)
 
                 group.enter()
@@ -552,7 +552,7 @@ private struct PhotoLibraryPreview: View {
         let ext = UTType(resource.uniformTypeIdentifier)?.preferredFilenameExtension
             ?? (resource.type == .video ? "mov" : "jpg")
         let tmpURL = FileManager.default.temporaryDirectory
-            .appending(path:(UUID().uuidString)
+            .appendingPathComponent(UUID().uuidString)
             .appendingPathExtension(ext)
         let options = PHAssetResourceRequestOptions()
         options.isNetworkAccessAllowed = true
