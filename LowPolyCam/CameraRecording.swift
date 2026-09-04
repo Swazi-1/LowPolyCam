@@ -1,9 +1,17 @@
+//
+//  CameraRecording.swift
+//  LowPolyCam
+//
+//  Updated for iOS 27 / Xcode 27 / Swift 6.4.
+//  Swift 6 complete concurrency · Observation · Liquid Glass · RotationCoordinator
+//
+
 import AVFoundation
 import UIKit
 import Photos
 import MediaPlayer
 import CoreMotion
-import Combine
+import Observation
 import AudioToolbox
 import ImageIO
 import VideoToolbox
@@ -93,7 +101,7 @@ extension CameraRecorder {
             DebugLog.write("[plan] encode \(newPlan.width)x\(newPlan.height) @\(newPlan.frameRate)fps")
             let transform = Self.transform(width: newPlan.width, height: newPlan.height, isFront: self.isFrontCamera)
 
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 guard self.recordingSessionToken == myToken, !self.stopRequested else { return }
                 self.isRecording = true
                 UIApplication.shared.isIdleTimerDisabled = true
@@ -308,7 +316,7 @@ extension CameraRecorder {
         ioQueue.async {
             guard token == self.recordingSessionToken else {
                 DebugLog.write("[stop] finishSegment skipped, stale token=\(token) currentToken=\(self.recordingSessionToken)")
-                DispatchQueue.main.async { self.isSaving = false }
+                Task { @MainActor in self.isSaving = false }
                 if task != .invalid {
                     UIApplication.shared.endBackgroundTask(task)
                     task = .invalid
@@ -317,7 +325,7 @@ extension CameraRecorder {
             }
             self.finishSegment {
                 DebugLog.write("[stop] finishSegment completion fired, isSaving -> false token=\(token)")
-                DispatchQueue.main.async { self.isSaving = false }
+                Task { @MainActor in self.isSaving = false }
                 if task != .invalid {
                     UIApplication.shared.endBackgroundTask(task)
                     task = .invalid
@@ -346,7 +354,7 @@ extension CameraRecorder {
             pendingMidBuffers.removeAll(keepingCapacity: false)
             wantsRecording = false
             writerLock.unlock()
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 self.isRecording = false
                 self.notice = "Storage full · Recording stopped"
                 UIApplication.shared.isIdleTimerDisabled = false
@@ -509,7 +517,7 @@ extension CameraRecorder {
             lastVideoPTS = endPTS
             writerLock.unlock()
 
-            DispatchQueue.main.async { self.clipsThisSession += 1 }
+            Task { @MainActor in self.clipsThisSession += 1 }
             if highFPS {
                 DebugLog.write("[10] segment fully started ✅ (high-fps: skipped \(buffered.count) stale buffered frames)")
             } else {
@@ -526,7 +534,7 @@ extension CameraRecorder {
             scalePixelBufferPool = nil
             wantsRecording = false
             writerLock.unlock()
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 self.isRecording = false
                 self.notice = "Encoder error"
                 UIApplication.shared.isIdleTimerDisabled = false
@@ -569,7 +577,7 @@ extension CameraRecorder {
             UserDefaults.standard.removeObject(forKey: Self.inProgressKey)
             UserDefaults.standard.removeObject(forKey: Self.inProgressDestinationKey)
             try? FileManager.default.removeItem(at: url)
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 self.notice = "Clip failed to save"
                 self.refreshFreeSpace()
             }
@@ -624,7 +632,7 @@ extension CameraRecorder {
                 UserDefaults.standard.removeObject(forKey: Self.inProgressKey)
                 UserDefaults.standard.removeObject(forKey: Self.inProgressDestinationKey)
                 try? FileManager.default.removeItem(at: url)
-                DispatchQueue.main.async {
+                Task { @MainActor in
                     self.notice = "Clip failed to save"
                     self.refreshFreeSpace()
                 }
@@ -652,7 +660,7 @@ extension CameraRecorder {
                     // Photos delivery is post-finalization work and must not
                     // control the Record button's enabled state.
                     self.deliver(url, to: destination) {
-                        DispatchQueue.main.async { self.refreshFreeSpace() }
+                        Task { @MainActor in self.refreshFreeSpace() }
                     }
                     return
                 }
@@ -662,7 +670,7 @@ extension CameraRecorder {
                 let bytes = fileByteSize(url)
                 DebugLog.write("❌ finishWriting not completed: \(err) fileBytes=\(bytes)")
                 try? FileManager.default.removeItem(at: url)
-                DispatchQueue.main.async {
+                Task { @MainActor in
                     self.notice = "Clip failed to save"
                     self.refreshFreeSpace()
                 }
@@ -697,7 +705,7 @@ extension CameraRecorder {
                 guard oldWriter.status == .completed else {
                     DebugLog.write("❌ rotated segment failed to finish: \(oldWriter.error?.localizedDescription ?? "status=\(oldWriter.status.rawValue)")")
                     try? FileManager.default.removeItem(at: oldUrl)
-                    DispatchQueue.main.async {
+                    Task { @MainActor in
                         self.notice = "A video segment failed to save"
                         self.refreshFreeSpace()
                     }
@@ -710,7 +718,7 @@ extension CameraRecorder {
                 let finishedBytes = (try? oldUrl.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
                 self.statsTracker.carryOverSegmentBytes(Int64(finishedBytes))
                 self.deliver(oldUrl, to: destination) {
-                    DispatchQueue.main.async { self.refreshFreeSpace() }
+                    Task { @MainActor in self.refreshFreeSpace() }
                 }
             }
         } else {
@@ -750,7 +758,7 @@ extension CameraRecorder {
         let defaults = UserDefaults.standard
         guard let name = defaults.string(forKey: Self.inProgressKey) else { return }
 
-        let url = Self.clipsDirectory.appendingPathComponent(name)
+        let url = Self.clipsDirectory.appending(path:(name)
         let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
 
         guard size > 0 else {
@@ -770,7 +778,7 @@ extension CameraRecorder {
         defaults.removeObject(forKey: Self.inProgressDestinationKey)
         generateThumbnail(for: url)
         deliver(url, to: destination) { [weak self] in
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 self?.notice = "Recovered interrupted clip"
                 self?.refreshFreeSpace()
             }
@@ -788,13 +796,13 @@ extension CameraRecorder {
             let time = CMTime(seconds: 0.5, preferredTimescale: 600)
             if let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) {
                 let img = UIImage(cgImage: cgImage)
-                DispatchQueue.main.async {
+                Task { @MainActor in
                     self.lastClipThumbnail = img
                     self.lastClipURL = url
                 }
             } else if let cgImage = try? generator.copyCGImage(at: .zero, actualTime: nil) {
                 let img = UIImage(cgImage: cgImage)
-                DispatchQueue.main.async {
+                Task { @MainActor in
                     self.lastClipThumbnail = img
                     self.lastClipURL = url
                 }
@@ -805,21 +813,21 @@ extension CameraRecorder {
     func ensurePhotosAccess() {
         let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
         if status == .notDetermined {
-            PHPhotoLibrary.requestAuthorization(for: .addOnly) { _ in }
+            Task { _ = await PHPhotoLibrary.requestAuthorization(for: .addOnly) }
         }
         // Denied is handled by deliver() — clip is kept in Files, no crash.
     }
 
     func deliver(_ url: URL, to destination: SaveLocation, done: @escaping () -> Void) {
         guard destination == .photos else {
-            DispatchQueue.main.async { self.notice = "Saved to Files" }
+            Task { @MainActor in self.notice = "Saved to Files" }
             done()
             return
         }
 
         let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
         guard status == .authorized || status == .limited else {
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 self.notice = "Saved to Files (Photo access denied)"
             }
             done()
@@ -834,7 +842,7 @@ extension CameraRecorder {
                 request.addResource(with: .video, fileURL: url, options: options)
             } completionHandler: { [weak self] success, error in
                 if success {
-                    DispatchQueue.main.async {
+                    Task { @MainActor in
                         self?.notice = "Saved to Photos"
                     }
                     done()
@@ -850,7 +858,7 @@ extension CameraRecorder {
                     return
                 }
                 DebugLog.write("❌ Photos save failed after retry: \(error?.localizedDescription ?? "?")")
-                DispatchQueue.main.async {
+                Task { @MainActor in
                     self?.notice = "Saved to Files (Photos refused)"
                 }
                 done()
@@ -909,7 +917,7 @@ extension CameraRecorder {
             let bytes = (try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
                 .volumeAvailableCapacityForImportantUsage ?? 0
             self.ioQueue.async { self.freeBytesSnapshot = Int64(bytes) }
-            DispatchQueue.main.async { self.freeBytes = Int64(bytes) }
+            Task { @MainActor in self.freeBytes = Int64(bytes) }
         }
     }
 
@@ -930,7 +938,7 @@ extension CameraRecorder {
         // random suffix guarantees uniqueness even if that race happens, as
         // a defense-in-depth alongside the dedicated startSegment guard.
         let suffix = String(format: "%04X", UInt16.random(in: 0...0xFFFF))
-        return clipsDirectory.appendingPathComponent("LowPolyCam_\(f.string(from: Date()))_\(suffix).mov")
+        return clipsDirectory.appending(path:("LowPolyCam_\(f.string(from: Date()))_\(suffix).mov")
     }
 
     // MARK: Video Matrix Orientation
