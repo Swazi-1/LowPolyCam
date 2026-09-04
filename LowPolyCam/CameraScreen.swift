@@ -7,14 +7,13 @@
 //
 
 import SwiftUI
-import Observation
 import UIKit
 import AVKit
 
 struct CameraScreen: View {
 
-    @Bindable var settings: AppSettings
-    @Bindable var recorder: CameraRecorder
+    @ObservedObject var settings: AppSettings
+    @ObservedObject var recorder: CameraRecorder
 
     @State private var showSettings = false
     @State private var showPlayer = false
@@ -94,259 +93,250 @@ struct CameraScreen: View {
     }
 
     var body: some View {
-        ZStack {
-            // Full-bleed preview layer
-            ZStack {
-                Color.black
-
-                CameraPreview(session: recorder.session, onTap: { [weak recorder] devicePoint, viewPoint in
-                    if showProMenu {
-                        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { showProMenu = false }
-                    }
-                    recorder?.focusAndExpose(at: devicePoint)
-                    showFocusReticle(at: viewPoint, locked: false)
-                }, onDoubleTap: { [weak recorder] in
-                    recorder?.flipCamera()
-                }, onLongPress: { [weak recorder] devicePoint, viewPoint in
-                    guard let recorder else { return }
-                    if settings.hapticFeedbackEnabled { zoomHaptic.selectionChanged() }
-                    recorder.lockFocus(at: devicePoint)
-                    showFocusReticle(at: viewPoint, locked: true)
-                }, onTwoFingerLongPress: { [weak recorder] devicePoint, viewPoint in
-                    guard let recorder else { return }
-                    if settings.hapticFeedbackEnabled { zoomHaptic.selectionChanged() }
-                    recorder.lockExposure(at: devicePoint)
-                    showFocusReticle(at: viewPoint, locked: true)
-                })
-                .gesture(
-                    MagnificationGesture()
-                        .onChanged { value in
-                            if !isPinching {
-                                isPinching = true
-                                zoomGestureBase = recorder.zoomFactor
-                            }
-                            recorder.suppressVolumeTriggerBriefly()
-                            recorder.setZoom(factor: zoomGestureBase * value)
-                        }
-                        .onEnded { _ in
-                            isPinching = false
-                            recorder.suppressVolumeTriggerBriefly()
-                        }
-                )
-
-                if let focusPoint {
-                    focusReticle.position(focusPoint)
-                }
-
-                if settings.gridStyle != .off { gridOverlay }
-
-                if settings.showLevelGauge { levelGaugeOverlay }
-
-                if countdownRemaining > 0 { countdownOverlay }
-
-                Color.black
-                    .opacity(recorder.isSwitchingCamera ? 1 : 0)
-                    .allowsHitTesting(false)
-                    .animation(.easeInOut(duration: 0.18), value: recorder.isSwitchingCamera)
-
-                Color.black
-                    .opacity(modeTransitionOpacity)
-                    .allowsHitTesting(false)
-                    .overlay(
-                        Group {
-                            if recorder.isSwitchingMode {
-                                Text(modeTransitionLabel)
-                                    .font(.system(size: 12, weight: .bold, design: .rounded))
-                                    .foregroundColor(.white.opacity(0.9))
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 6)
-                                    .background(Capsule().fill(Palette.slateDeep.opacity(0.8)))
-                            }
-                        }
-                    )
-
-                // Quick white flash confirming a photo was taken (like Camera.app).
-                Color.white
-                    .opacity(showCaptureFlash ? 0.85 : 0)
-                    .allowsHitTesting(false)
-                    .animation(.easeOut(duration: 0.18), value: showCaptureFlash)
-
-                // Sustained screen flash for selfies — front camera has no
-                // physical torch, so we light the whole screen white (and
-                // max out brightness) the way iOS's Camera app does, giving
-                // the sensor a moment to re-expose before the shutter fires.
-                Color.white
-                    .opacity(screenFlashIlluminating ? 1 : 0)
-                    .allowsHitTesting(false)
-                    .animation(.easeOut(duration: 0.15), value: screenFlashIlluminating)
-
-                if dimmed { dimOverlay }
+        cameraRootView
+            .statusBar(hidden: true)
+            .tint(settings.accentColor.color)
+            .onAppear(perform: handleAppear)
+            .onDisappear(perform: handleDisappear)
+            .onChange(of: settings.hapticIntensity) { _ in
+                applyHapticIntensity()
             }
-            .ignoresSafeArea()
+            .onChange(of: recorder.isLevel) { isLevel in
+                if isLevel && settings.showLevelGauge && settings.hapticFeedbackEnabled {
+                    levelHaptic.selectionChanged()
+                }
+            }
+            .onChange(of: recorder.isRecording) { isRecording in
+                if !isRecording && dimmed {
+                    leaveDim()
+                }
+            }
+            .onChange(of: recorder.elapsed) { sec in
+                let delay = PerformanceProfile.current(settings: settings).autoDimDelaySeconds
+                if settings.autoDimOnRecord && recorder.isRecording && !dimmed && sec >= delay {
+                    enterDim()
+                }
+            }
+            .onChange(of: recorder.notice) { newNotice in
+                handleNoticeChange(newNotice)
+            }
+            .onChange(of: showSettings) { isPresented in
+                if isPresented {
+                    recorder.pausePreviewSession()
+                } else {
+                    recorder.resumePreviewSession()
+                }
+            }
+            .onChange(of: showPlayer) { isPresented in
+                if isPresented {
+                    recorder.pausePreviewSession()
+                } else {
+                    recorder.resumePreviewSession()
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
+                if dimmed { leaveDim() }
+            }
+            .sheet(isPresented: $showSettings) {
+                SettingsScreen(settings: settings, recorder: recorder)
+                    .interactiveDismissDisabled(false)
+            }
+            .sheet(isPresented: $showPlayer) {
+                if let url = recorder.lastClipURL {
+                    ClipPlayerView(url: url)
+                }
+            }
+            .sheet(isPresented: $showGallery) {
+                PhotoLibraryScreen()
+            }
+            .sheet(isPresented: $showPhotoReview) {
+                PhotoReviewScreen(
+                    settings: settings,
+                    item: recorder.lastPhotoReviewItem,
+                    burstItems: recorder.lastBurstReviewItems
+                )
+            }
+            .onChange(of: recorder.photoReviewToken) { token in
+                guard settings.photoReviewAfterCapture, token != reviewedPhotoReviewToken else { return }
+                reviewedPhotoReviewToken = token
+                showPhotoReview = true
+            }
+    }
 
-            // Safe area HUD — layout is fixed; Pro sheet overlays so opening it
-            // never expands the VStack or clips edge icons.
+    private var cameraRootView: some View {
+        ZStack {
+            cameraPreviewLayer
+
             if recorder.permissionDenied {
                 permissionMessage
             } else {
-                VStack(spacing: 0) {
-                    topHUD
+                cameraHUDLayer
+            }
+        }
+    }
 
-                    if recorder.focusLocked || recorder.exposureLocked {
-                        focusExposureLockBar
-                            .transition(.move(edge: .top).combined(with: .opacity))
-                            .padding(.top, 8)
-                    }
+    private var cameraPreviewLayer: some View {
+        ZStack {
+            Color.black
 
-                    if let notice = recorder.notice {
-                        noticeBar(notice)
-                            .transition(.move(edge: .top).combined(with: .opacity).combined(with: .scale(scale: 0.9)))
-                            .padding(.top, 8)
-                    }
-
-                    Spacer(minLength: 0)
-
-                    bottomHUD
+            CameraPreview(session: recorder.session, onTap: { [weak recorder] devicePoint, viewPoint in
+                if showProMenu {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { showProMenu = false }
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-
-                // Overlay Pro panel mid-low — high enough to reach, above bottom HUD
-                // so mode/zoom/shutter stay visible and unused space isn't wasted.
-                if showProMenu && !recorder.isRecording && !recorder.isSaving {
-                    Color.black.opacity(0.4)
-                        .ignoresSafeArea()
-                        .onTapGesture {
-                            withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
-                                showProMenu = false
-                            }
+                recorder?.focusAndExpose(at: devicePoint)
+                showFocusReticle(at: viewPoint, locked: false)
+            }, onDoubleTap: { [weak recorder] in
+                recorder?.flipCamera()
+            }, onLongPress: { [weak recorder] devicePoint, viewPoint in
+                guard let recorder else { return }
+                if settings.hapticFeedbackEnabled { zoomHaptic.selectionChanged() }
+                recorder.lockFocus(at: devicePoint)
+                showFocusReticle(at: viewPoint, locked: true)
+            }, onTwoFingerLongPress: { [weak recorder] devicePoint, viewPoint in
+                guard let recorder else { return }
+                if settings.hapticFeedbackEnabled { zoomHaptic.selectionChanged() }
+                recorder.lockExposure(at: devicePoint)
+                showFocusReticle(at: viewPoint, locked: true)
+            })
+            .gesture(
+                MagnificationGesture()
+                    .onChanged { value in
+                        if !isPinching {
+                            isPinching = true
+                            zoomGestureBase = recorder.zoomFactor
                         }
-                        .transition(.opacity)
-
-                    VStack {
-                        Spacer(minLength: 0)
-                        proToolsDrawer
-                            .padding(.horizontal, 14)
-                            // Sit low, overlapping the shutter area — the scrim
-                            // above already blocks taps to the HUD underneath
-                            // while open, so this is purely about thumb reach.
-                            .padding(.bottom, 40)
+                        recorder.suppressVolumeTriggerBriefly()
+                        recorder.setZoom(factor: zoomGestureBase * value)
                     }
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                    .zIndex(20)
-                    .allowsHitTesting(true)
-                }
-            }
-        }
-        .statusBar(hidden: true)
-        .tint(settings.accentColor.color)
-        .onAppear {
-            recorder.start()
-            applyHapticIntensity()
-            startHaptic.prepare()
-            stopHaptic.prepare()
-            levelHaptic.prepare()
-            zoomHaptic.prepare()
-            modeHaptic.prepare()
-            // Sync the screen-flash overlay to the moment the sensor actually
-            // captures the frame (not to button-tap), so it fires exactly once.
-            // On rear camera, iOS's system already shows a flash from the hardware,
-            // so only show our custom overlay on front camera to match iOS Camera.app.
-            recorder.onWillCapturePhoto = {
-                guard settings.captureFlashConfirmation, recorder.isFrontCamera else { return }
-                showCaptureFlash = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { showCaptureFlash = false }
-            }
-        }
-        .onDisappear {
-            if dimmed { leaveDim() }
-            recorder.stop()
-            countdownTimer?.invalidate()
-        }
-        .onChange(of: settings.hapticIntensity) { _, _ in
-            applyHapticIntensity()
-        }
-        .onChange(of: recorder.isLevel) { _, isLevel in
-            if isLevel && settings.showLevelGauge && settings.hapticFeedbackEnabled {
-                levelHaptic.selectionChanged()
-            }
-        }
-        // Auto-Wake when recording stops (manual stop, auto-split, or storage full)
-        .onChange(of: recorder.isRecording) { _, isRecording in
-            if !isRecording && dimmed {
-                leaveDim()
-            }
-        }
-        // Auto-Dim Battery Saver (dims after N seconds of recording — sooner
-        // under Longevity Mode, since the screen is one of the biggest power
-        // draws during a long take). See PerformanceProfile.autoDimDelaySeconds.
-        .onChange(of: recorder.elapsed) { _, sec in
-            let delay = PerformanceProfile.current(settings: settings).autoDimDelaySeconds
-            if settings.autoDimOnRecord && recorder.isRecording && !dimmed && sec >= delay {
-                enterDim()
-            }
-        }
-        .onChange(of: recorder.notice) { _, newNotice in
-            guard newNotice != nil else { return }
-            noticeHideToken += 1
-            let token = noticeHideToken
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
-                if noticeHideToken == token {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
-                        recorder.notice = nil
+                    .onEnded { _ in
+                        isPinching = false
+                        recorder.suppressVolumeTriggerBriefly()
                     }
-                }
-            }
-        }
-        .onChange(of: showSettings) { _, isPresented in
-            if isPresented {
-                // Full sensor stop while the settings sheet covers the preview —
-                // biggest single idle-heat win when you're not looking at the camera.
-                recorder.pausePreviewSession()
-            } else {
-                recorder.resumePreviewSession()
-            }
-        }
-        .onChange(of: showPlayer) { _, isPresented in
-            if isPresented {
-                recorder.pausePreviewSession()
-            } else {
-                recorder.resumePreviewSession()
-            }
-        }
-        // Keep the capture session running under the Clips sheet.
-        // stopRunning/startRunning on A10 costs 2–3s of frozen preview when
-        // the sheet is swipe-dismissed; leaving the session live makes return
-        // instant (same as stock Camera).
-        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
-            if dimmed { leaveDim() }
-        }
-        .sheet(isPresented: $showSettings) {
-            SettingsScreen(settings: settings, recorder: recorder)
-                .interactiveDismissDisabled(false)
-        }
-        .sheet(isPresented: $showPlayer) {
-            if let url = recorder.lastClipURL {
-                ClipPlayerView(url: url)
-            }
-        }
-        .sheet(isPresented: $showGallery) {
-            PhotoLibraryScreen()
-        }
-        .sheet(isPresented: $showPhotoReview) {
-            PhotoReviewScreen(
-                settings: settings,
-                item: recorder.lastPhotoReviewItem,
-                burstItems: recorder.lastBurstReviewItems
             )
+
+            if let focusPoint {
+                focusReticle.position(focusPoint)
+            }
+
+            if settings.gridStyle != .off { gridOverlay }
+            if settings.showLevelGauge { levelGaugeOverlay }
+            if countdownRemaining > 0 { countdownOverlay }
+
+            Color.black
+                .opacity(recorder.isSwitchingCamera ? 1 : 0)
+                .allowsHitTesting(false)
+                .animation(.easeInOut(duration: 0.18), value: recorder.isSwitchingCamera)
+
+            Color.black
+                .opacity(modeTransitionOpacity)
+                .allowsHitTesting(false)
+                .overlay(
+                    Group {
+                        if recorder.isSwitchingMode {
+                            Text(modeTransitionLabel)
+                                .font(.system(size: 12, weight: .bold, design: .rounded))
+                                .foregroundColor(.white.opacity(0.9))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(Capsule().fill(Palette.slateDeep.opacity(0.8)))
+                        }
+                    }
+                )
+
+            Color.white
+                .opacity(showCaptureFlash ? 0.85 : 0)
+                .allowsHitTesting(false)
+                .animation(.easeOut(duration: 0.18), value: showCaptureFlash)
+
+            Color.white
+                .opacity(screenFlashIlluminating ? 1 : 0)
+                .allowsHitTesting(false)
+                .animation(.easeOut(duration: 0.15), value: screenFlashIlluminating)
+
+            if dimmed { dimOverlay }
         }
-        // Opens the post-capture review sheet exactly once per finished
-        // capture (single shot or completed burst) — gated by settings so
-        // everyone who doesn't want the extra tap keeps today's behavior.
-        .onChange(of: recorder.photoReviewToken) { _, token in
-            guard settings.photoReviewAfterCapture, token != reviewedPhotoReviewToken else { return }
-            reviewedPhotoReviewToken = token
-            showPhotoReview = true
+        .ignoresSafeArea()
+    }
+
+    private var cameraHUDLayer: some View {
+        ZStack {
+            VStack(spacing: 0) {
+                topHUD
+
+                if recorder.focusLocked || recorder.exposureLocked {
+                    focusExposureLockBar
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                        .padding(.top, 8)
+                }
+
+                if let notice = recorder.notice {
+                    noticeBar(notice)
+                        .transition(.move(edge: .top).combined(with: .opacity).combined(with: .scale(scale: 0.9)))
+                        .padding(.top, 8)
+                }
+
+                Spacer(minLength: 0)
+                bottomHUD
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+
+            if showProMenu && !recorder.isRecording && !recorder.isSaving {
+                Color.black.opacity(0.4)
+                    .ignoresSafeArea()
+                    .onTapGesture {
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
+                            showProMenu = false
+                        }
+                    }
+                    .transition(.opacity)
+
+                VStack {
+                    Spacer(minLength: 0)
+                    proToolsDrawer
+                        .padding(.horizontal, 14)
+                        .padding(.bottom, 40)
+                }
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .zIndex(20)
+                .allowsHitTesting(true)
+            }
+        }
+    }
+
+    private func handleAppear() {
+        recorder.start()
+        applyHapticIntensity()
+        startHaptic.prepare()
+        stopHaptic.prepare()
+        levelHaptic.prepare()
+        zoomHaptic.prepare()
+        modeHaptic.prepare()
+        recorder.onWillCapturePhoto = {
+            guard settings.captureFlashConfirmation, recorder.isFrontCamera else { return }
+            showCaptureFlash = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+                showCaptureFlash = false
+            }
+        }
+    }
+
+    private func handleDisappear() {
+        if dimmed { leaveDim() }
+        recorder.stop()
+        countdownTimer?.invalidate()
+    }
+
+    private func handleNoticeChange(_ newNotice: String?) {
+        guard newNotice != nil else { return }
+        noticeHideToken += 1
+        let token = noticeHideToken
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+            if noticeHideToken == token {
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
+                    recorder.notice = nil
+                }
+            }
         }
     }
 
@@ -907,7 +897,7 @@ struct CameraScreen: View {
     // Presets in SettingsScreen.swift, so picking a white balance preset
     // feels like the rest of the app instead of a one-off row of chips.
     private var whiteBalanceSheet: some View {
-        NavigationStack {
+        NavigationView {
             List {
                 ForEach(WhiteBalancePreset.allCases) { preset in
                     Button(action: {
@@ -947,9 +937,9 @@ struct CameraScreen: View {
             }
             .listStyle(.insetGrouped)
             .navigationTitle("White Balance")
-            .toolbarTitleDisplayMode(.inline)
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Cancel") { showWhiteBalanceSheet = false }
                 }
             }
@@ -1893,7 +1883,7 @@ struct ClipPlayerView: View {
     @State private var loadFailed = false
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             ZStack {
                 Color.black.ignoresSafeArea()
                 if let player, !loadFailed {
@@ -1918,9 +1908,9 @@ struct ClipPlayerView: View {
                 }
             }
             .navigationTitle("Preview")
-            .toolbarTitleDisplayMode(.inline)
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Done") {
                         player?.pause()
                         dismiss()
