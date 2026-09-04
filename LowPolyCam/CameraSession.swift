@@ -1,9 +1,17 @@
+//
+//  CameraSession.swift
+//  LowPolyCam
+//
+//  Updated for iOS 27 / Xcode 27 / Swift 6.4.
+//  Swift 6 complete concurrency · Observation · Liquid Glass · RotationCoordinator
+//
+
 import AVFoundation
 import UIKit
 import Photos
 import MediaPlayer
 import CoreMotion
-import Combine
+import Observation
 import AudioToolbox
 import ImageIO
 
@@ -70,12 +78,12 @@ extension CameraRecorder {
         // On the iPhone 7 capture stack, activeFormat drives both the preview and
         // the still image. The high-resolution format is therefore selected only
         // for the instant of capture, then the lightweight preview format returns.
-        photoOutput.isHighResolutionCaptureEnabled = true
+        photoOutput.maxPhotoQualityPrioritization = .quality
     }
 
     func configureVideoConnection() {
         guard let c = videoOutput.connection(with: .video) else { return }
-        if c.isVideoOrientationSupported { c.videoOrientation = .landscapeRight }
+        // iOS 17+: videoOrientation is deprecated — RotationCoordinator owns preview/output angles.
         if c.isVideoMirroringSupported {
             c.automaticallyAdjustsVideoMirroring = false
             c.isVideoMirrored = false
@@ -100,7 +108,7 @@ extension CameraRecorder {
                 && settings.cameraMode != .slowMo
             c.preferredVideoStabilizationMode = wantStab ? .auto : .off
         }
-        DispatchQueue.main.async { self.stabilizationSupported = supported }
+        Task { @MainActor in self.stabilizationSupported = supported }
     }
 
     func updateStabilization() {
@@ -115,14 +123,14 @@ extension CameraRecorder {
     func switchCameraInput(to targetDevice: AVCaptureDevice) {
         guard cameraInput?.device.uniqueID != targetDevice.uniqueID else { return }
         DebugLog.write("switchCameraInput() -> \(targetDevice.localizedName) mode=\(settings.cameraMode)")
-        DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
+        Task { @MainActor in self.volumeObserver?.ignoreTemporarily() }
 
         // Create and validate the replacement before removing the live input.
         // If input creation/configuration fails, preserving the old input keeps
         // the preview usable instead of leaving the session with no camera.
         guard let input = try? AVCaptureDeviceInput(device: targetDevice) else {
             DebugLog.write("❌ switchCameraInput() failed to create AVCaptureDeviceInput")
-            DispatchQueue.main.async { self.notice = "Could not switch camera" }
+            Task { @MainActor in self.notice = "Could not switch camera" }
             return
         }
 
@@ -136,10 +144,10 @@ extension CameraRecorder {
             // Restore the existing input if the replacement is rejected.
             session.addInput(old)
             DebugLog.write("❌ switchCameraInput() rejected new input, restored previous")
-            DispatchQueue.main.async { self.notice = "Could not switch camera" }
+            Task { @MainActor in self.notice = "Could not switch camera" }
         } else {
             DebugLog.write("❌ switchCameraInput() rejected new input, no previous input to restore")
-            DispatchQueue.main.async { self.notice = "Could not switch camera" }
+            Task { @MainActor in self.notice = "Could not switch camera" }
         }
         session.commitConfiguration()
         configureVideoConnection()
@@ -151,7 +159,7 @@ extension CameraRecorder {
     /// that path is what keeps Record start/stop flicker-free.
     @discardableResult
     func applyActiveFormat(forRecording: Bool = false, forceLowestIdlePreview: Bool = false) -> Bool {
-        DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
+        Task { @MainActor in self.volumeObserver?.ignoreTemporarily() }
         ensureCorrectCameraDevice(for: settings.cameraMode)
         guard let device = cameraInput?.device else { return false }
 
@@ -164,7 +172,7 @@ extension CameraRecorder {
             if !availableSlowMoRates.contains(settings.slowMoFrameRate) {
                 let fallback = availableSlowMoRates.first ?? .fps120
                 selectedRate = fallback
-                DispatchQueue.main.async {
+                Task { @MainActor in
                     self.settings.slowMoFrameRate = fallback
                 }
             } else {
@@ -177,7 +185,7 @@ extension CameraRecorder {
         } else {
             dims = settings.resolution.captureDimensions
             if let locked = settings.resolution.lockedFrameRate, settings.frameRate != locked {
-                DispatchQueue.main.async {
+                Task { @MainActor in
                     self.settings.frameRate = locked
                     self.notice = "\(self.settings.resolution.label) locked to \(locked.label)"
                 }
@@ -218,7 +226,7 @@ extension CameraRecorder {
         if format == nil && targetFPS == 60 {
             format = CameraFormatSelector.bestVideoFormat(for: device, width: dims.w, height: dims.h, fps: 30)
             if format != nil {
-                DispatchQueue.main.async {
+                Task { @MainActor in
                     self.settings.frameRate = .fps30
                     self.notice = "60 fps unavailable · Switched to 30 fps"
                 }
@@ -234,7 +242,7 @@ extension CameraRecorder {
                     guard applyUnifiedHardwareConfiguration(to: device, format: fallbackFormat, targetFPS: applyFPS) else {
                         return false
                     }
-                    DispatchQueue.main.async {
+                    Task { @MainActor in
                         let dDims = CMVideoFormatDescriptionGetDimensions(fallbackFormat.formatDescription)
                         let closestRes: Resolution = dDims.height >= 1080 ? .p1080 : .p720
                         self.settings.slowMoResolution = closestRes
@@ -245,11 +253,11 @@ extension CameraRecorder {
                     changed = true
                 }
                 configurePhotoOutput()
-                DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
+                Task { @MainActor in self.volumeObserver?.ignoreTemporarily() }
                 return changed
             }
 
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 self.notice = "Format adjusted for this lens"
             }
             return false
@@ -266,7 +274,7 @@ extension CameraRecorder {
             changed = true
         }
         configurePhotoOutput()
-        DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
+        Task { @MainActor in self.volumeObserver?.ignoreTemporarily() }
         return changed
     }
 
@@ -353,7 +361,7 @@ extension CameraRecorder {
             return true
         } catch {
             DebugLog.write("❌ applyActiveFormat() lockForConfiguration failed: \(error.localizedDescription)")
-            DispatchQueue.main.async { self.notice = "Camera settings busy" }
+            Task { @MainActor in self.notice = "Camera settings busy" }
             return false
         }
     }
@@ -362,7 +370,7 @@ extension CameraRecorder {
         sessionQueue.async {
             self.refreshCapabilitiesThenApplyFormat()
             let finish = {
-                DispatchQueue.main.async {
+                Task { @MainActor in
                     completion?()
                 }
             }
@@ -499,7 +507,7 @@ extension CameraRecorder {
 
         // Max still-photo megapixels for this lens (front is often ~7 MP).
         let maxStillPixels: Int = device.formats.map { format in
-            let d = format.highResolutionStillImageDimensions
+            let d = format.largestStillDimensions
             return Int(d.width) * Int(d.height)
         }.max() ?? 0
         let maxMP = Double(maxStillPixels) / 1_000_000.0
@@ -517,7 +525,7 @@ extension CameraRecorder {
 
         let previousPosition = lastCapabilitiesCameraPosition
         lastCapabilitiesCameraPosition = device.position
-        DispatchQueue.main.async {
+        Task { @MainActor in
             self.availableFrameRates = finalRates
             self.availableResolutions = resolutions
             self.availableSlowMoRates = slowRatesOut
@@ -590,7 +598,8 @@ extension CameraRecorder {
             settings.recordAudio = true
         }
         if AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
-            AVCaptureDevice.requestAccess(for: .audio) { [weak self] _ in
+            Task { [weak self] in
+                _ = await AVCaptureDevice.requestAccess(for: .audio)
                 self?.addOrRemoveMic()
             }
             return
@@ -600,7 +609,7 @@ extension CameraRecorder {
 
     func addOrRemoveMic() {
         sessionQueue.async {
-            DispatchQueue.main.async { self.volumeObserver?.ignoreTemporarily() }
+            Task { @MainActor in self.volumeObserver?.ignoreTemporarily() }
             let want = true // always record sound
             if want, self.micInput == nil {
                 guard let mic = AVCaptureDevice.default(for: .audio),
@@ -626,7 +635,7 @@ extension CameraRecorder {
         guard !isRecording, !isSwitchingCamera else { return }
 
         let finishFlipUI: () -> Void = {
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 // Use the actual position: input replacement can fail and the
                 // previous camera is restored in that case.
                 self.isFrontCamera = (self.position == .front)
@@ -671,10 +680,10 @@ extension CameraRecorder {
                     // Restore the previous camera if the replacement is rejected.
                     self.session.addInput(old)
                     DebugLog.write("❌ flipCamera() new input rejected, restored previous")
-                    DispatchQueue.main.async { self.notice = "Could not switch camera" }
+                    Task { @MainActor in self.notice = "Could not switch camera" }
                 } else {
                     DebugLog.write("❌ flipCamera() new input rejected, no previous input to restore")
-                    DispatchQueue.main.async { self.notice = "Could not switch camera" }
+                    Task { @MainActor in self.notice = "Could not switch camera" }
                 }
                 self.session.commitConfiguration()
 
