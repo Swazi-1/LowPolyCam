@@ -166,8 +166,7 @@ var usesLightweightMaterial: Bool {
 struct AdaptiveMaterialFill: View {
     var body: some View {
         Rectangle()
-            .fill(.clear)
-            .glassEffect(.regular, in: .rect)
+            .fill(.ultraThinMaterial)
     }
 }
 
@@ -184,8 +183,11 @@ struct GlassBackground: View {
 
     var body: some View {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            .fill(Palette.panel.opacity(opacity * 0.35))
-            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: cornerRadius))
+            .fill(.ultraThinMaterial)
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(Palette.panel.opacity(opacity * 0.35))
+            )
             .overlay(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .stroke(
@@ -211,7 +213,10 @@ struct FacetGlassBackground: View {
     var body: some View {
         Facet(sides: sides, rotation: rotation)
             .fill(Palette.panel.opacity(opacity * 0.4))
-            .glassEffect(.regular.interactive(), in: Facet(sides: sides, rotation: rotation))
+            .overlay(
+                Facet(sides: sides, rotation: rotation)
+                    .fill(.ultraThinMaterial)
+            )
             .overlay(
                 Facet(sides: sides, rotation: rotation)
                     .stroke(Color.white.opacity(0.14), lineWidth: 0.9)
