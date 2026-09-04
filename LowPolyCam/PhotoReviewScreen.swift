@@ -1,4 +1,13 @@
+//
+//  PhotoReviewScreen.swift
+//  LowPolyCam
+//
+//  Updated for iOS 27 / Xcode 27 / Swift 6.4.
+//  Swift 6 complete concurrency · Observation · Liquid Glass · RotationCoordinator
+//
+
 import SwiftUI
+import Observation
 import UIKit
 
 // MARK: - Photo 2.0: Post-Capture Review
@@ -17,11 +26,11 @@ import UIKit
 // shifts as the user swipes between burst frames of different sizes.
 
 struct PhotoReviewScreen: View {
-    @ObservedObject var settings: AppSettings
+    @Bindable var settings: AppSettings
     let item: PhotoReviewItem?
     let burstItems: [PhotoReviewItem]
 
-    @Environment(\.presentationMode) private var presentation
+    @Environment(\.dismiss) private var dismiss
     @State private var selection: Int = 0
     @State private var deletedIDs: Set<UUID> = []
     @State private var shareItem: ShareableImage?
@@ -37,7 +46,7 @@ struct PhotoReviewScreen: View {
     private var isBurst: Bool { burstItems.count > 1 }
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             ZStack {
                 Palette.slateDeep.ignoresSafeArea()
 
@@ -69,25 +78,27 @@ struct PhotoReviewScreen: View {
                     }
                 }
             }
-            .navigationBarTitle(isBurst ? "Burst Review" : "Review", displayMode: .inline)
-            .navigationBarItems(trailing: Button("Done") {
-                presentation.wrappedValue.dismiss()
-            })
+            .navigationTitle(isBurst ? "Burst Review" : "Review")
+            .toolbarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
         }
-        .navigationViewStyle(StackNavigationViewStyle())
-        .accentColor(settings.accentColor.color)
+        .tint(settings.accentColor.color)
         .sheet(item: $shareItem) { wrapper in
             PhotoReviewShareSheet(items: [wrapper.image])
         }
-        .actionSheet(isPresented: $showDeleteConfirm) {
-            ActionSheet(
-                title: Text("Delete this photo?"),
-                message: Text("This removes the file from where it was saved."),
-                buttons: [
-                    .destructive(Text("Delete")) { deleteCurrentFrame() },
-                    .cancel()
-                ]
-            )
+        .confirmationDialog(
+            "Delete this photo?",
+            isPresented: $showDeleteConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) { deleteCurrentFrame() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes the file from where it was saved.")
         }
     }
 
@@ -103,7 +114,7 @@ struct PhotoReviewScreen: View {
                 shareItem = ShareableImage(image: frame.image)
             }
             reviewButton(title: "Keep", icon: "checkmark", tint: settings.accentColor.bright) {
-                presentation.wrappedValue.dismiss()
+                dismiss()
             }
         }
         .padding(.horizontal, 14)
@@ -160,7 +171,7 @@ struct PhotoReviewScreen: View {
         }
         deletedIDs.insert(frame.id)
         if frames.isEmpty {
-            presentation.wrappedValue.dismiss()
+            dismiss()
         } else {
             selection = min(selection, frames.count - 1)
         }
