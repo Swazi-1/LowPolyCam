@@ -1,9 +1,17 @@
+//
+//  CameraPhoto.swift
+//  LowPolyCam
+//
+//  Updated for iOS 27 / Xcode 27 / Swift 6.4.
+//  Swift 6 complete concurrency · Observation · Liquid Glass · RotationCoordinator
+//
+
 import AVFoundation
 import UIKit
 import Photos
 import MediaPlayer
 import CoreMotion
-import Combine
+import Observation
 import AudioToolbox
 import ImageIO
 
@@ -99,7 +107,7 @@ extension CameraRecorder {
         // want the SAVED photo mirrored back too (so text/writing reads correctly),
         // others want it saved exactly as the sensor sees it. New setting controls this.
         let mirrored = isFrontCamera && !settings.saveSelfiesUnmirrored
-        let orientation = physicalOrientation.videoOrientation
+        let captureAngle = physicalOrientation.captureVideoRotationAngle
 
         sessionQueue.async {
             // On iOS 15 the active format drives both preview AND still aspect
@@ -111,8 +119,8 @@ extension CameraRecorder {
             if let device = self.cameraInput?.device {
                 let stillFormat = CameraFormatSelector.bestPhotoStillFormat(for: device, maxPreviewHeight: 1080, fps: 30)
                 if let stillFormat = stillFormat {
-                    let stillDims = stillFormat.highResolutionStillImageDimensions
-                    let currentStill = device.activeFormat.highResolutionStillImageDimensions
+                    let stillDims = stillFormat.largestStillDimensions
+                    let currentStill = device.activeFormat.largestStillDimensions
                     let stillArea = Int(stillDims.width) * Int(stillDims.height)
                     let currentArea = Int(currentStill.width) * Int(currentStill.height)
                     if stillArea > currentArea + 500_000 {
@@ -135,7 +143,7 @@ extension CameraRecorder {
                     photoSettings = AVCapturePhotoSettings()
                 }
 
-                photoSettings.isHighResolutionPhotoEnabled = self.photoOutput.isHighResolutionCaptureEnabled
+                photoSettings.maxPhotoDimensions = self.photoOutput.maxPhotoDimensions
                 photoSettings.flashMode = .off
                 // Match the live preview's rendering: request the same top quality
                 // tier the output is configured for (Smart HDR / multi-frame fusion),
@@ -143,13 +151,10 @@ extension CameraRecorder {
                 // the scene needs it. Previously neither was set, so the discrete
                 // still capture rendered flatter/darker than the live feed.
                 photoSettings.photoQualityPrioritization = .quality
-                if self.photoOutput.isStillImageStabilizationSupported {
-                    photoSettings.isAutoStillImageStabilizationEnabled = true
-                }
 
                 if let connection = self.photoOutput.connection(with: .video) {
-                    if connection.isVideoOrientationSupported {
-                        connection.videoOrientation = orientation
+                    if connection.isVideoRotationAngleSupported(captureAngle) {
+                        connection.videoRotationAngle = captureAngle
                     }
                     if connection.isVideoMirroringSupported {
                         connection.automaticallyAdjustsVideoMirroring = false
@@ -160,7 +165,7 @@ extension CameraRecorder {
                 let shouldRestorePreview = didSwapForStill
                 let processor = PhotoCaptureProcessor(targetMegapixels: targetMP, willCapture: { [weak self] in
                     guard let self = self else { return }
-                    DispatchQueue.main.async {
+                    Task { @MainActor in
                         if self.settings.shutterSoundEnabled { SoundPlayer.play(.shutter) }
                         self.onWillCapturePhoto?()
                     }
@@ -172,7 +177,7 @@ extension CameraRecorder {
                             self.applyActiveFormat(forRecording: false)
                         }
                     }
-                    DispatchQueue.main.async { self.isCapturingPhoto = false }
+                    Task { @MainActor in self.isCapturingPhoto = false }
                     // The processor is registered on sessionQueue. Remove it on
                     // that same queue because AVCapturePhotoOutput may invoke this
                     // completion on a different thread.
@@ -181,7 +186,7 @@ extension CameraRecorder {
                     }
 
                     guard let image = image else {
-                        DispatchQueue.main.async { self.notice = errorMessage ?? "Photo capture failed" }
+                        Task { @MainActor in self.notice = errorMessage ?? "Photo capture failed" }
                         completion?()
                         return
                     }
@@ -218,7 +223,7 @@ extension CameraRecorder {
                     to destination: SaveLocation,
                     isBurstFrame: Bool = false,
                     completion: (() -> Void)? = nil) {
-        DispatchQueue.main.async { self.lastPhotoThumbnail = image }
+        Task { @MainActor in self.lastPhotoThumbnail = image }
 
         // Prefer the camera's original file bytes when we did not downscale
         // AND the user's format setting still matches (HEIC) — re-encoding
@@ -238,7 +243,7 @@ extension CameraRecorder {
         let resolvedData = encoded.data
 
         func finishReview(url: URL?) {
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 let item = PhotoReviewItem(image: image, url: url)
                 if isBurstFrame {
                     self.lastBurstReviewItems.insert(item, at: 0)
@@ -253,7 +258,7 @@ extension CameraRecorder {
         guard destination == .photos else {
             ioQueue.async {
                 guard let data = resolvedData else {
-                    DispatchQueue.main.async { self.notice = "Photo failed to save" }
+                    Task { @MainActor in self.notice = "Photo failed to save" }
                     completion?()
                     return
                 }
@@ -264,16 +269,16 @@ extension CameraRecorder {
                 // quickly. A suffix guarantees the later atomic write cannot
                 // silently replace the first photo.
                 let suffix = String(format: "%04X", UInt16.random(in: 0...0xFFFF))
-                let url = Self.clipsDirectory.appendingPathComponent("LowPolyCam_\(f.string(from: Date()))_\(suffix).\(ext)")
+                let url = Self.clipsDirectory.appending(path:("LowPolyCam_\(f.string(from: Date()))_\(suffix).\(ext)")
                 do {
                     try data.write(to: url, options: .atomic)
-                    DispatchQueue.main.async {
+                    Task { @MainActor in
                         self.notice = isBurstFrame ? nil : "Photo saved to Files"
                         self.refreshFreeSpace()
                     }
                     finishReview(url: url)
                 } catch {
-                    DispatchQueue.main.async { self.notice = "Photo failed to save" }
+                    Task { @MainActor in self.notice = "Photo failed to save" }
                     completion?()
                 }
             }
@@ -282,13 +287,13 @@ extension CameraRecorder {
 
         let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
         guard status == .authorized || status == .limited else {
-            DispatchQueue.main.async { self.notice = "Enable Photos access in Settings to save" }
+            Task { @MainActor in self.notice = "Enable Photos access in Settings to save" }
             completion?()
             return
         }
 
         guard let data = resolvedData else {
-            DispatchQueue.main.async { self.notice = "Photo failed to save" }
+            Task { @MainActor in self.notice = "Photo failed to save" }
             completion?()
             return
         }
@@ -298,7 +303,7 @@ extension CameraRecorder {
             let options = PHAssetResourceCreationOptions()
             request.addResource(with: .photo, data: data, options: options)
         }) { [weak self] success, _ in
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 self?.notice = isBurstFrame ? nil : (success ? "Photo saved to Photos" : "Could not save photo")
             }
             // Photos-library saves have no stable local file URL to reopen
