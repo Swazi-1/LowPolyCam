@@ -1,4 +1,3 @@
-```swift
 //
 //  BurstCaptureEngine.swift
 //  LowPolyCam
@@ -29,81 +28,78 @@ extension CameraRecorder {
         lastBurstReviewItems = []
         isBursting = true
 
-        if settings.saveLocation == .photos {
-            ensurePhotosAccess()
-        }
-
-        if settings.shutterSoundEnabled {
-            SoundPlayer.play(.shutter)
-        }
-
+        if settings.saveLocation == .photos { ensurePhotosAccess() }
+        if settings.shutterSoundEnabled { SoundPlayer.play(.shutter) }
+        // Same audio-route/KVO-noise guard used in capturePhoto()/startRecording() —
+        // this burst's own shutter sound could otherwise misread as an extra
+        // volume-button press partway through.
         suppressVolumeTriggerBriefly(duration: 1.2)
 
         sessionQueue.async { [weak self] in
-            self?.prepareBurstCapture()
+            self?.prepareAndBeginBurstCapture()
         }
     }
 
-    private func prepareBurstCapture() {
+    /// Runs on `sessionQueue`. Switches to the highest still-capable format
+    /// once for the whole burst (if needed), then restores the lightweight
+    /// preview format at the end via `begin()`.
+    private func prepareAndBeginBurstCapture() {
         let begin: () -> Void = { [weak self] in
-            Task { @MainActor in
-                self?.captureNextHighResolutionBurstFrame()
-            }
+            Task { @MainActor in self?.captureNextHighResolutionBurstFrame() }
         }
 
         guard let device = cameraInput?.device else {
             begin()
             return
         }
-
         let stillFormat = CameraFormatSelector.bestPhotoStillFormat(
             for: device,
             maxPreviewHeight: 1080,
             fps: 30
         )
-
         guard let stillFormat else {
             begin()
             return
         }
 
-        let currentDimensions = device.activeFormat.largestStillDimensions
-        let targetDimensions = stillFormat.largestStillDimensions
-
-        let currentWidth = Int(currentDimensions.width)
-        let currentHeight = Int(currentDimensions.height)
-        let targetWidth = Int(targetDimensions.width)
-        let targetHeight = Int(targetDimensions.height)
-
-        let currentPixels = currentWidth * currentHeight
-        let targetPixels = targetWidth * targetHeight
-        let switchThreshold = currentPixels + 500_000
-        let needsSwitch = targetPixels > switchThreshold
-
-        guard needsSwitch else {
+        guard formatIncreasesStillResolution(from: device.activeFormat, to: stillFormat) else {
             begin()
             return
         }
-
-        guard applyUnifiedHardwareConfiguration(
-            to: device,
-            format: stillFormat,
-            targetFPS: 30
-        ) else {
+        guard applyUnifiedHardwareConfiguration(to: device, format: stillFormat, targetFPS: 30) else {
             begin()
             return
         }
 
         lastAppliedFormatKey = nil
         configurePhotoOutput()
-
-        waitForExposureSettled(
-            device: device,
-            timeout: 0.25,
-            completion: begin
-        )
+        waitForExposureSettled(device: device, timeout: 0.25, completion: begin)
     }
 
+    /// Whether `target`'s still-image resolution is meaningfully larger than
+    /// `current`'s (broken out into typed sub-expressions so the type
+    /// checker doesn't have to solve one large mixed-type expression).
+    private func formatIncreasesStillResolution(
+        from current: AVCaptureDevice.Format,
+        to target: AVCaptureDevice.Format
+    ) -> Bool {
+        let currentDimensions = current.largestStillDimensions
+        let targetDimensions = target.largestStillDimensions
+
+        let currentWidth: Int = Int(currentDimensions.width)
+        let currentHeight: Int = Int(currentDimensions.height)
+        let targetWidth: Int = Int(targetDimensions.width)
+        let targetHeight: Int = Int(targetDimensions.height)
+
+        let currentPixelCount: Int = currentWidth * currentHeight
+        let targetPixelCount: Int = targetWidth * targetHeight
+        let threshold: Int = 500_000
+
+        return targetPixelCount > currentPixelCount + threshold
+    }
+
+    /// Ends a burst after its current still has completed, rather than
+    /// cancelling AVCapturePhotoOutput halfway through a capture.
     func cancelBurstCapture() {
         guard isBursting else { return }
         burstCancellationRequested = true
@@ -111,23 +107,21 @@ extension CameraRecorder {
 
     private func captureNextHighResolutionBurstFrame() {
         guard isBursting else { return }
-
-        guard !burstCancellationRequested,
-              burstShotsTaken < burstShotsTotal else {
+        guard !burstCancellationRequested, burstShotsTaken < burstShotsTotal else {
             finishHighResolutionBurst()
             return
         }
 
         capturePhotoInternal(isBurstFrame: true) { [weak self] in
             Task { @MainActor in
-                guard let self else { return }
-
+                guard let self = self else { return }
                 self.burstShotsTaken += 1
 
-                if self.burstCancellationRequested ||
-                    self.burstShotsTaken >= self.burstShotsTotal {
+                if self.burstCancellationRequested || self.burstShotsTaken >= self.burstShotsTotal {
                     self.finishHighResolutionBurst()
                 } else {
+                    // Yield one turn between stills so the progress UI stays
+                    // responsive and AVCapturePhotoOutput can re-arm cleanly.
                     Task { @MainActor in
                         self.captureNextHighResolutionBurstFrame()
                     }
@@ -138,12 +132,11 @@ extension CameraRecorder {
 
     private func finishHighResolutionBurst() {
         guard isBursting else { return }
-
         isBursting = false
         burstCancellationRequested = false
 
         sessionQueue.async { [weak self] in
-            guard let self else { return }
+            guard let self = self else { return }
             _ = self.applyActiveFormat(forRecording: false)
         }
 
@@ -153,4 +146,3 @@ extension CameraRecorder {
         }
     }
 }
-```
