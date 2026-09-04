@@ -1,3 +1,11 @@
+//
+//  CameraSupport.swift
+//  LowPolyCam
+//
+//  Updated for iOS 27 / Xcode 27 / Swift 6.4.
+//  Swift 6 complete concurrency · Observation · Liquid Glass · RotationCoordinator
+//
+
 import AVFoundation
 import UIKit
 import MediaPlayer
@@ -73,7 +81,9 @@ extension UIDevice {
             "iPhone14,7": "iPhone 14", "iPhone14,8": "iPhone 14 Plus", "iPhone15,2": "iPhone 14 Pro", "iPhone15,3": "iPhone 14 Pro Max",
             "iPhone15,4": "iPhone 15", "iPhone15,5": "iPhone 15 Plus", "iPhone16,1": "iPhone 15 Pro", "iPhone16,2": "iPhone 15 Pro Max",
             "iPhone17,1": "iPhone 16 Pro", "iPhone17,2": "iPhone 16 Pro Max", "iPhone17,3": "iPhone 16", "iPhone17,4": "iPhone 16 Plus",
-            "iPhone17,5": "iPhone 16e"
+            "iPhone17,5": "iPhone 16e",
+            "iPhone18,1": "iPhone 17 Pro", "iPhone18,2": "iPhone 17 Pro Max", "iPhone18,3": "iPhone 17", "iPhone18,4": "iPhone 17 Air",
+            "iPhone19,1": "iPhone 18 Pro", "iPhone19,2": "iPhone 18 Pro Max", "iPhone19,3": "iPhone 18", "iPhone19,4": "iPhone 18 Air"
         ]
 
         if let friendly = map[raw] { return friendly }
@@ -119,7 +129,7 @@ final class VolumeButtonObserver: NSObject {
             try audioSession.setActive(true, options: [])
         } catch { }
 
-        DispatchQueue.main.async {
+        Task { @MainActor in
             if self.volumeView == nil {
                 let v = MPVolumeView(frame: CGRect(x: -1000, y: -1000, width: 1, height: 1))
                 v.clipsToBounds = true
@@ -143,7 +153,7 @@ final class VolumeButtonObserver: NSObject {
         guard isObserving else { return }
         audioSession.removeObserver(self, forKeyPath: "outputVolume")
         isObserving = false
-        DispatchQueue.main.async {
+        Task { @MainActor in
             self.volumeView?.removeFromSuperview()
             self.volumeView = nil
         }
@@ -160,7 +170,7 @@ final class VolumeButtonObserver: NSObject {
     private func restoreVolumeIfNeeded() {
         guard let target = volumeToRestore else { return }
         volumeToRestore = nil
-        DispatchQueue.main.async { [weak self] in
+        Task { @MainActor [weak self] in
             guard let self = self, let slider = self.volumeView?.subviews.compactMap({ $0 as? UISlider }).first else { return }
             // Ignore the KVO noise we are about to generate.
             self.ignoreTemporarily(duration: 0.8)
