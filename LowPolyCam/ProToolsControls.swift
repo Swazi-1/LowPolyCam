@@ -1,3 +1,11 @@
+//
+//  ProToolsControls.swift
+//  LowPolyCam
+//
+//  Updated for iOS 27 / Xcode 27 / Swift 6.4.
+//  Swift 6 complete concurrency · Observation · Liquid Glass · RotationCoordinator
+//
+
 import SwiftUI
 
 // MARK: - Pro Tools control kit
@@ -306,7 +314,7 @@ private struct ProToolsSliderRow: View {
             Slider(value: spec.value, in: spec.range, step: spec.step)
                 .tint(accentColor)
                 .padding(.leading, 34) // aligns under the title, past the icon badge
-                .onChange(of: spec.value.wrappedValue) { val in
+                .onChange(of: spec.value.wrappedValue) { _, val in
                     spec.onChange?(val)
                 }
         }
