@@ -1,4 +1,13 @@
+//
+//  SettingsScreen.swift
+//  LowPolyCam
+//
+//  Updated for iOS 27 / Xcode 27 / Swift 6.4.
+//  Swift 6 complete concurrency · Observation · Liquid Glass · RotationCoordinator
+//
+
 import SwiftUI
+import Observation
 
 // MARK: - Lightweight label style (keeps List scrolling smooth on A10)
 
@@ -23,12 +32,12 @@ struct SettingsLabelStyle: LabelStyle {
 
 struct SettingsScreen: View {
 
-    @ObservedObject var settings: AppSettings
+    @Bindable var settings: AppSettings
     /// Recorder is only used for one-shot capability checks + format updates.
     /// We intentionally do NOT observe live battery/free-space ticks while the
     /// sheet is open — that was the main source of scroll stutter in photo / slo-mo.
     let recorder: CameraRecorder
-    @Environment(\.presentationMode) private var presentation
+    @Environment(\.dismiss) private var dismiss
 
     @State private var appliedPresetId: String? = nil
     @State private var showPresetsSheet = false
@@ -54,7 +63,7 @@ struct SettingsScreen: View {
     private var plan: EncodePlan { Encoder.plan(for: settings) }
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             List {
                 summarySection
 
@@ -96,20 +105,22 @@ struct SettingsScreen: View {
                 // Small entry — opens Good to Know sheet
                 aboutEntrySection
             }
-            .listStyle(InsetGroupedListStyle())
+            .listStyle(.insetGrouped)
             .id(settings.cameraMode)
             .animation(nil, value: settings.cameraMode)
             .animation(nil, value: settings.accentColor)
             .animation(nil, value: appliedPresetId)
             .transaction { $0.animation = nil }
-            .navigationViewStyle(StackNavigationViewStyle())
-            .navigationBarTitle("Settings", displayMode: .inline)
-            .navigationBarItems(trailing: Button(action: {
-                presentation.wrappedValue.dismiss()
-            }) {
-                Text("Done")
-                    .font(.system(size: 16, weight: .bold))
-            })
+            .navigationTitle("Settings")
+            .toolbarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(action: { dismiss() }) {
+                        Text("Done")
+                            .font(.system(size: 16, weight: .bold))
+                    }
+                }
+            }
             .sheet(isPresented: $showPresetsSheet) {
                 presetsSheet
             }
@@ -123,12 +134,11 @@ struct SettingsScreen: View {
                 customColorSheet
             }
         }
-        .navigationViewStyle(StackNavigationViewStyle())
-        .accentColor(settings.accentColor.color)
+        .tint(settings.accentColor.color)
         .onAppear {
             syncCapabilitiesFromRecorder()
         }
-        .onChange(of: settings.slowMoResolution) { newRes in
+        .onChange(of: settings.slowMoResolution) { _, newRes in
             // Instantly re-scope FPS chips to the newly selected slow-mo resolution
             // without waiting for the async format-apply round-trip.
             let rates = recorder.slowRatesByResolution[newRes] ?? []
@@ -138,7 +148,7 @@ struct SettingsScreen: View {
             }
             recorder.updateCaptureFormat()
         }
-        .onChange(of: settings.resolution) { newRes in
+        .onChange(of: settings.resolution) { _, newRes in
             // Same fix as slow-mo above: re-scope the video fps chips to the
             // newly selected resolution right away, from the already-known
             // per-resolution map — instead of leaving the previous
@@ -493,7 +503,7 @@ struct SettingsScreen: View {
     }
 
     private var presetsSheet: some View {
-        NavigationView {
+        NavigationStack {
             List {
                 ForEach(CapturePreset.all.filter { preset in
                     // Front camera: no 4K, and no 60 fps if the lens can't do it.
@@ -537,14 +547,16 @@ struct SettingsScreen: View {
                     .buttonStyle(.plain)
                 }
             }
-            .listStyle(InsetGroupedListStyle())
-            .navigationBarTitle("Quick Presets", displayMode: .inline)
-            .navigationBarItems(trailing: Button("Cancel") {
-                showPresetsSheet = false
-            })
+            .listStyle(.insetGrouped)
+            .navigationTitle("Quick Presets")
+            .toolbarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Cancel") { showPresetsSheet = false }
+                }
+            }
         }
-        .navigationViewStyle(StackNavigationViewStyle())
-        .accentColor(settings.accentColor.color)
+        .tint(settings.accentColor.color)
     }
 
     private func applyPresetNow(_ preset: CapturePreset) {
@@ -874,7 +886,7 @@ struct SettingsScreen: View {
     }
 
     private var hudSheet: some View {
-        NavigationView {
+        NavigationStack {
             List {
                 Section(header: sectionHeader("Camera HUD", icon: "camera.viewfinder"),
                         footer: Text("Hide anything you don't want cluttering the viewfinder. The shutter and this Settings button always stay visible.")) {
@@ -899,12 +911,16 @@ struct SettingsScreen: View {
                     }
                 }
             }
-            .listStyle(InsetGroupedListStyle())
-            .navigationBarTitle("Camera HUD", displayMode: .inline)
-            .navigationBarItems(trailing: Button("Done") { showHUDSheet = false })
+            .listStyle(.insetGrouped)
+            .navigationTitle("Camera HUD")
+            .toolbarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { showHUDSheet = false }
+                }
+            }
         }
-        .navigationViewStyle(StackNavigationViewStyle())
-        .accentColor(settings.accentColor.color)
+        .tint(settings.accentColor.color)
     }
 
     // MARK: - Feedback (sounds / haptics)
@@ -920,7 +936,7 @@ struct SettingsScreen: View {
                 Label("Shutter & dial sounds", systemImage: "speaker.wave.2.fill")
                     .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
             }
-            .onChange(of: settings.shutterSoundEnabled) { _ in
+            .onChange(of: settings.shutterSoundEnabled) { _, _ in
                 fireSettingsToggleHaptic(settings)
             }
 
@@ -928,7 +944,7 @@ struct SettingsScreen: View {
                 Label("Haptic feedback", systemImage: "hand.tap.fill")
                     .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
             }
-            .onChange(of: settings.hapticFeedbackEnabled) { isOn in
+            .onChange(of: settings.hapticFeedbackEnabled) { _, isOn in
                 // Only buzz on the way to "on" — buzzing after switching it
                 // off would be confusing (and pointless).
                 guard isOn else { return }
@@ -1034,7 +1050,7 @@ struct SettingsScreen: View {
     }
 
     private var aboutSheet: some View {
-        NavigationView {
+        NavigationStack {
             List {
                 aboutRow(icon: "shield.lefthalf.filled",
                          title: "Crash Safe",
@@ -1046,8 +1062,8 @@ struct SettingsScreen: View {
                          title: "Longevity Mode",
                          body: "Optional. Lower heat and smaller files for long sessions on older iPhones.")
                 aboutRow(icon: "sparkles",
-                         title: "Built for iPhone 7",
-                         body: "Tuned for A10 and 2 GB RAM on iOS 15.8.x.")
+                         title: "Built for iOS 27",
+                         body: "Swift 6 concurrency, Liquid Glass chrome, and the iOS 27 camera stack.")
                 aboutRow(icon: "volume.2.fill",
                          title: "Volume Buttons",
                          body: "Set what they do — shutter (photo tap / video toggle), always Burst, or always Record — under Capture Assist for each mode.")
@@ -1055,12 +1071,16 @@ struct SettingsScreen: View {
                          title: "Haptic Strength",
                          body: "Tap Light / Standard / Strong under Sounds & Haptics to feel each one before picking.")
             }
-            .listStyle(InsetGroupedListStyle())
-            .navigationBarTitle("Good to Know", displayMode: .inline)
-            .navigationBarItems(trailing: Button("Done") { showAboutSheet = false })
+            .listStyle(.insetGrouped)
+            .navigationTitle("Good to Know")
+            .toolbarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { showAboutSheet = false }
+                }
+            }
         }
-        .navigationViewStyle(StackNavigationViewStyle())
-        .accentColor(settings.accentColor.color)
+        .tint(settings.accentColor.color)
     }
 
     // MARK: - Appearance
@@ -1142,7 +1162,7 @@ struct SettingsScreen: View {
     }
 
     private var customColorSheet: some View {
-        NavigationView {
+        NavigationStack {
             List {
                 Section(footer: Text("Pick any color for the shutter ring, highlights, and controls throughout the camera UI.")) {
                     ColorPicker(selection: Binding(
@@ -1157,12 +1177,16 @@ struct SettingsScreen: View {
                     }
                 }
             }
-            .listStyle(InsetGroupedListStyle())
-            .navigationBarTitle("Custom Color", displayMode: .inline)
-            .navigationBarItems(trailing: Button("Done") { showCustomColorSheet = false })
+            .listStyle(.insetGrouped)
+            .navigationTitle("Custom Color")
+            .toolbarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { showCustomColorSheet = false }
+                }
+            }
         }
-        .navigationViewStyle(StackNavigationViewStyle())
-        .accentColor(settings.customColor)
+        .tint(settings.customColor)
     }
 
     // MARK: - Advanced
@@ -1262,7 +1286,7 @@ struct SettingsScreen: View {
                 Label("Review after capture", systemImage: "eye.fill")
                     .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
             }
-            .onChange(of: settings.photoReviewAfterCapture) { _ in
+            .onChange(of: settings.photoReviewAfterCapture) { _, _ in
                 fireSettingsToggleHaptic(settings)
             }
         }
