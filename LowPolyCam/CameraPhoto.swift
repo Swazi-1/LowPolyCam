@@ -11,7 +11,6 @@ import UIKit
 import Photos
 import MediaPlayer
 import CoreMotion
-import Observation
 import AudioToolbox
 import ImageIO
 
@@ -107,7 +106,7 @@ extension CameraRecorder {
         // want the SAVED photo mirrored back too (so text/writing reads correctly),
         // others want it saved exactly as the sensor sees it. New setting controls this.
         let mirrored = isFrontCamera && !settings.saveSelfiesUnmirrored
-        let captureAngle = physicalOrientation.captureVideoRotationAngle
+        let captureOrientation = physicalOrientation
 
         sessionQueue.async {
             // On iOS 15 the active format drives both preview AND still aspect
@@ -143,7 +142,7 @@ extension CameraRecorder {
                     photoSettings = AVCapturePhotoSettings()
                 }
 
-                photoSettings.maxPhotoDimensions = self.photoOutput.maxPhotoDimensions
+                photoSettings.isHighResolutionPhotoEnabled = true
                 photoSettings.flashMode = .off
                 // Match the live preview's rendering: request the same top quality
                 // tier the output is configured for (Smart HDR / multi-frame fusion),
@@ -153,8 +152,13 @@ extension CameraRecorder {
                 photoSettings.photoQualityPrioritization = .quality
 
                 if let connection = self.photoOutput.connection(with: .video) {
-                    if connection.isVideoRotationAngleSupported(captureAngle) {
-                        connection.videoRotationAngle = captureAngle
+                    if connection.isVideoOrientationSupported {
+                        switch captureOrientation {
+                        case .portrait: connection.videoOrientation = .portrait
+                        case .portraitUpsideDown: connection.videoOrientation = .portraitUpsideDown
+                        case .landscapeLeft: connection.videoOrientation = .landscapeRight
+                        case .landscapeRight: connection.videoOrientation = .landscapeLeft
+                        }
                     }
                     if connection.isVideoMirroringSupported {
                         connection.automaticallyAdjustsVideoMirroring = false
@@ -269,7 +273,7 @@ extension CameraRecorder {
                 // quickly. A suffix guarantees the later atomic write cannot
                 // silently replace the first photo.
                 let suffix = String(format: "%04X", UInt16.random(in: 0...0xFFFF))
-                let url = Self.clipsDirectory.appending(path:("LowPolyCam_\(f.string(from: Date()))_\(suffix).\(ext)")
+                let url = Self.clipsDirectory.appendingPathComponent("LowPolyCam_\(f.string(from: Date()))_\(suffix).\(ext)")
                 do {
                     try data.write(to: url, options: .atomic)
                     Task { @MainActor in
