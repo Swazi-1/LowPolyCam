@@ -1,3 +1,11 @@
+//
+//  DebugLog.swift
+//  LowPolyCam
+//
+//  Updated for iOS 27 / Xcode 27 / Swift 6.4.
+//  Swift 6 complete concurrency · Observation · Liquid Glass · RotationCoordinator
+//
+
 import Foundation
 
 /// Writes to a plain text file inside the app's Documents folder so it
@@ -6,24 +14,11 @@ import Foundation
 enum DebugLog {
     static let url: URL = {
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        return dir.appendingPathComponent("recording_debug_log.txt")
+        return dir.appending(path: "recording_debug_log.txt")
     }()
 
-    private static let dateFormatter: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        return f
-    }()
+    private static let dateFormatter = ISO8601DateFormatter()
 
-    // All file I/O funnels through this single serial queue. Previously
-    // write() dispatched onto the shared concurrent .utility queue with no
-    // ordering guarantee and no synchronization with reset() — a reset()
-    // firing at the start of the *next* recording could delete the file
-    // out from under a write() from the *previous* recording's stop-drain
-    // that was still in flight, silently truncating exactly the tail of
-    // the log needed to diagnose a stop-path hang (log would just stop
-    // mid-sequence with no error, matching what looked like a dead app
-    // when it was actually a dead log). A serial queue also prevents
-    // concurrent FileHandle opens from clobbering each other's writes.
     private static let ioQueue = DispatchQueue(label: "lowpolycam.debuglog", qos: .utility)
     private static var handle: FileHandle?
 
@@ -34,14 +29,19 @@ enum DebugLog {
         guard let data = line.data(using: .utf8) else { return }
         ioQueue.async {
             if handle == nil {
-                if !FileManager.default.fileExists(atPath: url.path) {
-                    FileManager.default.createFile(atPath: url.path, contents: nil)
+                let path = url.path(percentEncoded: false)
+                if !FileManager.default.fileExists(atPath: path) {
+                    FileManager.default.createFile(atPath: path, contents: nil)
                 }
                 handle = try? FileHandle(forWritingTo: url)
             }
             guard let h = handle else { return }
-            h.seekToEndOfFile()
-            h.write(data)
+            do {
+                try h.seekToEnd()
+                try h.write(contentsOf: data)
+            } catch {
+                // Keep logging best-effort — a failed write must never crash capture.
+            }
         }
     }
 
