@@ -1,3 +1,11 @@
+//
+//  CameraFormatSelector.swift
+//  LowPolyCam
+//
+//  Updated for iOS 27 / Xcode 27 / Swift 6.4.
+//  Swift 6 complete concurrency · Observation · Liquid Glass · RotationCoordinator
+//
+
 import AVFoundation
 
 /// Format selection policies for the three capture modes.
@@ -5,7 +13,7 @@ import AVFoundation
 /// Video / Slow-Mo / Photo each need different sensor formats:
 /// - **Video** — match target resolution + fps, prefer non-binned, tight rate lock
 /// - **Slow-Mo** — high frame-rate formats (120/240), resolution secondary
-/// - **Photo** — maximise `highResolutionStillImageDimensions` (12MP 4:3 on iPhone 7)
+/// - **Photo** — maximise `largestStillDimensions` (12MP 4:3 on iPhone 7)
 ///   while keeping a usable low-power preview
 enum CameraFormatSelector {
 
@@ -70,7 +78,7 @@ enum CameraFormatSelector {
     /// Format optimised for full-resolution stills (iOS 15 / iPhone 7).
     /// High-res stills inherit the active format's aspect ratio / FOV, so a 16:9
     /// 1080p video format only yields ~9MP. Prefer formats whose
-    /// highResolutionStillImageDimensions are the full 4:3 sensor (~12MP).
+    /// largestStillDimensions are the full 4:3 sensor (~12MP).
     static func bestPhotoStillFormat(for device: AVCaptureDevice, maxPreviewHeight: Int, fps: Double) -> AVCaptureDevice.Format? {
         struct Candidate {
             let format: AVCaptureDevice.Format
@@ -86,7 +94,7 @@ enum CameraFormatSelector {
             }
             guard supportsFPS else { continue }
 
-            let still = format.highResolutionStillImageDimensions
+            let still = format.largestStillDimensions
             let stillArea = Int(still.width) * Int(still.height)
             guard stillArea > 0 else { continue }
 
@@ -186,5 +194,19 @@ enum CameraFormatSelector {
         let raw = switchOvers[wideIndex - 1]
         let value = CGFloat(truncating: raw as NSNumber)
         return value > 0 ? value : 1
+    }
+}
+
+// MARK: - iOS 16+ still dimensions
+
+extension AVCaptureDevice.Format {
+    /// Largest still the format can deliver. Replaces the deprecated
+    /// `highResolutionStillImageDimensions` (removed from new code in iOS 27).
+    var largestStillDimensions: CMVideoDimensions {
+        let sizes = supportedMaxPhotoDimensions
+        if let best = sizes.max(by: { Int($0.width) * Int($0.height) < Int($1.width) * Int($1.height) }) {
+            return best
+        }
+        return CMVideoFormatDescriptionGetDimensions(formatDescription)
     }
 }
