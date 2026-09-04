@@ -1,11 +1,20 @@
+//
+//  CameraScreen.swift
+//  LowPolyCam
+//
+//  Updated for iOS 27 / Xcode 27 / Swift 6.4.
+//  Swift 6 complete concurrency · Observation · Liquid Glass · RotationCoordinator
+//
+
 import SwiftUI
+import Observation
 import UIKit
 import AVKit
 
 struct CameraScreen: View {
 
-    @ObservedObject var settings: AppSettings
-    @ObservedObject var recorder: CameraRecorder
+    @Bindable var settings: AppSettings
+    @Bindable var recorder: CameraRecorder
 
     @State private var showSettings = false
     @State private var showPlayer = false
@@ -230,7 +239,7 @@ struct CameraScreen: View {
             }
         }
         .statusBar(hidden: true)
-        .accentColor(settings.accentColor.color)
+        .tint(settings.accentColor.color)
         .onAppear {
             recorder.start()
             applyHapticIntensity()
@@ -254,16 +263,16 @@ struct CameraScreen: View {
             recorder.stop()
             countdownTimer?.invalidate()
         }
-        .onChange(of: settings.hapticIntensity) { _ in
+        .onChange(of: settings.hapticIntensity) { _, _ in
             applyHapticIntensity()
         }
-        .onChange(of: recorder.isLevel) { isLevel in
+        .onChange(of: recorder.isLevel) { _, isLevel in
             if isLevel && settings.showLevelGauge && settings.hapticFeedbackEnabled {
                 levelHaptic.selectionChanged()
             }
         }
         // Auto-Wake when recording stops (manual stop, auto-split, or storage full)
-        .onChange(of: recorder.isRecording) { isRecording in
+        .onChange(of: recorder.isRecording) { _, isRecording in
             if !isRecording && dimmed {
                 leaveDim()
             }
@@ -271,13 +280,13 @@ struct CameraScreen: View {
         // Auto-Dim Battery Saver (dims after N seconds of recording — sooner
         // under Longevity Mode, since the screen is one of the biggest power
         // draws during a long take). See PerformanceProfile.autoDimDelaySeconds.
-        .onChange(of: recorder.elapsed) { sec in
+        .onChange(of: recorder.elapsed) { _, sec in
             let delay = PerformanceProfile.current(settings: settings).autoDimDelaySeconds
             if settings.autoDimOnRecord && recorder.isRecording && !dimmed && sec >= delay {
                 enterDim()
             }
         }
-        .onChange(of: recorder.notice) { newNotice in
+        .onChange(of: recorder.notice) { _, newNotice in
             guard newNotice != nil else { return }
             noticeHideToken += 1
             let token = noticeHideToken
@@ -289,7 +298,7 @@ struct CameraScreen: View {
                 }
             }
         }
-        .onChange(of: showSettings) { isPresented in
+        .onChange(of: showSettings) { _, isPresented in
             if isPresented {
                 // Full sensor stop while the settings sheet covers the preview —
                 // biggest single idle-heat win when you're not looking at the camera.
@@ -298,7 +307,7 @@ struct CameraScreen: View {
                 recorder.resumePreviewSession()
             }
         }
-        .onChange(of: showPlayer) { isPresented in
+        .onChange(of: showPlayer) { _, isPresented in
             if isPresented {
                 recorder.pausePreviewSession()
             } else {
@@ -334,7 +343,7 @@ struct CameraScreen: View {
         // Opens the post-capture review sheet exactly once per finished
         // capture (single shot or completed burst) — gated by settings so
         // everyone who doesn't want the extra tap keeps today's behavior.
-        .onChange(of: recorder.photoReviewToken) { token in
+        .onChange(of: recorder.photoReviewToken) { _, token in
             guard settings.photoReviewAfterCapture, token != reviewedPhotoReviewToken else { return }
             reviewedPhotoReviewToken = token
             showPhotoReview = true
@@ -898,7 +907,7 @@ struct CameraScreen: View {
     // Presets in SettingsScreen.swift, so picking a white balance preset
     // feels like the rest of the app instead of a one-off row of chips.
     private var whiteBalanceSheet: some View {
-        NavigationView {
+        NavigationStack {
             List {
                 ForEach(WhiteBalancePreset.allCases) { preset in
                     Button(action: {
@@ -936,14 +945,16 @@ struct CameraScreen: View {
                     .buttonStyle(.plain)
                 }
             }
-            .listStyle(InsetGroupedListStyle())
-            .navigationBarTitle("White Balance", displayMode: .inline)
-            .navigationBarItems(trailing: Button("Cancel") {
-                showWhiteBalanceSheet = false
-            })
+            .listStyle(.insetGrouped)
+            .navigationTitle("White Balance")
+            .toolbarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Cancel") { showWhiteBalanceSheet = false }
+                }
+            }
         }
-        .navigationViewStyle(StackNavigationViewStyle())
-        .accentColor(settings.accentColor.color)
+        .tint(settings.accentColor.color)
     }
 
     // MARK: Bottom HUD Bar (Live Zoom Always Visible)
@@ -1877,12 +1888,12 @@ struct CameraScreen: View {
 
 struct ClipPlayerView: View {
     let url: URL
-    @Environment(\.presentationMode) private var presentation
+    @Environment(\.dismiss) private var dismiss
     @State private var player: AVPlayer?
     @State private var loadFailed = false
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             ZStack {
                 Color.black.ignoresSafeArea()
                 if let player, !loadFailed {
@@ -1906,14 +1917,18 @@ struct ClipPlayerView: View {
                     ProgressView().tint(Palette.violet.opacity(0.95)).scaleEffect(1.2)
                 }
             }
-            .navigationBarTitle("Preview", displayMode: .inline)
-            .navigationBarItems(trailing: Button("Done") {
-                player?.pause()
-                presentation.wrappedValue.dismiss()
-            })
+            .navigationTitle("Preview")
+            .toolbarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") {
+                        player?.pause()
+                        dismiss()
+                    }
+                }
+            }
         }
-        .navigationViewStyle(StackNavigationViewStyle())
-        .accentColor(Palette.violet)
+        .tint(Palette.violet)
         .onAppear {
             guard FileManager.default.fileExists(atPath: url.path) else {
                 loadFailed = true
