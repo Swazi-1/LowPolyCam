@@ -11,7 +11,6 @@ import UIKit
 import Photos
 import MediaPlayer
 import CoreMotion
-import Observation
 import AudioToolbox
 import ImageIO
 
@@ -369,7 +368,7 @@ extension CameraRecorder {
     func updateCaptureFormat(completion: (() -> Void)? = nil) {
         sessionQueue.async {
             self.refreshCapabilitiesThenApplyFormat()
-            let finish = {
+            let finish: () -> Void = {
                 Task { @MainActor in
                     completion?()
                 }
