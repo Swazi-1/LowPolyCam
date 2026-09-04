@@ -1,6 +1,16 @@
+//
+//  CameraPreview.swift
+//  LowPolyCam
+//
+//  Updated for iOS 27 / Xcode 27 / Swift 6.4.
+//  Swift 6 complete concurrency · Observation · Liquid Glass · RotationCoordinator
+//
+
 import SwiftUI
 import AVFoundation
 
+/// Live viewfinder. Orientation is driven by `AVCaptureDevice.RotationCoordinator`
+/// (the iOS 17+ replacement for the deprecated `videoOrientation` property).
 final class PreviewView: UIView {
 
     override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
@@ -9,11 +19,11 @@ final class PreviewView: UIView {
 
     var onTap: ((CGPoint, CGPoint) -> Void)?
     var onDoubleTap: (() -> Void)?
-    /// One-finger tap-and-hold — used for Focus Lock.
     var onLongPress: ((CGPoint, CGPoint) -> Void)?
-    /// Two-finger tap-and-hold — used for Exposure Lock, kept as a
-    /// separate gesture so the two locks can be set independently.
     var onTwoFingerLongPress: ((CGPoint, CGPoint) -> Void)?
+
+    private var rotationCoordinator: AVCaptureDevice.RotationCoordinator?
+    private var rotationObservation: NSKeyValueObservation?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -23,15 +33,11 @@ final class PreviewView: UIView {
 
         let doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap))
         doubleTap.numberOfTapsRequired = 2
-
         singleTap.require(toFail: doubleTap)
 
         let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress))
         longPress.minimumPressDuration = 0.45
         longPress.numberOfTouchesRequired = 1
-        // Don't let a long-press-in-progress also fire as a plain tap once
-        // the finger lifts — the two moments should map to two different
-        // actions (focus+expose vs. lock focus), not both.
         singleTap.require(toFail: longPress)
 
         let twoFingerLongPress = UILongPressGestureRecognizer(target: self, action: #selector(handleTwoFingerLongPress))
@@ -45,6 +51,36 @@ final class PreviewView: UIView {
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func attachRotationCoordinator(for device: AVCaptureDevice?) {
+        rotationObservation?.invalidate()
+        rotationObservation = nil
+        rotationCoordinator = nil
+        guard let device else { return }
+
+        let coordinator = AVCaptureDevice.RotationCoordinator(device: device, previewLayer: previewLayer)
+        rotationCoordinator = coordinator
+        applyPreviewRotation()
+        rotationObservation = coordinator.observe(\.videoRotationAngleForHorizonLevelPreview, options: [.new]) { [weak self] coord, _ in
+            let angle = coord.videoRotationAngleForHorizonLevelPreview
+            Task { @MainActor in
+                self?.apply(videoRotationAngle: angle)
+            }
+        }
+    }
+
+    func applyPreviewRotation() {
+        guard let coordinator = rotationCoordinator else { return }
+        apply(videoRotationAngle: coordinator.videoRotationAngleForHorizonLevelPreview)
+    }
+
+    private func apply(videoRotationAngle angle: CGFloat) {
+        guard let connection = previewLayer.connection else { return }
+        guard connection.isVideoRotationAngleSupported(angle) else { return }
+        if connection.videoRotationAngle != angle {
+            connection.videoRotationAngle = angle
+        }
+    }
 
     @objc private func handleSingleTap(_ gesture: UITapGestureRecognizer) {
         let viewPoint = gesture.location(in: self)
@@ -72,16 +108,11 @@ final class PreviewView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        guard let c = previewLayer.connection, c.isVideoOrientationSupported else { return }
-        let o = window?.windowScene?.interfaceOrientation ?? .portrait
-        if let v = AVCaptureVideoOrientation(rawValue: o.rawValue), c.videoOrientation != v {
-            c.videoOrientation = v
-        }
+        applyPreviewRotation()
     }
 }
 
 struct CameraPreview: UIViewRepresentable {
-
     let session: AVCaptureSession
     var onTap: ((CGPoint, CGPoint) -> Void)? = nil
     var onDoubleTap: (() -> Void)? = nil
@@ -97,6 +128,7 @@ struct CameraPreview: UIViewRepresentable {
         view.onDoubleTap = onDoubleTap
         view.onLongPress = onLongPress
         view.onTwoFingerLongPress = onTwoFingerLongPress
+        view.attachRotationCoordinator(for: currentDevice)
         return view
     }
 
@@ -108,6 +140,11 @@ struct CameraPreview: UIViewRepresentable {
         uiView.onDoubleTap = onDoubleTap
         uiView.onLongPress = onLongPress
         uiView.onTwoFingerLongPress = onTwoFingerLongPress
+        uiView.attachRotationCoordinator(for: currentDevice)
         uiView.setNeedsLayout()
+    }
+
+    private var currentDevice: AVCaptureDevice? {
+        session.inputs.compactMap { ($0 as? AVCaptureDeviceInput)?.device }.first
     }
 }
