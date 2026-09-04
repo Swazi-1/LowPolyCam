@@ -7,7 +7,6 @@
 //
 
 import SwiftUI
-import Observation
 import AVFoundation
 import UIKit
 
@@ -28,9 +27,10 @@ struct RecordedClip: Identifiable, Equatable {
 /// documents directory, batch-delete them (all / older-than-3-days /
 /// selection), and AirDrop / share a selection without leaving the app.
 struct ClipGalleryScreen: View {
-    @Bindable var settings: AppSettings
+    @ObservedObject var settings: AppSettings
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.editMode) private var editMode
 
     @State private var clips: [RecordedClip] = []
     @State private var isLoading = true
@@ -58,7 +58,7 @@ struct ClipGalleryScreen: View {
     }()
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             ZStack {
                 Palette.slateDeep.ignoresSafeArea()
 
@@ -71,14 +71,15 @@ struct ClipGalleryScreen: View {
                 }
             }
             .navigationTitle("Recorded Clips")
-            .toolbarTitleDisplayMode(.inline)
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { leadingBar }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .navigationBarLeading) { leadingBar }
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Done") {
                         if isEditing {
                             isEditing = false
                             selection.removeAll()
+                            editMode?.wrappedValue = .inactive
                         }
                         dismiss()
                     }
@@ -171,16 +172,17 @@ struct ClipGalleryScreen: View {
                 ForEach(clips) { clip in
                     row(for: clip)
                 }
-                .reorderable()
+                .onMove(perform: moveClips)
             } header: {
                 Text("\(clips.count) clip\(clips.count == 1 ? "" : "s") · \(totalSizeLabel)")
                     .foregroundColor(.white.opacity(0.5))
             }
         }
         .listStyle(.insetGrouped)
-        .reorderContainer(for: RecordedClip.self) { diff in
-            clips.apply(diff)
-        }
+    }
+
+    private func moveClips(from source: IndexSet, to destination: Int) {
+        clips.move(fromOffsets: source, toOffset: destination)
     }
 
     private func row(for clip: RecordedClip) -> some View {
@@ -257,10 +259,14 @@ struct ClipGalleryScreen: View {
                 Button("Cancel") {
                     isEditing = false
                     selection.removeAll()
+                    editMode?.wrappedValue = .inactive
                 }
                 .foregroundColor(Palette.violet.opacity(0.95))
             } else if !clips.isEmpty {
-                Button("Select") { isEditing = true }
+                Button("Select") {
+                    isEditing = true
+                    editMode?.wrappedValue = .active
+                }
                     .foregroundColor(Palette.violet.opacity(0.95))
             }
         }
@@ -370,7 +376,7 @@ struct ClipGalleryScreen: View {
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: ":", with: "-")
         let newURL = clip.url.deletingLastPathComponent()
-            .appending(path:(safe)
+            .appendingPathComponent(safe)
             .appendingPathExtension(ext)
         // Avoid overwriting an existing file
         var finalURL = newURL
@@ -378,7 +384,7 @@ struct ClipGalleryScreen: View {
             var i = 2
             while FileManager.default.fileExists(atPath: finalURL.path) {
                 finalURL = clip.url.deletingLastPathComponent()
-                    .appending(path:("\(safe) \(i)")
+                    .appendingPathComponent("\(safe) \(i)")
                     .appendingPathExtension(ext)
                 i += 1
             }
@@ -403,7 +409,10 @@ struct ClipGalleryScreen: View {
         let deletedURLs = Set(toDelete.map { $0.url })
         clips.removeAll { deletedURLs.contains($0.url) }
         selection.subtract(deletedURLs)
-        if clips.isEmpty { isEditing = false }
+        if clips.isEmpty {
+            isEditing = false
+            editMode?.wrappedValue = .inactive
+        }
     }
 
     private func deleteAll() {
@@ -449,7 +458,7 @@ struct PhotoPreviewView: View {
     @State private var loadFailed = false
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             ZStack {
                 Color.black.ignoresSafeArea()
                 if let image {
@@ -476,9 +485,9 @@ struct PhotoPreviewView: View {
                 }
             }
             .navigationTitle("Preview")
-            .toolbarTitleDisplayMode(.inline)
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Done") { dismiss() }
                 }
             }
