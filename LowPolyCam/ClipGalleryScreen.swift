@@ -1,4 +1,13 @@
+//
+//  ClipGalleryScreen.swift
+//  LowPolyCam
+//
+//  Updated for iOS 27 / Xcode 27 / Swift 6.4.
+//  Swift 6 complete concurrency · Observation · Liquid Glass · RotationCoordinator
+//
+
 import SwiftUI
+import Observation
 import AVFoundation
 import UIKit
 
@@ -19,9 +28,9 @@ struct RecordedClip: Identifiable, Equatable {
 /// documents directory, batch-delete them (all / older-than-3-days /
 /// selection), and AirDrop / share a selection without leaving the app.
 struct ClipGalleryScreen: View {
-    @ObservedObject var settings: AppSettings
+    @Bindable var settings: AppSettings
 
-    @Environment(\.presentationMode) private var presentation
+    @Environment(\.dismiss) private var dismiss
 
     @State private var clips: [RecordedClip] = []
     @State private var isLoading = true
@@ -49,7 +58,7 @@ struct ClipGalleryScreen: View {
     }()
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             ZStack {
                 Palette.slateDeep.ignoresSafeArea()
 
@@ -61,27 +70,25 @@ struct ClipGalleryScreen: View {
                     list
                 }
             }
-            .navigationBarTitle("Recorded Clips", displayMode: .inline)
-            .navigationBarItems(
-                // Select on the leading side; Done dismisses on the trailing
-                // side (matches Settings and other sheets).
-                leading: leadingBar,
-                trailing: Button("Done") {
-                    if isEditing {
-                        isEditing = false
-                        selection.removeAll()
-                    }
-                    presentation.wrappedValue.dismiss()
-                }
-            )
+            .navigationTitle("Recorded Clips")
+            .toolbarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) { leadingBar }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") {
+                        if isEditing {
+                            isEditing = false
+                            selection.removeAll()
+                        }
+                        dismiss()
+                    }
+                }
                 ToolbarItemGroup(placement: .bottomBar) {
                     bottomBar
                 }
             }
         }
-        .navigationViewStyle(StackNavigationViewStyle())
-        .accentColor(Palette.violet)
+        .tint(Palette.violet)
         .onAppear(perform: reload)
         .sheet(item: $playingClip) { clip in
             if clip.isPhoto {
@@ -164,12 +171,16 @@ struct ClipGalleryScreen: View {
                 ForEach(clips) { clip in
                     row(for: clip)
                 }
+                .reorderable()
             } header: {
                 Text("\(clips.count) clip\(clips.count == 1 ? "" : "s") · \(totalSizeLabel)")
                     .foregroundColor(.white.opacity(0.5))
             }
         }
         .listStyle(.insetGrouped)
+        .reorderContainer(for: RecordedClip.self) { diff in
+            clips.apply(diff)
+        }
     }
 
     private func row(for clip: RecordedClip) -> some View {
@@ -339,7 +350,7 @@ struct ClipGalleryScreen: View {
                                      isPhoto: isPhoto)
             }.sorted { $0.createdAt > $1.createdAt }
 
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 self.clips = loaded
                 self.isLoading = false
             }
@@ -359,7 +370,7 @@ struct ClipGalleryScreen: View {
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: ":", with: "-")
         let newURL = clip.url.deletingLastPathComponent()
-            .appendingPathComponent(safe)
+            .appending(path:(safe)
             .appendingPathExtension(ext)
         // Avoid overwriting an existing file
         var finalURL = newURL
@@ -367,7 +378,7 @@ struct ClipGalleryScreen: View {
             var i = 2
             while FileManager.default.fileExists(atPath: finalURL.path) {
                 finalURL = clip.url.deletingLastPathComponent()
-                    .appendingPathComponent("\(safe) \(i)")
+                    .appending(path:("\(safe) \(i)")
                     .appendingPathExtension(ext)
                 i += 1
             }
@@ -433,12 +444,12 @@ private struct ShareSheet: UIViewControllerRepresentable {
 /// whether you tap a video or a photo.
 struct PhotoPreviewView: View {
     let url: URL
-    @Environment(\.presentationMode) private var presentation
+    @Environment(\.dismiss) private var dismiss
     @State private var image: UIImage?
     @State private var loadFailed = false
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             ZStack {
                 Color.black.ignoresSafeArea()
                 if let image {
@@ -464,17 +475,19 @@ struct PhotoPreviewView: View {
                     ProgressView().tint(Palette.violet.opacity(0.95)).scaleEffect(1.2)
                 }
             }
-            .navigationBarTitle("Preview", displayMode: .inline)
-            .navigationBarItems(trailing: Button("Done") {
-                presentation.wrappedValue.dismiss()
-            })
+            .navigationTitle("Preview")
+            .toolbarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
         }
-        .navigationViewStyle(StackNavigationViewStyle())
-        .accentColor(Palette.violet)
+        .tint(Palette.violet)
         .onAppear {
             DispatchQueue.global(qos: .userInitiated).async {
                 let loaded = UIImage(contentsOfFile: url.path)
-                DispatchQueue.main.async {
+                Task { @MainActor in
                     if let loaded = loaded {
                         self.image = loaded
                     } else {
