@@ -314,7 +314,7 @@ private struct ProToolsSliderRow: View {
             Slider(value: spec.value, in: spec.range, step: spec.step)
                 .tint(accentColor)
                 .padding(.leading, 34) // aligns under the title, past the icon badge
-                .onChange(of: spec.value.wrappedValue) { val in
+                .onChange(of: spec.value.wrappedValue) { _, val in
                     spec.onChange?(val)
                 }
         }

@@ -142,7 +142,7 @@ extension CameraRecorder {
                     photoSettings = AVCapturePhotoSettings()
                 }
 
-                photoSettings.isHighResolutionPhotoEnabled = true
+                photoSettings.maxPhotoDimensions = self.photoOutput.maxPhotoDimensions
                 photoSettings.flashMode = .off
                 // Match the live preview's rendering: request the same top quality
                 // tier the output is configured for (Smart HDR / multi-frame fusion),
@@ -152,13 +152,9 @@ extension CameraRecorder {
                 photoSettings.photoQualityPrioritization = .quality
 
                 if let connection = self.photoOutput.connection(with: .video) {
-                    if connection.isVideoOrientationSupported {
-                        switch captureOrientation {
-                        case .portrait: connection.videoOrientation = .portrait
-                        case .portraitUpsideDown: connection.videoOrientation = .portraitUpsideDown
-                        case .landscapeLeft: connection.videoOrientation = .landscapeRight
-                        case .landscapeRight: connection.videoOrientation = .landscapeLeft
-                        }
+                    let rotation = captureOrientation.captureVideoRotationAngle
+                    if connection.isVideoRotationAngleSupported(rotation) {
+                        connection.videoRotationAngle = rotation
                     }
                     if connection.isVideoMirroringSupported {
                         connection.automaticallyAdjustsVideoMirroring = false

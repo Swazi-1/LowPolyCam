@@ -98,36 +98,36 @@ struct CameraScreen: View {
             .tint(settings.accentColor.color)
             .onAppear(perform: handleAppear)
             .onDisappear(perform: handleDisappear)
-            .onChange(of: settings.hapticIntensity) { _ in
+            .onChange(of: settings.hapticIntensity) { _, _ in
                 applyHapticIntensity()
             }
-            .onChange(of: recorder.isLevel) { isLevel in
+            .onChange(of: recorder.isLevel) { _, isLevel in
                 if isLevel && settings.showLevelGauge && settings.hapticFeedbackEnabled {
                     levelHaptic.selectionChanged()
                 }
             }
-            .onChange(of: recorder.isRecording) { isRecording in
+            .onChange(of: recorder.isRecording) { _, isRecording in
                 if !isRecording && dimmed {
                     leaveDim()
                 }
             }
-            .onChange(of: recorder.elapsed) { sec in
+            .onChange(of: recorder.elapsed) { _, sec in
                 let delay = PerformanceProfile.current(settings: settings).autoDimDelaySeconds
                 if settings.autoDimOnRecord && recorder.isRecording && !dimmed && sec >= delay {
                     enterDim()
                 }
             }
-            .onChange(of: recorder.notice) { newNotice in
+            .onChange(of: recorder.notice) { _, newNotice in
                 handleNoticeChange(newNotice)
             }
-            .onChange(of: showSettings) { isPresented in
+            .onChange(of: showSettings) { _, isPresented in
                 if isPresented {
                     recorder.pausePreviewSession()
                 } else {
                     recorder.resumePreviewSession()
                 }
             }
-            .onChange(of: showPlayer) { isPresented in
+            .onChange(of: showPlayer) { _, isPresented in
                 if isPresented {
                     recorder.pausePreviewSession()
                 } else {
@@ -156,7 +156,7 @@ struct CameraScreen: View {
                     burstItems: recorder.lastBurstReviewItems
                 )
             }
-            .onChange(of: recorder.photoReviewToken) { token in
+            .onChange(of: recorder.photoReviewToken) { _, token in
                 guard settings.photoReviewAfterCapture, token != reviewedPhotoReviewToken else { return }
                 reviewedPhotoReviewToken = token
                 showPhotoReview = true
@@ -382,10 +382,10 @@ struct CameraScreen: View {
             Group {
                 if settings.hudShowInfoPill {
                     compactInfoPill
-                        // Keep a guaranteed gutter for both 40pt edge buttons and
-                        // the CameraScreen's safe-area padding on 375pt iPhone 7.
-                        // The old cap was wide enough to push or clip those icons.
-                        .frame(maxWidth: max(190, UIScreen.main.bounds.width - 142))
+                        // Let the actual safe-area width distribute space. This
+                        // stays centered on iPhone 11/Pro/Max instead of using a
+                        // process-wide UIScreen measurement.
+                        .frame(maxWidth: .infinity)
                         .layoutPriority(1)
                         .transition(settings.hudMotion.transition)
                 }
@@ -471,9 +471,13 @@ struct CameraScreen: View {
                             .background(settings.accentColor.bright)
                             .clipShape(Capsule())
 
-                        Text(settings.slowMoFrameRate.label)
+                        let sensorFPS = recorder.activeSensorFPS > 0
+                            ? Int(recorder.activeSensorFPS.rounded())
+                            : settings.slowMoFrameRate.value
+                        Text("\(sensorFPS) fps")
                             .font(.system(size: 12, weight: .bold, design: .rounded))
-                            .foregroundColor(.white)
+                            .foregroundColor(abs(Double(sensorFPS - settings.slowMoFrameRate.value)) <= 1
+                                             ? .white : Palette.warning)
                             .lineLimit(1)
                             .minimumScaleFactor(0.75)
                     } else {

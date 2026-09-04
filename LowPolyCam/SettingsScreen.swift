@@ -137,7 +137,7 @@ struct SettingsScreen: View {
         .onAppear {
             syncCapabilitiesFromRecorder()
         }
-        .onChange(of: settings.slowMoResolution) { newRes in
+        .onChange(of: settings.slowMoResolution) { _, newRes in
             // Instantly re-scope FPS chips to the newly selected slow-mo resolution
             // without waiting for the async format-apply round-trip.
             let rates = recorder.slowRatesByResolution[newRes] ?? []
@@ -147,7 +147,7 @@ struct SettingsScreen: View {
             }
             recorder.updateCaptureFormat()
         }
-        .onChange(of: settings.resolution) { newRes in
+        .onChange(of: settings.resolution) { _, newRes in
             // Same fix as slow-mo above: re-scope the video fps chips to the
             // newly selected resolution right away, from the already-known
             // per-resolution map — instead of leaving the previous
@@ -935,7 +935,7 @@ struct SettingsScreen: View {
                 Label("Shutter & dial sounds", systemImage: "speaker.wave.2.fill")
                     .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
             }
-            .onChange(of: settings.shutterSoundEnabled) { _ in
+            .onChange(of: settings.shutterSoundEnabled) { _, _ in
                 fireSettingsToggleHaptic(settings)
             }
 
@@ -943,7 +943,7 @@ struct SettingsScreen: View {
                 Label("Haptic feedback", systemImage: "hand.tap.fill")
                     .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
             }
-            .onChange(of: settings.hapticFeedbackEnabled) { isOn in
+            .onChange(of: settings.hapticFeedbackEnabled) { _, isOn in
                 // Only buzz on the way to "on" — buzzing after switching it
                 // off would be confusing (and pointless).
                 guard isOn else { return }
@@ -1061,8 +1061,8 @@ struct SettingsScreen: View {
                          title: "Longevity Mode",
                          body: "Optional. Lower heat and smaller files for long sessions on older iPhones.")
                 aboutRow(icon: "sparkles",
-                         title: "Built for iOS 27",
-                         body: "Swift 6 concurrency, Liquid Glass chrome, and the iOS 27 camera stack.")
+                         title: "v4 Beta 3",
+                         body: "Built for iPhone 11+ with the iOS 26/27 AVFoundation camera stack.")
                 aboutRow(icon: "volume.2.fill",
                          title: "Volume Buttons",
                          body: "Set what they do — shutter (photo tap / video toggle), always Burst, or always Record — under Capture Assist for each mode.")
@@ -1228,10 +1228,10 @@ struct SettingsScreen: View {
                      body: "Double-tap preview to flip cameras. Volume keys = shutter (change this under Capture Assist).")
             aboutRow(icon: "leaf.fill",
                      title: "Longevity Mode",
-                     body: "Tuned for iPhone 7 & older chips — cooler, longer, smaller files.")
+                     body: "Runs a lighter preview and encoder profile for cooler long sessions.")
             aboutRow(icon: "sparkles",
-                     title: "Horizon Edition",
-                     body: "Built with imagination for the devices that keep going.")
+                     title: "v4 Beta 3",
+                     body: "Native 120/240fps capture, adaptive iPhone 11+ layout, and modern rotation.")
         }
     }
 
@@ -1285,7 +1285,7 @@ struct SettingsScreen: View {
                 Label("Review after capture", systemImage: "eye.fill")
                     .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
             }
-            .onChange(of: settings.photoReviewAfterCapture) { _ in
+            .onChange(of: settings.photoReviewAfterCapture) { _, _ in
                 fireSettingsToggleHaptic(settings)
             }
         }

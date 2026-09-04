@@ -60,7 +60,7 @@ enum CameraFormatSelector {
         var maxArea = 0
         for format in device.formats {
             let supportsFPS = format.videoSupportedFrameRateRanges.contains {
-                $0.maxFrameRate >= (fps - 1.0)
+                $0.minFrameRate <= fps + 0.5 && $0.maxFrameRate >= fps - 0.5
             }
             guard supportsFPS else { continue }
             let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
@@ -197,14 +197,14 @@ enum CameraFormatSelector {
     }
 }
 
-// MARK: - iOS 15 still dimensions
+// MARK: - Still dimensions
 
 extension AVCaptureDevice.Format {
-    /// Largest still size exposed by the iOS 15 photo capture stack.
-    /// This pre-iOS-16 property keeps the app compatible with iPhone 7.
+    /// Largest still size exposed by the active modern photo format.
     var largestStillDimensions: CMVideoDimensions {
-        let dimensions = highResolutionStillImageDimensions
-        if dimensions.width > 0 && dimensions.height > 0 {
+        if let dimensions = supportedMaxPhotoDimensions.max(by: {
+            Int($0.width) * Int($0.height) < Int($1.width) * Int($1.height)
+        }) {
             return dimensions
         }
         return CMVideoFormatDescriptionGetDimensions(formatDescription)

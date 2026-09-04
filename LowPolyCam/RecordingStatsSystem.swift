@@ -30,7 +30,7 @@ struct RecordingStatsSnapshot: Sendable, Equatable {
     var framesDropped: Int = 0
     /// Target frame rate from the active EncodePlan, for comparison.
     var targetFPS: Double = 0
-    /// Measured average FPS = framesAppended / elapsed wall time.
+    /// Measured average FPS from encoded media presentation timestamps.
     var measuredFPS: Double = 0
     /// Bytes written to the current output file, last time we sampled it.
     var bytesWritten: Int64 = 0
@@ -85,7 +85,14 @@ struct RecordingStatsSnapshot: Sendable, Equatable {
 /// outside SwiftUI (tests, CLI diagnostics).
 final class RecordingStatsTracker {
 
-    private(set) var snapshot = RecordingStatsSnapshot()
+    private let lock = NSLock()
+    private var state = RecordingStatsSnapshot()
+
+    var snapshot: RecordingStatsSnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return state
+    }
 
     private var startHostTime: CFTimeInterval = 0
     private var lastByteSampleHostTime: CFTimeInterval = 0
@@ -95,6 +102,8 @@ final class RecordingStatsTracker {
     /// fragmented take doesn't look like its bitrate reset to zero at
     /// each segment boundary.
     private var carriedOverBytes: Int64 = 0
+    private var firstVideoPTS = CMTime.invalid
+    private var lastVideoPTS = CMTime.invalid
 
     /// Minimum spacing between bitrate samples so a burst of calls (e.g.
     /// several frames landing in the same runloop tick) doesn't make the
@@ -104,26 +113,37 @@ final class RecordingStatsTracker {
     /// Call once when a fresh take begins (mirrors CameraRecorder's
     /// elapsed = 0 / droppedFrames = 0 reset in startRecording()).
     func reset(targetFPS: Double) {
-        snapshot = RecordingStatsSnapshot()
-        snapshot.targetFPS = targetFPS
+        lock.lock()
+        defer { lock.unlock() }
+        state = RecordingStatsSnapshot()
+        state.targetFPS = targetFPS
         let now = CACurrentMediaTime()
         startHostTime = now
         lastByteSampleHostTime = now
         lastByteSampleBytes = 0
         carriedOverBytes = 0
+        firstVideoPTS = .invalid
+        lastVideoPTS = .invalid
     }
 
     /// Call each time a video sample buffer is successfully appended to
     /// the AVAssetWriter (the same success path CameraRecorder already
     /// tracks via lastVideoPTS).
-    func recordAppendedFrame() {
-        snapshot.framesAppended += 1
+    func recordAppendedFrame(at presentationTime: CMTime) {
+        lock.lock()
+        defer { lock.unlock() }
+        state.framesAppended += 1
+        if !firstVideoPTS.isValid { firstVideoPTS = presentationTime }
+        lastVideoPTS = presentationTime
+        refreshMediaFPSLocked()
     }
 
     /// Call each time a frame is dropped/discarded (same events that
     /// already call CameraRecorder.countDroppedFrame()).
     func recordDroppedFrame(count: Int = 1) {
-        snapshot.framesDropped += count
+        lock.lock()
+        state.framesDropped += count
+        lock.unlock()
     }
 
     /// Call periodically (e.g. from the existing 0.25s elapsed-push tick)
@@ -132,14 +152,16 @@ final class RecordingStatsTracker {
     /// being written; pass the same number you'd get from
     /// `url.resourceValues(forKeys: [.fileSizeKey])`.
     func sample(currentFileBytes: Int64) {
+        lock.lock()
+        defer { lock.unlock() }
         let now = CACurrentMediaTime()
         let elapsed = max(0, now - startHostTime)
-        snapshot.elapsedSeconds = elapsed
+        state.elapsedSeconds = elapsed
 
         let totalBytes = carriedOverBytes + currentFileBytes
         if elapsed > 0 {
-            snapshot.measuredFPS = Double(snapshot.framesAppended) / elapsed
-            snapshot.averageBitrateBps = (Double(totalBytes) * 8.0) / elapsed
+            refreshMediaFPSLocked()
+            state.averageBitrateBps = (Double(totalBytes) * 8.0) / elapsed
         }
 
         let dt = now - lastByteSampleHostTime
@@ -152,13 +174,13 @@ final class RecordingStatsTracker {
             // we actually observed new bytes on disk; otherwise keep showing
             // the last real reading instead of flashing to "--" every tick.
             if byteDelta > 0 {
-                snapshot.currentBitrateBps = (Double(byteDelta) * 8.0) / dt
+                state.currentBitrateBps = (Double(byteDelta) * 8.0) / dt
             }
             lastByteSampleHostTime = now
             lastByteSampleBytes = currentFileBytes
         }
 
-        snapshot.bytesWritten = totalBytes
+        state.bytesWritten = totalBytes
     }
 
     /// Cumulative bytes across earlier finished segments in a multi-segment
@@ -167,7 +189,19 @@ final class RecordingStatsTracker {
     /// the whole take rather than resetting per-segment. Optional — only
     /// needed if the caller wants cross-segment accuracy.
     func carryOverSegmentBytes(_ bytes: Int64) {
+        lock.lock()
         carriedOverBytes += bytes
         lastByteSampleBytes = 0
+        lock.unlock()
+    }
+
+    private func refreshMediaFPSLocked() {
+        guard state.framesAppended > 1,
+              firstVideoPTS.isValid,
+              lastVideoPTS.isValid else { return }
+        let mediaSpan = CMTimeGetSeconds(CMTimeSubtract(lastVideoPTS, firstVideoPTS))
+        if mediaSpan > 0 {
+            state.measuredFPS = Double(state.framesAppended - 1) / mediaSpan
+        }
     }
 }

@@ -2,15 +2,15 @@
 //  CameraPreview.swift
 //  LowPolyCam
 //
-//  iOS 15-compatible camera preview.
+//  Modern horizon-level camera preview.
 //
 
 import SwiftUI
 import AVFoundation
 
-/// Live viewfinder. Uses the iOS 15 `videoOrientation` API instead of the
-/// iOS 17+ `AVCaptureDevice.RotationCoordinator`, preserving the project's
-/// iPhone 7 / iOS 15 deployment target.
+/// Live viewfinder driven by AVFoundation's rotation coordinator. It keeps
+/// preview rotation off the pixel-buffer recording path, where rotating every
+/// 240fps frame would waste hardware bandwidth.
 final class PreviewView: UIView {
 
     override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
@@ -21,6 +21,9 @@ final class PreviewView: UIView {
     var onDoubleTap: (() -> Void)?
     var onLongPress: ((CGPoint, CGPoint) -> Void)?
     var onTwoFingerLongPress: ((CGPoint, CGPoint) -> Void)?
+
+    private var rotationCoordinator: AVCaptureDevice.RotationCoordinator?
+    private var rotationObservation: NSKeyValueObservation?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -46,42 +49,33 @@ final class PreviewView: UIView {
         addGestureRecognizer(longPress)
         addGestureRecognizer(twoFingerLongPress)
 
-        UIDevice.current.beginGeneratingDeviceOrientationNotifications()
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(deviceOrientationDidChange),
-            name: UIDevice.orientationDidChangeNotification,
-            object: nil
-        )
-        applyPreviewOrientation()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    deinit {
-        NotificationCenter.default.removeObserver(self, name: UIDevice.orientationDidChangeNotification, object: nil)
-        UIDevice.current.endGeneratingDeviceOrientationNotifications()
-    }
+    func updateRotationCoordinator() {
+        guard let input = previewLayer.session?.inputs
+            .compactMap({ $0 as? AVCaptureDeviceInput })
+            .first(where: { $0.device.hasMediaType(.video) }) else { return }
 
-    @objc private func deviceOrientationDidChange() {
-        applyPreviewOrientation()
-    }
+        if rotationCoordinator?.device.uniqueID == input.device.uniqueID { return }
+        rotationObservation?.invalidate()
 
-    func applyPreviewOrientation() {
-        guard let connection = previewLayer.connection, connection.isVideoOrientationSupported else { return }
-        switch UIDevice.current.orientation {
-        case .portrait:
-            connection.videoOrientation = .portrait
-        case .portraitUpsideDown:
-            connection.videoOrientation = .portraitUpsideDown
-        case .landscapeLeft:
-            // Device orientation is from the user's perspective; the video
-            // connection uses the camera's perspective, so these are swapped.
-            connection.videoOrientation = .landscapeRight
-        case .landscapeRight:
-            connection.videoOrientation = .landscapeLeft
-        default:
-            break
+        let coordinator = AVCaptureDevice.RotationCoordinator(
+            device: input.device,
+            previewLayer: previewLayer
+        )
+        rotationCoordinator = coordinator
+        rotationObservation = coordinator.observe(
+            \.videoRotationAngleForHorizonLevelPreview,
+            options: [.initial, .new]
+        ) { [weak self] coordinator, _ in
+            guard let self,
+                  let connection = self.previewLayer.connection else { return }
+            let angle = coordinator.videoRotationAngleForHorizonLevelPreview
+            if connection.isVideoRotationAngleSupported(angle) {
+                connection.videoRotationAngle = angle
+            }
         }
     }
 
@@ -111,7 +105,7 @@ final class PreviewView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        applyPreviewOrientation()
+        updateRotationCoordinator()
     }
 }
 
@@ -131,7 +125,7 @@ struct CameraPreview: UIViewRepresentable {
         view.onDoubleTap = onDoubleTap
         view.onLongPress = onLongPress
         view.onTwoFingerLongPress = onTwoFingerLongPress
-        view.applyPreviewOrientation()
+        view.updateRotationCoordinator()
         return view
     }
 
@@ -143,7 +137,7 @@ struct CameraPreview: UIViewRepresentable {
         uiView.onDoubleTap = onDoubleTap
         uiView.onLongPress = onLongPress
         uiView.onTwoFingerLongPress = onTwoFingerLongPress
-        uiView.applyPreviewOrientation()
+        uiView.updateRotationCoordinator()
         uiView.setNeedsLayout()
     }
 }

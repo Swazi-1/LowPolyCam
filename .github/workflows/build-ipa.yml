@@ -5,9 +5,13 @@ on:
   push:
     branches: [ main ]
 
+concurrency:
+  group: lowpolycam-v4-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-26
 
     steps:
       - uses: actions/checkout@v5
@@ -25,10 +29,16 @@ jobs:
           echo "### xcodes available"
           ls -d /Applications/Xcode*.app || true
 
-          echo "### select newest installed xcode"
-          NEWEST_XCODE=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)
-          echo "picked: $NEWEST_XCODE"
-          sudo xcode-select -s "$NEWEST_XCODE"
+          echo "### select Xcode 27"
+          if [ -d /Applications/Xcode_27.0.app ]; then
+            SELECTED_XCODE=/Applications/Xcode_27.0.app
+          elif [ -d /Applications/Xcode_27_beta_3.app ]; then
+            SELECTED_XCODE=/Applications/Xcode_27_beta_3.app
+          else
+            SELECTED_XCODE=/Applications/Xcode.app
+          fi
+          echo "picked: $SELECTED_XCODE"
+          sudo xcode-select -s "$SELECTED_XCODE"
 
           echo "### environment"
           sw_vers
@@ -36,7 +46,7 @@ jobs:
           xcodebuild -version
 
           echo "### install xcodegen"
-          brew install xcodegen
+          brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
           xcodegen --version
 
           echo "### repo contents"
@@ -66,8 +76,8 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
 
-      # Turns the interesting lines into GitHub annotations. Those are exposed
-      # on the public check-runs API, so the log can be read from outside.
+      # Surface real compiler failures without marking a successful build's
+      # ordinary log tail as an error.
       - name: Surface errors
         if: always()
         run: |
@@ -80,23 +90,22 @@ jobs:
             | strip | sort -u | head -30 \
             | while IFS= read -r l; do echo "::error::[E] ${l:0:800}"; done
 
-          echo "--- tail ---"
-          tail -n 25 ci.log | strip \
-            | while IFS= read -r l; do echo "::error::[T] ${l:0:800}"; done
+          echo "--- build summary ---"
+          tail -n 25 ci.log | strip
 
       - name: Package .ipa
         if: steps.build.outcome == 'success'
         run: |
           mkdir -p Payload
           cp -R build/Build/Products/Release-iphoneos/LowPolyCam.app Payload/
-          zip -qry LowPolyCam-unsigned.ipa Payload
-          ls -lh LowPolyCam-unsigned.ipa
+          zip -qry LowPolyCam-v4-beta3-unsigned.ipa Payload
+          ls -lh LowPolyCam-v4-beta3-unsigned.ipa
 
       - uses: actions/upload-artifact@v4
         if: steps.build.outcome == 'success'
         with:
-          name: LowPolyCam-unsigned-ipa
-          path: LowPolyCam-unsigned.ipa
+          name: LowPolyCam-v4-beta3-unsigned-ipa
+          path: LowPolyCam-v4-beta3-unsigned.ipa
 
       - name: Full log as artifact
         if: always()

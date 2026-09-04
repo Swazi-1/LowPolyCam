@@ -11,8 +11,7 @@ import Foundation
 ///
 /// Photo does **not** use this pipeline — see `PhotoCaptureSystem`.
 ///
-/// v3.2.x plan: move writer state, segment rolling, and sample-buffer
-/// handling into this type so CameraRecorder stays a thin coordinator.
+/// v4 recording policy shared by the coordinator and sample-buffer path.
 enum VideoRecordingSystem {
 
     /// Fragment interval written into each MOV (rolling fragments reduce loss).
@@ -34,6 +33,26 @@ enum VideoRecordingSystem {
     static func recordStartWarmupFrameCeiling(fps: Int) -> Int {
         let scaled = Int((recordStartWarmupSeconds * 1.6 * Double(max(fps, 1))).rounded(.up))
         return max(14, scaled)
+    }
+
+    /// A short bounded queue absorbs momentary hardware-encoder stalls. Beta 2
+    /// dropped every high-speed frame immediately when AVAssetWriter paused,
+    /// which turned a requested 240fps stream into ~210fps media. The queue is
+    /// measured in time (roughly 65-100ms), not one arbitrary count for every
+    /// frame rate, and remains bounded so capture cannot exhaust memory.
+    static func backpressureFrameLimit(fps: Int) -> Int {
+        switch fps {
+        case 240...: return 16
+        case 120...: return 12
+        case 60...: return 8
+        default: return 6
+        }
+    }
+
+    /// VideoDataOutput should favor completeness while a take is active. The
+    /// delegate itself stays lightweight and the app-side queue above is bounded.
+    static func discardsLateFrames(isRecording: Bool) -> Bool {
+        !isRecording
     }
 
     /// Whether the active settings request the slow-motion path.

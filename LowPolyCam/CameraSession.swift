@@ -33,11 +33,10 @@ extension CameraRecorder {
             DebugLog.write("❌ configureSession() failed to add camera input for position=\(position) mode=\(settings.cameraMode)")
         }
 
-        // On weaker/older hardware (e.g. iPhone 7's A10) the encoder can
-        // fall behind under thermal load. Discarding late frames instead of
-        // queueing them keeps memory bounded and avoids a growing backlog —
-        // dropped frames are already tracked via didDrop/countDroppedFrame.
-        videoOutput.alwaysDiscardsLateVideoFrames = true
+        // Idle delegates are detached, so this is mostly a defensive default.
+        // Recording flips it off and uses a small bounded application queue so
+        // a momentary encoder pause doesn't silently turn 240fps into ~210fps.
+        videoOutput.alwaysDiscardsLateVideoFrames = VideoRecordingSystem.discardsLateFrames(isRecording: false)
         videoOutput.videoSettings = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         ]
@@ -67,17 +66,12 @@ extension CameraRecorder {
     func configurePhotoOutput() {
         guard let device = cameraInput?.device else { return }
 
-        // Enable the highest quality prioritization AVCapturePhotoOutput offers,
-        // which lets the system apply the same Smart-HDR / multi-frame scene
-        // rendering the live preview already benefits from. Without this, the
-        // saved photo can come out noticeably darker/flatter than what was seen
-        // live, especially in low light, because the discrete still capture was
-        // otherwise using a plainer single-frame render.
         photoOutput.maxPhotoQualityPrioritization = .quality
-        // On the iPhone 7 capture stack, activeFormat drives both the preview and
-        // the still image. The high-resolution format is therefore selected only
-        // for the instant of capture, then the lightweight preview format returns.
-        photoOutput.maxPhotoQualityPrioritization = .quality
+        if let largest = device.activeFormat.supportedMaxPhotoDimensions.max(by: {
+            Int($0.width) * Int($0.height) < Int($1.width) * Int($1.height)
+        }) {
+            photoOutput.maxPhotoDimensions = largest
+        }
     }
 
     func configureVideoConnection() {
@@ -234,7 +228,7 @@ extension CameraRecorder {
 
         guard let finalFormat = format else {
             if isSlow, let fallbackFormat = CameraFormatSelector.bestSlowMoFormat(for: device, fps: fullFPS) {
-                let applyFPS = forRecording ? fullFPS : min(fullFPS, 30.0)
+                let applyFPS = fullFPS
                 let newKey = Self.formatKey(device: device, format: fallbackFormat, fps: applyFPS)
                 var changed = false
                 if newKey != lastAppliedFormatKey {
@@ -279,6 +273,10 @@ extension CameraRecorder {
 
     @discardableResult
     func applyUnifiedHardwareConfiguration(to device: AVCaptureDevice, format: AVCaptureDevice.Format, targetFPS: Double) -> Bool {
+        // AVFoundation batches active-format and duration changes atomically;
+        // the preview sees one graph update instead of partially-applied state.
+        session.beginConfiguration()
+        defer { session.commitConfiguration() }
         do {
             try device.lockForConfiguration()
             
@@ -287,6 +285,13 @@ extension CameraRecorder {
             device.activeFormat = format
 
             let desiredFPS = max(1.0, targetFPS.rounded())
+            // Automatic low-light frame-rate switching conflicts with an exact
+            // min/max duration. Changing activeFormat resets it, then we keep it
+            // explicitly disabled so 240 means a fixed sensor cadence.
+            if format.isAutoVideoFrameRateSupported {
+                device.isAutoVideoFrameRateEnabled = false
+            }
+
             // Exact 1/N second frame duration for integer fps (30, 60, 120, 240).
             // Using timescale == fps and value == 1 keeps the media timeline on
             // clean rationals so Photos reports 30.00 instead of 29.97/27.x when
@@ -306,6 +311,16 @@ extension CameraRecorder {
             }
             device.activeVideoMinFrameDuration = minDur
             device.activeVideoMaxFrameDuration = maxDur
+
+            let actualDuration = device.activeVideoMinFrameDuration.seconds
+            let actualFPS = actualDuration > 0 ? 1.0 / actualDuration : 0
+            DebugLog.write(String(format: "[sensor] requested %.2ffps, active %.2ffps", desiredFPS, actualFPS))
+            Task { @MainActor in
+                self.activeSensorFPS = actualFPS
+                if abs(actualFPS - desiredFPS) > 0.75 {
+                    self.notice = String(format: "Camera negotiated %.0f fps", actualFPS)
+                }
+            }
             
             // 2. Autofocus — format switches can leave focus/exposure locked or
             // idle; re-enable continuous AF/AE so the viewfinder keeps tracking.
@@ -476,15 +491,8 @@ extension CameraRecorder {
             }
         }
 
-        var supportedRates = FrameRate.allCases.filter { rates.contains($0) }
-        // iPhone 7-class front camera: native video is 30 fps only at 720p/1080p.
-        // Formats that advertise 60 fps typically rely on frame duplication, not
-        // true sensor capture — hide 60 fps entirely on the front lens.
+        let supportedRates = FrameRate.allCases.filter { rates.contains($0) }
         let isFront = (device.position == .front)
-        if isFront {
-            supportedRates = supportedRates.filter { $0 == .fps30 }
-            if supportedRates.isEmpty { supportedRates = [.fps30] }
-        }
         let canDo1080 = widestPixels >= 1920 * 1080
         let canDo4K = widestPixels >= 3840 * 2160
         let supportedResolutions = Resolution.allCases.filter { res in
@@ -543,15 +551,6 @@ extension CameraRecorder {
                 let fallback: Resolution = self.availableResolutions.first ?? .p720
                 self.settings.resolution = fallback
             }
-            // 4K locks to 30 fps
-            if self.settings.resolution == .p2160, self.settings.frameRate != .fps30 {
-                self.settings.frameRate = .fps30
-            }
-            // Front camera never records at 60 fps
-            if isFront, self.settings.frameRate == .fps60 {
-                self.settings.frameRate = .fps30
-            }
-
             // Front iPhone cameras have a smaller still sensor. Do not let
             // that temporary 8MP limit overwrite the user's rear-camera
             // choice (normally 12MP) when switching lenses.
@@ -726,8 +725,7 @@ extension CameraRecorder {
     }
 
     var wantsPhysicalWideForFrameRate: Bool {
-        settings.cameraMode == .video
-            && false /* 60 fps removed for iPhone 7 focus */
+        settings.cameraMode == .slowMo
     }
 
     var wantsPhysicalWideLens: Bool {

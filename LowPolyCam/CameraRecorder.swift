@@ -49,6 +49,9 @@ final class CameraRecorder: NSObject, ObservableObject {
     /// Fed from the existing sample-buffer/elapsed path in
     /// CameraSampleBuffers.swift — see RecordingStatsSystem.swift.
     @Published var recordingStats = RecordingStatsSnapshot()
+    /// The frame rate read back from the active sensor duration after each
+    /// hardware configuration. This is the truth, not merely the UI choice.
+    @Published var activeSensorFPS: Double = 0
     @Published var freeBytes: Int64 = 0
     @Published var hasTorch = false
     @Published var torchOn = false
@@ -266,7 +269,7 @@ final class CameraRecorder: NSObject, ObservableObject {
     var isStopDraining = false
     /// Frames that arrived during stop while the writer input was not ready.
     var pendingStopBuffers: [CMSampleBuffer] = []
-    static let pendingStopBufferLimit = 20
+    static let pendingStopBufferLimit = 40
     /// Frames that arrive mid-recording during a brief encoder stall.
     /// Previously these were dropped outright the instant
     /// `isReadyForMoreMediaData` was false, which is what made Photos
@@ -278,7 +281,6 @@ final class CameraRecorder: NSObject, ObservableObject {
     /// high fps a callback only has a few ms, so this only absorbs brief
     /// hiccups, not a sustained overload.
     var pendingMidBuffers: [CMSampleBuffer] = []
-    static let pendingMidBufferLimit = 4
     // Number of video frames to silently discard right after a *fresh*
     // record start (not segment rotation). Deterministic fallback for the
     // AE/AGC brightness ramp after a format switch. Touched under writerLock.

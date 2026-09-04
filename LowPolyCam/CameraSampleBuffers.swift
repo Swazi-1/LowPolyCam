@@ -30,8 +30,6 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
         guard CMSampleBufferDataIsReady(sampleBuffer) else { return }
         let isVideo = (output === videoOutput)
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-        let dur = CMSampleBufferGetDuration(sampleBuffer)
-
         writerLock.lock()
         var currentlyWants = wantsRecording
         var shouldFinalizeAfterAppend = false
@@ -133,89 +131,94 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
         // finishSegment salvage handles real failures when the user stops.
         guard let currentWriter = currentWriter, currentWriter.status == .writing,
               segStart.isValid, CMTimeCompare(pts, segStart) >= 0 else {
+            if let currentWriter, currentWriter.status == .failed {
+                let reason = currentWriter.error?.localizedDescription ?? "unknown encoder failure"
+                DebugLog.write("❌ writer failed during capture: \(reason)")
+                Task { @MainActor in
+                    if self.isRecording {
+                        self.stopRecording(notice: "Encoder stopped · Clip could not continue")
+                    }
+                }
+            }
             return
         }
 
         if isVideo {
-            if vIn?.isReadyForMoreMediaData == true {
-                let appended = appendVideoSample(sampleBuffer, to: vIn)
-                writerLock.lock()
-                if appended {
-                    lastVideoPTS = Self.endPTS(for: pts, duration: dur, fps: plan?.frameRate ?? 30)
+            let targetFPS = plan?.frameRate ?? 30
+
+            // Drain older frames before the current frame. Beta 2 appended the
+            // newest frame first and only then tried its backlog, which can send
+            // decreasing timestamps to AVAssetWriter. At high frame rates it
+            // avoided that failure by dropping every busy frame instead — the
+            // direct cause of ~210fps files from a 240fps sensor stream.
+            writerLock.lock()
+            var orderedBatch = pendingMidBuffers
+            pendingMidBuffers.removeAll(keepingCapacity: true)
+            if draining {
+                orderedBatch.append(contentsOf: pendingStopBuffers)
+                pendingStopBuffers.removeAll(keepingCapacity: true)
+            }
+            writerLock.unlock()
+            orderedBatch.append(sampleBuffer)
+
+            var firstUnwrittenIndex: Int?
+            var appendedEndPTS: CMTime?
+            var droppedInBatch = 0
+
+            for index in orderedBatch.indices {
+                let buffer = orderedBatch[index]
+                guard let input = vIn, input.isReadyForMoreMediaData else {
+                    firstUnwrittenIndex = index
+                    break
                 }
-                let drainDone = shouldFinalizeAfterAppend
-                writerLock.unlock()
-                // 📊 Outside writerLock on purpose — statsTracker owns no
-                // shared lock with the capture path, so this can never be
-                // the thing that blocks a video frame.
-                if appended { statsTracker.recordAppendedFrame() }
-                if drainDone {
-                    DebugLog.write("[stop] drain deadline reached in didOutput (appended path), finalizing")
-                    completeStopDrainIfNeeded(force: false)
-                }
-                // Encoder is caught up — flush mid-backlog if any (≤60fps only;
-                // high-fps path never queues mid buffers).
-                if !draining, (plan?.frameRate ?? 30) < 120 {
-                    writerLock.lock()
-                    let backlog = pendingMidBuffers
-                    pendingMidBuffers.removeAll(keepingCapacity: true)
-                    writerLock.unlock()
-                    if !backlog.isEmpty, let vIn = vIn {
-                        var leftover: [CMSampleBuffer] = []
-                        for buf in backlog {
-                            // Route through appendVideoSample so low-res plans still get scaled.
-                            if vIn.isReadyForMoreMediaData, appendVideoSample(buf, to: vIn) {
-                                let bPTS = CMSampleBufferGetPresentationTimeStamp(buf)
-                                let bDur = CMSampleBufferGetDuration(buf)
-                                writerLock.lock()
-                                lastVideoPTS = Self.endPTS(for: bPTS, duration: bDur, fps: plan?.frameRate ?? 30)
-                                writerLock.unlock()
-                                statsTracker.recordAppendedFrame() // 📊
-                            } else {
-                                leftover.append(buf)
-                            }
-                        }
-                        writerLock.lock()
-                        pendingMidBuffers = leftover
-                        writerLock.unlock()
-                    }
-                }
-            } else if draining {
-                // Never drop the stop tail — buffer until finalize flushes.
-                writerLock.lock()
-                if pendingStopBuffers.count < Self.pendingStopBufferLimit {
-                    pendingStopBuffers.append(sampleBuffer)
+
+                if appendVideoSample(buffer, to: input) {
+                    let bufferPTS = CMSampleBufferGetPresentationTimeStamp(buffer)
+                    let bufferDuration = CMSampleBufferGetDuration(buffer)
+                    appendedEndPTS = Self.endPTS(for: bufferPTS, duration: bufferDuration, fps: targetFPS)
+                    statsTracker.recordAppendedFrame(at: bufferPTS)
                 } else {
-                    DebugLog.write("⚠️ pendingStopBuffers at cap (\(Self.pendingStopBufferLimit)) during drain, dropping tail frame")
-                }
-                let drainDone = shouldFinalizeAfterAppend
-                writerLock.unlock()
-                if drainDone {
-                    DebugLog.write("[stop] drain deadline reached in didOutput (buffered path), finalizing")
-                    completeStopDrainIfNeeded(force: false)
-                }
-            } else {
-                // Encoder busy. At 120/240fps, NEVER queue backlog — that is what
-                // pushed AVAssetWriter into .failed after a few seconds on A10
-                // (log: writer dead after ~7s, then Photos 3302 on corrupt file).
-                // Drop the frame instead so the writer stays healthy.
-                let highFPS = (plan?.frameRate ?? 30) >= 120
-                if highFPS {
-                    countDroppedFrame()
-                } else {
-                    writerLock.lock()
-                    if pendingMidBuffers.count < Self.pendingMidBufferLimit {
-                        pendingMidBuffers.append(sampleBuffer)
-                        writerLock.unlock()
-                    } else {
-                        writerLock.unlock()
-                        countDroppedFrame()
-                    }
+                    // A single malformed/scaler frame must not poison ordering
+                    // for every later frame in the batch.
+                    droppedInBatch += 1
                 }
             }
-            if !draining {
-                pushElapsed(pts)
+
+            if let firstUnwrittenIndex {
+                let unwritten = Array(orderedBatch[firstUnwrittenIndex...])
+                writerLock.lock()
+                if draining {
+                    pendingStopBuffers.append(contentsOf: unwritten)
+                    let overflow = max(0, pendingStopBuffers.count - Self.pendingStopBufferLimit)
+                    if overflow > 0 {
+                        pendingStopBuffers.removeLast(overflow)
+                        droppedInBatch += overflow
+                    }
+                } else {
+                    pendingMidBuffers.append(contentsOf: unwritten)
+                    let limit = VideoRecordingSystem.backpressureFrameLimit(fps: targetFPS)
+                    let overflow = max(0, pendingMidBuffers.count - limit)
+                    if overflow > 0 {
+                        // Keep the oldest frames so timestamps remain continuous;
+                        // discard only new arrivals beyond the bounded time window.
+                        pendingMidBuffers.removeLast(overflow)
+                        droppedInBatch += overflow
+                    }
+                }
+                writerLock.unlock()
             }
+
+            writerLock.lock()
+            if let appendedEndPTS { lastVideoPTS = appendedEndPTS }
+            if droppedInBatch > 0 { droppedFrameCount += droppedInBatch }
+            writerLock.unlock()
+            if droppedInBatch > 0 { statsTracker.recordDroppedFrame(count: droppedInBatch) }
+
+            if shouldFinalizeAfterAppend {
+                DebugLog.write("[stop] drain deadline reached in didOutput, finalizing")
+                completeStopDrainIfNeeded(force: false)
+            }
+            if !draining { pushElapsed(pts) }
         } else {
             if aIn?.isReadyForMoreMediaData == true {
                 aIn?.append(sampleBuffer)

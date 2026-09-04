@@ -162,7 +162,7 @@ var usesLightweightMaterial: Bool {
     PerformanceProfile.DeviceTier.current == .constrained
 }
 
-/// Live blur on modern devices; flat fill on iPhone 7-class (A10) to save GPU.
+/// System material surface used by the modern iPhone-only interface.
 struct AdaptiveMaterialFill: View {
     var body: some View {
         Rectangle()
@@ -172,9 +172,8 @@ struct AdaptiveMaterialFill: View {
 
 // MARK: - Glass / Material helpers
 //
-// iOS 27: Liquid Glass is the system material. The iOS 26 Info.plist opt-out
-// is gone, so every chrome surface uses `.glassEffect` instead of stacking
-// ultraThinMaterial + fills.
+// A restrained glass treatment keeps camera controls readable over both very
+// bright and very dark previews without hiding the image beneath them.
 
 struct GlassBackground: View {
     var cornerRadius: CGFloat = Design.cornerRadius
@@ -186,7 +185,17 @@ struct GlassBackground: View {
             .fill(.ultraThinMaterial)
             .overlay(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(Palette.panel.opacity(opacity * 0.35))
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(0.08),
+                                Palette.panel.opacity(opacity * 0.48),
+                                Palette.slateDeep.opacity(opacity * 0.28)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
             )
             .overlay(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)

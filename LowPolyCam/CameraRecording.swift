@@ -119,6 +119,7 @@ extension CameraRecorder {
 
             let beginCapture: () -> Void = {
                 guard self.recordingSessionToken == myToken, !self.stopRequested else { return }
+                self.videoOutput.alwaysDiscardsLateVideoFrames = VideoRecordingSystem.discardsLateFrames(isRecording: true)
                 self.videoOutput.setSampleBufferDelegate(self, queue: self.videoQueue)
                 self.audioOutput.setSampleBufferDelegate(self, queue: self.audioQueue)
 
@@ -278,7 +279,7 @@ extension CameraRecorder {
         isStopDraining = false
         wantsRecording = false
         stopDrainDeadlineHost = 0
-        let buffered = pendingStopBuffers
+        let buffered = pendingMidBuffers + pendingStopBuffers
         pendingStopBuffers.removeAll(keepingCapacity: false)
         pendingStartBuffers.removeAll(keepingCapacity: false)
         pendingMidBuffers.removeAll(keepingCapacity: false)
@@ -298,6 +299,7 @@ extension CameraRecorder {
                         writerLock.lock()
                         lastVideoPTS = Self.endPTS(for: pts, duration: dur, fps: plan?.frameRate ?? 30)
                         writerLock.unlock()
+                        statsTracker.recordAppendedFrame(at: pts)
                     }
                 }
             }
@@ -307,6 +309,7 @@ extension CameraRecorder {
         sessionQueue.async {
             self.videoOutput.setSampleBufferDelegate(nil, queue: nil)
             self.audioOutput.setSampleBufferDelegate(nil, queue: nil)
+            self.videoOutput.alwaysDiscardsLateVideoFrames = VideoRecordingSystem.discardsLateFrames(isRecording: false)
             self.applyActiveFormat(forRecording: false)
             self.applyStabilization()
         }
@@ -342,6 +345,7 @@ extension CameraRecorder {
             writerLock.lock()
             segmentStartInFlight = false
             writerLock.unlock()
+            abortRecordingStart(message: "Encoder setup failed")
             return
         }
 
@@ -358,6 +362,11 @@ extension CameraRecorder {
                 self.notice = "Storage full · Recording stopped"
                 UIApplication.shared.isIdleTimerDisabled = false
             }
+            sessionQueue.async {
+                self.videoOutput.setSampleBufferDelegate(nil, queue: nil)
+                self.audioOutput.setSampleBufferDelegate(nil, queue: nil)
+                self.videoOutput.alwaysDiscardsLateVideoFrames = VideoRecordingSystem.discardsLateFrames(isRecording: false)
+            }
             return
         }
 
@@ -371,19 +380,19 @@ extension CameraRecorder {
 
             let w = try AVAssetWriter(outputURL: url, fileType: .mov)
             DebugLog.write("[2] AVAssetWriter created OK")
-            // Movie fragments at 240fps have caused finishWriting failures on
-            // A10 / iOS 15. Only use them for normal ≤60fps recording.
-            if plan.frameRate <= 60 {
-                w.movieFragmentInterval = CMTime(seconds: Self.fragmentSeconds, preferredTimescale: 600)
-            }
+            w.movieFragmentInterval = CMTime(seconds: Self.fragmentSeconds, preferredTimescale: 600)
             w.metadata = Self.captureMetadataItems()
 
             let videoSettings = Encoder.videoSettings(for: plan, writer: w)
             DebugLog.write("[3] video settings=\(videoSettings)")
-            let v = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
-            // At 240fps, real-time flag still required for camera capture; the
-            // important part is H.264 + moderate bitrate so the A10 keeps up.
+            let sourceHint = firstSampleBuffer.flatMap { CMSampleBufferGetFormatDescription($0) }
+            let v = AVAssetWriterInput(
+                mediaType: .video,
+                outputSettings: videoSettings,
+                sourceFormatHint: sourceHint
+            )
             v.expectsMediaDataInRealTime = true
+            v.performsMultiPassEncodingIfSupported = false
             v.transform = clipTransform
             let canAddVideo = w.canAdd(v)
             DebugLog.write("[4] canAdd video input=\(canAddVideo)")
@@ -454,7 +463,6 @@ extension CameraRecorder {
             var appendedFirstPTS = startPTS
             var appendedFirstFrame = false
             if let first = firstFrame, v.isReadyForMoreMediaData {
-                videoIn = v
                 if appendVideoSample(first, to: v) {
                     let dur = CMSampleBufferGetDuration(first)
                     appendedFirstPTS = Self.endPTS(for: startPTS, duration: dur, fps: plan.frameRate)
@@ -480,25 +488,13 @@ extension CameraRecorder {
             let buffered = pendingStartBuffers
             pendingStartBuffers.removeAll(keepingCapacity: true)
             pendingMidBuffers.removeAll(keepingCapacity: false)
-            writer = w
-            videoIn = v
-            pixelBufferAdaptor = adaptor
-            scalePixelBufferPool = outputPool
-            audioIn = a
-            segmentStart = startPTS
-            var endPTS = appendedFirstPTS
             let isFirstSegment = !recordStartPTS.isValid
-            if isFirstSegment { recordStartPTS = startPTS }
-            segmentStartInFlight = false
-            writerLock.unlock()
-
-            // The live FPS indicator must measure encoded media, not the
-            // time spent waiting for AE, dispatching queues, and constructing
-            // AVAssetWriter. Reset it at the actual first written frame.
             if isFirstSegment, appendedFirstFrame {
                 statsTracker.reset(targetFPS: Double(plan.frameRate))
-                statsTracker.recordAppendedFrame()
+                statsTracker.recordAppendedFrame(at: startPTS)
             }
+            var endPTS = appendedFirstPTS
+            if isFirstSegment { recordStartPTS = startPTS }
 
             if !highFPS {
                 for buf in buffered {
@@ -508,12 +504,22 @@ extension CameraRecorder {
                     if v.isReadyForMoreMediaData, appendVideoSample(buf, to: v) {
                         let bDur = CMSampleBufferGetDuration(buf)
                         endPTS = Self.endPTS(for: bPTS, duration: bDur, fps: plan.frameRate)
+                        statsTracker.recordAppendedFrame(at: bPTS)
                     }
                 }
             }
 
-            writerLock.lock()
+            // Publish only after older startup frames have been flushed. This
+            // prevents the live video queue from appending a newer timestamp
+            // while startup is still trying to append older buffers.
+            writer = w
+            videoIn = v
+            pixelBufferAdaptor = adaptor
+            scalePixelBufferPool = outputPool
+            audioIn = a
+            segmentStart = startPTS
             lastVideoPTS = endPTS
+            segmentStartInFlight = false
             writerLock.unlock()
 
             Task { @MainActor in self.clipsThisSession += 1 }
@@ -529,6 +535,9 @@ extension CameraRecorder {
             segmentStartInFlight = false
             pendingStartBuffers.removeAll(keepingCapacity: false)
             pendingMidBuffers.removeAll(keepingCapacity: false)
+            writer = nil
+            videoIn = nil
+            audioIn = nil
             pixelBufferAdaptor = nil
             scalePixelBufferPool = nil
             wantsRecording = false
@@ -538,6 +547,26 @@ extension CameraRecorder {
                 self.notice = "Encoder error"
                 UIApplication.shared.isIdleTimerDisabled = false
             }
+            abortRecordingStart(message: "Encoder error")
+        }
+    }
+
+    /// Restores the idle capture graph if writer creation fails after sample
+    /// delegates were attached. Without this, frames continued arriving forever
+    /// and a second press could not reliably start a clean take.
+    func abortRecordingStart(message: String) {
+        stopRequested = true
+        sessionQueue.async {
+            self.videoOutput.setSampleBufferDelegate(nil, queue: nil)
+            self.audioOutput.setSampleBufferDelegate(nil, queue: nil)
+            self.videoOutput.alwaysDiscardsLateVideoFrames = VideoRecordingSystem.discardsLateFrames(isRecording: false)
+            self.applyActiveFormat(forRecording: false)
+        }
+        Task { @MainActor in
+            self.isRecording = false
+            self.isSaving = false
+            self.notice = message
+            UIApplication.shared.isIdleTimerDisabled = false
         }
     }
 
@@ -623,9 +652,9 @@ extension CameraRecorder {
             body()
         }
 
-        ioQueue.asyncAfter(deadline: .now() + 5.0) {
+        ioQueue.asyncAfter(deadline: .now() + 20.0) {
             finishOnce {
-                DebugLog.write("❌ finishWriting watchdog fired (no callback within 5s), status=\(w.status.rawValue)")
+                DebugLog.write("❌ finishWriting watchdog fired (no callback within 20s), status=\(w.status.rawValue)")
                 let bytes = fileByteSize(url)
                 DebugLog.write("   fileBytes=\(bytes)")
                 UserDefaults.standard.removeObject(forKey: Self.inProgressKey)

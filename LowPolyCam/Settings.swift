@@ -134,8 +134,9 @@ enum Resolution: String, CaseIterable, Identifiable, SettingStorable {
     }
 
     var lockedFrameRate: FrameRate? {
-        // 4K on iPhone 7 is 30 fps only
-        self == .p2160 ? .fps30 : nil
+        // The active lens decides this at runtime. iPhone 11 and newer can
+        // expose 4K60, so a model-wide 4K30 lock is incorrect.
+        nil
     }
 
     var detail: String {
@@ -1108,38 +1109,21 @@ enum Encoder {
         }
 
         var kbps = Double(baseKbps) * codecMultiplier * fpsFactor
-        // Slow-mo (120/240fps) asks the A10's real-time encoder to sustain
-        // 4-8x the throughput of normal 30fps recording. Scaling bitrate up
-        // by the same fpsFactor used for the base table (tuned for the
-        // *quality* table's much lower base values) compounds once that
-        // base table itself is raised for normal-speed quality — the
-        // encoder then can't keep up and frames get dropped, which is what
-        // was reading back as 217fps instead of 240fps. Slow-mo prioritizes
-        // catching every frame over per-frame bit density, so its ceiling
-        // is capped independently of the (now much higher) quality-preset
-        // base rate.
-        //
-        // The previous flat 30/20 Mbps ceilings were still too high for the
-        // A10's real-time HEVC encoder at 720p240 — frames kept backing up
-        // and getting discarded (alwaysDiscardsLateVideoFrames), reading
-        // back as ~210 fps in Photos instead of the ~239.9 fps the stock
-        // Camera app achieves. Apple's own stock Camera app targets roughly
-        // these bitrates for slow-mo (from Apple's published storage specs:
-        // 720p@240≈170MB/min, 1080p@120≈130MB/min, 720p@120≈65MB/min) —
-        // matching them keeps the encoder comfortably real-time on A10.
+        // High-speed capture gets a dedicated rate ladder. The beta-2 path
+        // forced every 240fps take through a 10Mbps H.264/A10 workaround;
+        // that starved detail and made the public encoder apply back-pressure
+        // on modern devices. iPhone 11+ has a hardware HEVC path built for
+        // 1080p high-frame-rate capture, so use it when the user enables HEVC.
         if isSlow {
-            // Single rate matched to measured stock Camera (no Quality tiers).
-            // 720p@240 ≈ 28 Mbps; 1080p@120 ≈ 20 Mbps; 720p@120 ≈ 12 Mbps.
             let slowMoTargetKbps: Double
             if fps >= 240 {
-                // ~10 Mbps H.264 — prioritise writer survival over bitrate.
-                slowMoTargetKbps = 10000
+                slowMoTargetKbps = res == .p1080 ? 48000 : 28000
             } else if res == .p1080 {
-                slowMoTargetKbps = 20000
+                slowMoTargetKbps = 24000
             } else {
-                slowMoTargetKbps = 12000
+                slowMoTargetKbps = 14000
             }
-            kbps = slowMoTargetKbps
+            kbps = slowMoTargetKbps * (settings.useHEVC ? 1.0 : 1.35)
         }
 
         // Longevity Mode: gentle bitrate cut for normal video. For slow-mo
@@ -1173,14 +1157,7 @@ enum Encoder {
             audioBitrate: aKbps * 1000,
             keyFrameInterval: gopSeconds * fps,
             frameRate: fps,
-            // Match stock Camera: HEVC for 720p+ and for slow-mo (including 240fps)
-            // when the user has HEVC enabled. H.264 only for sub-720p normal video
-            // (unusual sizes) or when HEVC is turned off in settings.
             codec: {
-                // 240fps: H.264 only for third-party AVAssetWriter on A10/iOS 15.
-                // Stock Camera uses a private HEVC path; public AVAssetWriter + HEVC
-                // at 240fps often fails the first append and aborts the take.
-                if isSlow && fps >= 240 { return AVVideoCodecType.h264 }
                 if isSlow {
                     return settings.useHEVC ? AVVideoCodecType.hevc : AVVideoCodecType.h264
                 }
@@ -1200,29 +1177,20 @@ enum Encoder {
     static func videoSettings(for plan: EncodePlan, writer: AVAssetWriter) -> [String: Any] {
 
         func build(_ codec: AVVideoCodecType) -> [String: Any] {
-            // Real-time path: no B-frame reordering (less backlog on A10).
+            // Real-time path: no B-frame reordering, which keeps latency and
+            // encoder queue depth predictable at 120/240fps.
             var compression: [String: Any] = [
                 AVVideoAverageBitRateKey: plan.videoBitrate,
                 AVVideoMaxKeyFrameIntervalKey: max(plan.keyFrameInterval, 1),
                 AVVideoAllowFrameReorderingKey: false
             ]
-            // Expected frame rate helps the encoder; at 240fps some iOS 15
-            // builds reject the key with HEVC — try with it first, caller
-            // falls back via canApply.
-            if plan.frameRate <= 120 {
-                compression[AVVideoExpectedSourceFrameRateKey] = plan.frameRate
-            }
+            compression[AVVideoExpectedSourceFrameRateKey] = plan.frameRate
             if codec == .h264 {
                 if plan.frameRate >= 240 {
                     compression[AVVideoProfileLevelKey] = AVVideoProfileLevelH264MainAutoLevel
                 } else {
                     compression[AVVideoProfileLevelKey] = AVVideoProfileLevelH264HighAutoLevel
                 }
-            }
-            // Cap keyframe distance at 240fps (2s × 240 = 480 was fine; keep ≤2s).
-            if plan.frameRate >= 240 {
-                // I-frame every ~0.5s — lighter on the A10 than a 2s GOP.
-                compression[AVVideoMaxKeyFrameIntervalKey] = 120
             }
             return [
                 AVVideoCodecKey: codec,
