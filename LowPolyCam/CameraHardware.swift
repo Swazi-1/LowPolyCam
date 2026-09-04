@@ -1,9 +1,17 @@
+//
+//  CameraHardware.swift
+//  LowPolyCam
+//
+//  Updated for iOS 27 / Xcode 27 / Swift 6.4.
+//  Swift 6 complete concurrency · Observation · Liquid Glass · RotationCoordinator
+//
+
 import AVFoundation
 import UIKit
 import Photos
 import MediaPlayer
 import CoreMotion
-import Combine
+import Observation
 import AudioToolbox
 import ImageIO
 
@@ -21,7 +29,7 @@ extension CameraRecorder {
                 let clamped = max(minBias, min(bias, maxBias))
                 device.setExposureTargetBias(clamped, completionHandler: nil)
                 device.unlockForConfiguration()
-                DispatchQueue.main.async { self.settings.exposureBias = clamped }
+                Task { @MainActor in self.settings.exposureBias = clamped }
             } catch { }
         }
     }
@@ -38,7 +46,7 @@ extension CameraRecorder {
                     }
                     device.unlockForConfiguration()
                     self.refreshZoomLimits()
-                    DispatchQueue.main.async { self.settings.whiteBalance = preset }
+                    Task { @MainActor in self.settings.whiteBalance = preset }
                 } catch { }
                 return
             }
@@ -61,7 +69,7 @@ extension CameraRecorder {
                 try device.lockForConfiguration()
                 guard device.isLockingWhiteBalanceWithCustomDeviceGainsSupported else {
                     device.unlockForConfiguration()
-                    DispatchQueue.main.async {
+                    Task { @MainActor in
                         self.notice = "Manual WB unsupported here"
                     }
                     return
@@ -75,7 +83,7 @@ extension CameraRecorder {
                 device.setWhiteBalanceModeLocked(with: gains, completionHandler: nil)
                 device.unlockForConfiguration()
                 self.refreshZoomLimits()
-                DispatchQueue.main.async {
+                Task { @MainActor in
                     self.settings.whiteBalance = preset
                     if lostUltraWide {
                         self.notice = "0.5x unavailable with custom WB"
@@ -91,7 +99,7 @@ extension CameraRecorder {
         let device = cameraInput?.device
         let available = device?.hasTorch ?? false
         let on = (device?.torchMode == .on)
-        DispatchQueue.main.async {
+        Task { @MainActor in
             self.hasTorch = available
             self.torchOn = available && on
         }
@@ -114,9 +122,9 @@ extension CameraRecorder {
                     device.torchMode = .off
                 }
                 device.unlockForConfiguration()
-                DispatchQueue.main.async { self.torchOn = on }
+                Task { @MainActor in self.torchOn = on }
             } catch {
-                DispatchQueue.main.async { self.notice = "Torch is busy" }
+                Task { @MainActor in self.notice = "Torch is busy" }
             }
         }
     }
@@ -130,7 +138,7 @@ extension CameraRecorder {
                     let maxLevel = AVCaptureDevice.maxAvailableTorchLevel
                     let targetLevel = min(level, maxLevel)
                     try device.setTorchModeOn(level: targetLevel)
-                    DispatchQueue.main.async {
+                    Task { @MainActor in
                         self.torchOn = true
                         self.settings.torchBrightness = level
                     }
@@ -138,7 +146,7 @@ extension CameraRecorder {
                     device.torchMode = .off
                     // Keep the user's preferred torch level so the next
                     // torch-on restores it instead of jumping to full/zero.
-                    DispatchQueue.main.async {
+                    Task { @MainActor in
                         self.torchOn = false
                     }
                 }
@@ -161,7 +169,7 @@ extension CameraRecorder {
         stopMotionUpdates()
         sessionQueue.async {
             if self.session.isRunning { self.session.stopRunning() }
-            DispatchQueue.main.async { self.isSessionRunning = false }
+            Task { @MainActor in self.isSessionRunning = false }
         }
     }
 
@@ -179,7 +187,7 @@ extension CameraRecorder {
             guard self.isConfigured else { return }
             if !self.session.isRunning { self.session.startRunning() }
             self.refreshTorchState()
-            DispatchQueue.main.async { self.isSessionRunning = self.session.isRunning }
+            Task { @MainActor in self.isSessionRunning = self.session.isRunning }
         }
         // Restart motion updates cleanly — after being backgrounded (e.g. screen
         // locked for a while), the previous raw angle used for unwrapping the roll
@@ -219,7 +227,7 @@ extension CameraRecorder {
             } catch { }
         }
 
-        DispatchQueue.main.async {
+        Task { @MainActor in
             self.maxZoomFactor = rawCeiling / baseline
             self.minZoomFactor = rawFloor / baseline
             self.zoomFactor = clampedUI
@@ -240,7 +248,7 @@ extension CameraRecorder {
                 try device.lockForConfiguration()
                 device.videoZoomFactor = clamped
                 device.unlockForConfiguration()
-                DispatchQueue.main.async { self.zoomFactor = clamped / baseline }
+                Task { @MainActor in self.zoomFactor = clamped / baseline }
             } catch { }
         }
     }
@@ -260,7 +268,7 @@ extension CameraRecorder {
         // A plain tap always means "focus/expose here and go back to
         // tracking" — it should break any standing focus/exposure lock,
         // the same way it does in stock Camera.
-        DispatchQueue.main.async {
+        Task { @MainActor in
             self.focusLocked = false
             self.exposureLocked = false
         }
@@ -275,7 +283,7 @@ extension CameraRecorder {
                               focus: .continuousAutoFocus,
                               exposure: .continuousAutoExposure,
                               monitorSubjectArea: false)
-        DispatchQueue.main.async {
+        Task { @MainActor in
             self.focusLocked = false
             self.exposureLocked = false
         }
@@ -314,7 +322,7 @@ extension CameraRecorder {
                     // the lock, so suppress it while anything is locked.
                     device.isSubjectAreaChangeMonitoringEnabled = false
                     device.unlockForConfiguration()
-                    DispatchQueue.main.async { self.focusLocked = true }
+                    Task { @MainActor in self.focusLocked = true }
                 } catch { }
             }
         }
@@ -331,7 +339,7 @@ extension CameraRecorder {
                 let otherStillLocked = device.exposureMode == .locked
                 device.isSubjectAreaChangeMonitoringEnabled = !otherStillLocked
                 device.unlockForConfiguration()
-                DispatchQueue.main.async { self.focusLocked = false }
+                Task { @MainActor in self.focusLocked = false }
             } catch { }
         }
     }
@@ -366,7 +374,7 @@ extension CameraRecorder {
                     }
                     device.isSubjectAreaChangeMonitoringEnabled = false
                     device.unlockForConfiguration()
-                    DispatchQueue.main.async { self.exposureLocked = true }
+                    Task { @MainActor in self.exposureLocked = true }
                 } catch { }
             }
         }
@@ -383,7 +391,7 @@ extension CameraRecorder {
                 let otherStillLocked = device.focusMode == .locked
                 device.isSubjectAreaChangeMonitoringEnabled = !otherStillLocked
                 device.unlockForConfiguration()
-                DispatchQueue.main.async { self.exposureLocked = false }
+                Task { @MainActor in self.exposureLocked = false }
             } catch { }
         }
     }
