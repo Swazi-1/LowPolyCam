@@ -11,7 +11,6 @@ import UIKit
 import Photos
 import MediaPlayer
 import CoreMotion
-import Observation
 import AudioToolbox
 import ImageIO
 import VideoToolbox
@@ -758,7 +757,7 @@ extension CameraRecorder {
         let defaults = UserDefaults.standard
         guard let name = defaults.string(forKey: Self.inProgressKey) else { return }
 
-        let url = Self.clipsDirectory.appending(path:(name)
+        let url = Self.clipsDirectory.appendingPathComponent(name)
         let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
 
         guard size > 0 else {
@@ -938,7 +937,7 @@ extension CameraRecorder {
         // random suffix guarantees uniqueness even if that race happens, as
         // a defense-in-depth alongside the dedicated startSegment guard.
         let suffix = String(format: "%04X", UInt16.random(in: 0...0xFFFF))
-        return clipsDirectory.appending(path:("LowPolyCam_\(f.string(from: Date()))_\(suffix).mov")
+        return clipsDirectory.appendingPathComponent("LowPolyCam_\(f.string(from: Date()))_\(suffix).mov")
     }
 
     // MARK: Video Matrix Orientation
