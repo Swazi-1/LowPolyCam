@@ -207,6 +207,9 @@ extension CameraRecorder {
         let baseline = CameraFormatSelector.wideAngleBaseline(for: device)
         let rawCeiling = min(device.activeFormat.videoMaxZoomFactor, baseline * 8)
         let rawFloor = device.minAvailableVideoZoomFactor
+        let hasSlowMoUltraWide = settings.cameraMode == .slowMo
+            && position == .back
+            && slowMoPhysicalDevice(for: 0.5) != nil
 
         // Keep the user's zoom factor (UI units) when the format changes.
         let previousFactor = zoomFactor
@@ -228,7 +231,7 @@ extension CameraRecorder {
 
         Task { @MainActor in
             self.maxZoomFactor = rawCeiling / baseline
-            self.minZoomFactor = rawFloor / baseline
+            self.minZoomFactor = hasSlowMoUltraWide ? 0.5 : rawFloor / baseline
             self.zoomFactor = clampedUI
             // iPhone 7 has one physical (wide) lens, so 1x is the only
             // "real" optical zoom factor — everything past it is a digital
@@ -239,15 +242,43 @@ extension CameraRecorder {
 
     func setZoom(factor: CGFloat) {
         sessionQueue.async {
-            guard let device = self.cameraInput?.device else { return }
-            let baseline = self.zoomBaselineSnapshot
+            guard var device = self.cameraInput?.device else { return }
+
+            // Cross the 0.5x/1x boundary by changing physical lenses in
+            // Slow-Mo. High-FPS formats are not available through the virtual
+            // dual-wide input on this hardware.
+            if self.settings.cameraMode == .slowMo,
+               self.position == .back,
+               let target = self.slowMoPhysicalDevice(for: factor),
+               target.uniqueID != device.uniqueID {
+                self.switchCameraInput(to: target)
+                device = target
+                let dims = self.settings.slowMoResolution.captureDimensions
+                let fps = Double(self.settings.slowMoFrameRate.value)
+                if let format = CameraFormatSelector.bestSlowMoAwareFormat(
+                    for: target, width: dims.w, height: dims.h, fps: fps
+                ) {
+                    _ = self.applyUnifiedHardwareConfiguration(to: target, format: format, targetFPS: fps)
+                    self.lastAppliedFormatKey = Self.formatKey(device: target, format: format, fps: fps)
+                    self.refreshZoomLimits()
+                }
+            }
+
+            let baseline = CameraFormatSelector.wideAngleBaseline(for: device)
+            let rawFloor = device.minAvailableVideoZoomFactor
+            let rawCeiling = min(device.activeFormat.videoMaxZoomFactor, baseline * 8)
             let raw = factor * baseline
-            let clamped = max(self.rawMinZoomSnapshot, min(raw, self.rawMaxZoomSnapshot))
+            let clamped = max(rawFloor, min(raw, rawCeiling))
             do {
                 try device.lockForConfiguration()
                 device.videoZoomFactor = clamped
                 device.unlockForConfiguration()
-                Task { @MainActor in self.zoomFactor = clamped / baseline }
+                self.zoomBaselineSnapshot = baseline
+                self.rawMinZoomSnapshot = rawFloor
+                self.rawMaxZoomSnapshot = rawCeiling
+                Task { @MainActor in
+                    self.zoomFactor = clamped / baseline
+                }
             } catch { }
         }
     }

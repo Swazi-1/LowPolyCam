@@ -182,6 +182,10 @@ enum CameraFormatSelector {
 
     /// Virtual device baseline zoom for the physical wide camera.
     static func wideAngleBaseline(for device: AVCaptureDevice) -> CGFloat {
+        // A physical ultra-wide camera reports its own optical view as raw
+        // 1x. In the app (and Apple's Camera UI) that same view is displayed
+        // as 0.5x relative to the main wide lens.
+        if device.deviceType == .builtInUltraWideCamera { return 2 }
         let constituents = device.constituentDevices
         guard !constituents.isEmpty,
               let wideIndex = constituents.firstIndex(where: {

@@ -1707,23 +1707,42 @@ struct CameraScreen: View {
             let doublingsNeeded = log2(zoomDialMaxFactor / zoomDialMinFactor)
             let pointsPerDoubling = halfWidth / doublingsNeeded
 
-            ZStack {
-                Text(zoomDialLabel(recorder.zoomFactor))
-                    .font(.system(size: 13, weight: .bold, design: .rounded))
-                    .foregroundColor(.white)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(
-                        Capsule()
-                            .fill(Palette.panel.opacity(0.88))
-                            .background(Capsule().fill(Palette.slateDeep.opacity(usesLightweightMaterial ? 0.55 : 0.3)))
-                    )
-                    .overlay(
-                        Capsule().stroke(Color.white.opacity(0.16), lineWidth: 1)
-                    )
-                    .shadow(color: .black.opacity(0.3), radius: 8, y: 3)
+            HStack(spacing: 8) {
+                if recorder.minZoomFactor <= 0.51 {
+                    Button {
+                        recorder.setZoom(factor: 0.5)
+                        if settings.hapticFeedbackEnabled { zoomHaptic.selectionChanged() }
+                    } label: {
+                        Text("0.5x")
+                            .font(.system(size: 12, weight: .bold, design: .rounded))
+                            .foregroundColor(abs(recorder.zoomFactor - 0.5) < 0.08 ? settings.accentColor.bright : .white.opacity(0.72))
+                            .padding(.horizontal, 11)
+                            .padding(.vertical, 7)
+                            .background(Capsule().fill(Palette.panel.opacity(0.78)))
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Button {
+                    recorder.setZoom(factor: 1)
+                    if settings.hapticFeedbackEnabled { zoomHaptic.selectionChanged() }
+                } label: {
+                    Text(zoomDialLabel(recorder.zoomFactor))
+                        .font(.system(size: 13, weight: .bold, design: .rounded))
+                        .foregroundColor(.white)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(
+                            Capsule()
+                                .fill(Palette.panel.opacity(0.88))
+                                .background(Capsule().fill(Palette.slateDeep.opacity(usesLightweightMaterial ? 0.55 : 0.3)))
+                        )
+                        .overlay(Capsule().stroke(Color.white.opacity(0.16), lineWidth: 1))
+                        .shadow(color: .black.opacity(0.3), radius: 8, y: 3)
+                }
+                .buttonStyle(.plain)
             }
             .frame(width: geo.size.width, height: geo.size.height)
             .contentShape(Rectangle())
@@ -1753,11 +1772,6 @@ struct CameraScreen: View {
                         recorder.suppressVolumeTriggerBriefly()
                     }
             )
-            .onTapGesture {
-                recorder.suppressVolumeTriggerBriefly()
-                recorder.setZoom(factor: 1)
-                if settings.hapticFeedbackEnabled { zoomHaptic.selectionChanged() }
-            }
         }
         .frame(height: 54)
     }

@@ -115,8 +115,33 @@ extension CameraRecorder {
     }
 
     func ensureCorrectCameraDevice(for mode: CameraMode) {
-        guard let targetDevice = Self.camera(at: position, mode: mode, preferPhysical: wantsPhysicalWideLens) else { return }
+        let targetDevice: AVCaptureDevice?
+        if mode == .slowMo, position == .back {
+            let requestedZoom = zoomFactor > 0 ? zoomFactor : 1
+            targetDevice = slowMoPhysicalDevice(for: requestedZoom)
+                ?? Self.camera(at: position, mode: mode, preferPhysical: true)
+        } else {
+            targetDevice = Self.camera(at: position, mode: mode, preferPhysical: wantsPhysicalWideLens)
+        }
+        guard let targetDevice else { return }
         switchCameraInput(to: targetDevice)
+    }
+
+    /// Slow-Mo needs explicit physical-lens routing on iPhone 11. Its virtual
+    /// dual-wide device does not expose the high-frame-rate formats, so 0.5x
+    /// cannot be reached by changing `videoZoomFactor` alone.
+    func slowMoPhysicalDevice(for displayedZoom: CGFloat) -> AVCaptureDevice? {
+        guard position == .back else {
+            return AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position)
+        }
+        let type: AVCaptureDevice.DeviceType = displayedZoom < 0.75
+            ? .builtInUltraWideCamera : .builtInWideAngleCamera
+        guard let device = AVCaptureDevice.default(type, for: .video, position: .back) else { return nil }
+        let dims = settings.slowMoResolution.captureDimensions
+        let fps = Double(settings.slowMoFrameRate.value)
+        return CameraFormatSelector.bestSlowMoAwareFormat(
+            for: device, width: dims.w, height: dims.h, fps: fps
+        ) == nil ? nil : device
     }
 
     func switchCameraInput(to targetDevice: AVCaptureDevice) {
@@ -139,9 +164,14 @@ extension CameraRecorder {
         if session.canAddInput(input) {
             session.addInput(input)
             cameraInput = input
+            // The previous input may have left maxPhotoDimensions set to a
+            // value the replacement lens cannot provide (notably 4K60 wide →
+            // Photo dual-wide). Update it before committing the new graph.
+            configurePhotoOutput(for: targetDevice)
         } else if let old = old, session.canAddInput(old) {
             // Restore the existing input if the replacement is rejected.
             session.addInput(old)
+            configurePhotoOutput(for: old.device)
             DebugLog.write("❌ switchCameraInput() rejected new input, restored previous")
             Task { @MainActor in self.notice = "Could not switch camera" }
         } else {
