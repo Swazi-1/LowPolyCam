@@ -1,3 +1,11 @@
+//
+//  PerformanceProfile.swift
+//  LowPolyCam
+//
+//  Updated for iOS 27 / Xcode 27 / Swift 6.4.
+//  Swift 6 complete concurrency · Observation · Liquid Glass · RotationCoordinator
+//
+
 import Foundation
 
 // MARK: - Performance / Longevity system
@@ -45,13 +53,17 @@ struct PerformanceProfile {
     /// for — where every throttling knob below matters most.
     enum DeviceTier: Equatable {
         case constrained
+        case standard
         case modern
 
         /// The single source of truth for "is this a low-memory / A10-class
         /// device?" — everything else in the app should read this instead
         /// of checking `ProcessInfo.processInfo.physicalMemory` itself.
         static var current: DeviceTier {
-            ProcessInfo.processInfo.physicalMemory <= 2_500_000_000 ? .constrained : .modern
+            let mem = ProcessInfo.processInfo.physicalMemory
+            if mem <= 2_500_000_000 { return .constrained }
+            if mem <= 6_000_000_000 { return .standard }
+            return .modern
         }
     }
 
