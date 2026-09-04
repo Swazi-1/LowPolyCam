@@ -43,9 +43,16 @@ extension CameraRecorder {
 
             // Switch to the highest still-capable format once for the whole
             // burst, then restore the lightweight preview format at the end.
-            guard let device = self.cameraInput?.device,
-                  let stillFormat = CameraFormatSelector.bestPhotoStillFormat(for: device, maxPreviewHeight: 1080, fps: 30)
-            else {
+            guard let device = self.cameraInput?.device else {
+                begin()
+                return
+            }
+            let stillFormat = CameraFormatSelector.bestPhotoStillFormat(
+                for: device,
+                maxPreviewHeight: 1080,
+                fps: 30
+            )
+            guard let stillFormat else {
                 begin()
                 return
             }
