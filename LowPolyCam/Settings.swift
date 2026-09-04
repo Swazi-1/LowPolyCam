@@ -1,12 +1,20 @@
+//
+//  Settings.swift
+//  LowPolyCam
+//
+//  Updated for iOS 27 / Xcode 27 / Swift 6.4.
+//  Swift 6 complete concurrency · Observation · Liquid Glass · RotationCoordinator
+//
+
 import Foundation
 import AVFoundation
-import Combine
+import Observation
 import SwiftUI
 import UIKit
 
 // MARK: - Physical Device Orientation
 
-enum PhysicalOrientation {
+enum PhysicalOrientation: Sendable {
     case portrait
     case landscapeLeft
     case landscapeRight
@@ -40,16 +48,14 @@ enum PhysicalOrientation {
         }
     }
 
-    /// Maps our gravity-measured physical orientation directly to AVFoundation's
-    /// capture orientation. This is computed straight from the accelerometer, not
-    /// from UIDevice.orientation, so no UIKit/AVFoundation landscape-swap applies here
-    /// — mapping landscapeLeft/landscapeRight directly (not swapped) is correct.
-    var videoOrientation: AVCaptureVideoOrientation {
+    /// Rotation applied to photo/video connections. Replaces the removed
+    /// `AVCaptureVideoOrientation` / `videoOrientation` path.
+    var captureVideoRotationAngle: CGFloat {
         switch self {
-        case .portrait: return .portrait
-        case .landscapeLeft: return .landscapeLeft
-        case .landscapeRight: return .landscapeRight
-        case .portraitUpsideDown: return .portraitUpsideDown
+        case .portrait: return 90
+        case .landscapeRight: return 0
+        case .landscapeLeft: return 180
+        case .portraitUpsideDown: return 270
         }
     }
 
@@ -634,6 +640,23 @@ enum HapticIntensity: String, CaseIterable, Identifiable, SettingStorable {
         default: return base
         }
     }
+
+    /// iOS 17+ SwiftUI `.sensoryFeedback` weight mapped from the same setting.
+    var sensoryWeight: SensoryFeedback.Weight {
+        switch self {
+        case .light: return .light
+        case .standard: return .medium
+        case .strong: return .heavy
+        }
+    }
+
+    var sensoryIntensity: Double {
+        switch self {
+        case .light: return 0.45
+        case .standard: return 0.72
+        case .strong: return 1.0
+        }
+    }
 }
 
 // MARK: - Quick Capture Presets
@@ -779,7 +802,8 @@ enum WhiteBalancePreset: String, CaseIterable, Identifiable, SettingStorable {
 //      CameraScreen.swift. See ProToolsControls.swift.
 // No other file needs to change — both UIs render from these declarative
 // lists rather than needing a new hand-built row per setting.
-final class AppSettings: ObservableObject {
+@Observable
+final class AppSettings {
 
     static let shared = AppSettings()
 
