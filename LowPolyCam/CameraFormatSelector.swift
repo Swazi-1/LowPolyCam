@@ -197,15 +197,15 @@ enum CameraFormatSelector {
     }
 }
 
-// MARK: - iOS 16+ still dimensions
+// MARK: - iOS 15 still dimensions
 
 extension AVCaptureDevice.Format {
-    /// Largest still the format can deliver. Replaces the deprecated
-    /// `highResolutionStillImageDimensions` (removed from new code in iOS 27).
+    /// Largest still size exposed by the iOS 15 photo capture stack.
+    /// This pre-iOS-16 property keeps the app compatible with iPhone 7.
     var largestStillDimensions: CMVideoDimensions {
-        let sizes = supportedMaxPhotoDimensions
-        if let best = sizes.max(by: { Int($0.width) * Int($0.height) < Int($1.width) * Int($1.height) }) {
-            return best
+        let dimensions = highResolutionStillImageDimensions
+        if dimensions.width > 0 && dimensions.height > 0 {
+            return dimensions
         }
         return CMVideoFormatDescriptionGetDimensions(formatDescription)
     }
