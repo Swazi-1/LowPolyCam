@@ -11,14 +11,13 @@ import UIKit
 import Photos
 import MediaPlayer
 import CoreMotion
-import Observation
+import Combine
 import AudioToolbox
 import ImageIO
 import CoreImage
 import VideoToolbox
 
-@Observable
-final class CameraRecorder: NSObject {
+final class CameraRecorder: NSObject, ObservableObject {
 
     // MARK: Tunables
 
@@ -39,31 +38,31 @@ final class CameraRecorder: NSObject {
 
     // MARK: Published state
 
-    var isRecording = false
-    var isSaving = false
-    var isSessionRunning = false
-    var permissionDenied = false
-    var elapsed: TimeInterval = 0
-    var clipsThisSession = 0
-    var droppedFrames = 0
+    @Published var isRecording = false
+    @Published var isSaving = false
+    @Published var isSessionRunning = false
+    @Published var permissionDenied = false
+    @Published var elapsed: TimeInterval = 0
+    @Published var clipsThisSession = 0
+    @Published var droppedFrames = 0
     /// 📊 Live recording stats (measured FPS, dropped-frame rate, bitrate).
     /// Fed from the existing sample-buffer/elapsed path in
     /// CameraSampleBuffers.swift — see RecordingStatsSystem.swift.
-    var recordingStats = RecordingStatsSnapshot()
-    var freeBytes: Int64 = 0
-    var hasTorch = false
-    var torchOn = false
+    @Published var recordingStats = RecordingStatsSnapshot()
+    @Published var freeBytes: Int64 = 0
+    @Published var hasTorch = false
+    @Published var torchOn = false
     /// Front camera has no physical torch. This drives a screen-illumination
     /// "flash" for selfies instead (see CameraScreen's performFrontFlashCapture),
     /// same idea as the stock Camera app's selfie flash.
-    var frontFlashEnabled = false
-    var isFrontCamera = false
-    var isSwitchingCamera = false
+    @Published var frontFlashEnabled = false
+    @Published var isFrontCamera = false
+    @Published var isSwitchingCamera = false
     /// True while changing Video / Photo / Slow-Mo formats. The UI uses this
     /// to cover the unavoidable sensor renegotiation with a short fade.
-    var isSwitchingMode = false
-    var stabilizationSupported = true
-    var availableFrameRates: [FrameRate] = FrameRate.allCases
+    @Published var isSwitchingMode = false
+    @Published var stabilizationSupported = true
+    @Published var availableFrameRates: [FrameRate] = FrameRate.allCases
     /// Per-resolution map of video FPS support, built once from a full scan of
     /// every format the lens offers (not just whichever resolution happened to
     /// be selected when the scan ran). `availableFrameRates` above is only a
@@ -73,78 +72,78 @@ final class CameraRecorder: NSObject {
     /// on this device class): the 4K-only scan got treated as the device's
     /// entire capability. This map fixes that by keeping every resolution's
     /// support independent, same idea as `slowRatesByResolution` below.
-    var frameRatesByResolution: [Resolution: Set<FrameRate>] = [:]
-    var availableResolutions: [Resolution] = Resolution.allCases
-    var availableSlowMoRates: [SlowMoFrameRate] = SlowMoFrameRate.allCases
-    var availableSlowMoResolutions: [Resolution] = [.p1080, .p720]
+    @Published var frameRatesByResolution: [Resolution: Set<FrameRate>] = [:]
+    @Published var availableResolutions: [Resolution] = Resolution.allCases
+    @Published var availableSlowMoRates: [SlowMoFrameRate] = SlowMoFrameRate.allCases
+    @Published var availableSlowMoResolutions: [Resolution] = [.p1080, .p720]
     /// Per-resolution map of slow-mo FPS support. Used so selecting e.g. 1080p
     /// only offers FPS rates the hardware can actually deliver at that size
     /// (iPhone 7: 240 fps is available at 720p but not at 1080p).
-    var slowRatesByResolution: [Resolution: Set<SlowMoFrameRate>] = [:]
-    var isSlowMoSupportedOnCurrentLens = true
-    var batteryPercent: Int = -1
-    var batteryCharging = false
-    var zoomFactor: CGFloat = 1
-    var maxZoomFactor: CGFloat = 1
-    var minZoomFactor: CGFloat = 1
+    @Published var slowRatesByResolution: [Resolution: Set<SlowMoFrameRate>] = [:]
+    @Published var isSlowMoSupportedOnCurrentLens = true
+    @Published var batteryPercent: Int = -1
+    @Published var batteryCharging = false
+    @Published var zoomFactor: CGFloat = 1
+    @Published var maxZoomFactor: CGFloat = 1
+    @Published var minZoomFactor: CGFloat = 1
     /// Zoom factor (UI units, 1x = the physical wide lens) beyond which the
     /// image is no longer coming straight off the sensor at native
     /// resolution but is being digitally cropped/interpolated. iPhone 7 has
     /// a single physical (wide) lens, so this is always 1x — there is no
     /// second optical lens for the system to switch to.
-    var opticalZoomCeiling: CGFloat = 1
+    @Published var opticalZoomCeiling: CGFloat = 1
     /// True while focus is locked at a fixed point (tap-and-hold on the
     /// preview) instead of continuously re-focusing.
-    var focusLocked = false
+    @Published var focusLocked = false
     /// True while exposure is locked at a fixed point (two-finger
     /// tap-and-hold on the preview) instead of continuously re-metering.
-    var exposureLocked = false
-    var audioLevel: Float = 0
-    var lastClipThumbnail: UIImage?
-    var lastClipURL: URL?
+    @Published var exposureLocked = false
+    @Published var audioLevel: Float = 0
+    @Published var lastClipThumbnail: UIImage?
+    @Published var lastClipURL: URL?
 
     // Photo mode
-    var isCapturingPhoto = false
-    var availablePhotoMegapixels: [PhotoMegapixels] = PhotoMegapixels.allCases
-    var lastPhotoThumbnail: UIImage?
+    @Published var isCapturingPhoto = false
+    @Published var availablePhotoMegapixels: [PhotoMegapixels] = PhotoMegapixels.allCases
+    @Published var lastPhotoThumbnail: UIImage?
     // MARK: Photo 2.0 — Burst mode
     /// True while a burst sequence is actively firing frames.
-    var isBursting = false
+    @Published var isBursting = false
     /// Frames captured so far in the current burst (for the on-screen counter).
-    var burstShotsTaken = 0
+    @Published var burstShotsTaken = 0
     /// Total frames requested for the current burst (settings.burstCount at
     /// the moment the burst started — snapshotted so a mid-burst settings
     /// change can't desync the counter).
-    var burstShotsTotal = 0
+    @Published var burstShotsTotal = 0
     /// URLs (Files) or nothing (Photos, which has no stable local URL) for
     /// the most recently completed burst, freshest first. Used to seed the
     /// post-capture review sheet with "swipe through this burst".
-    var lastBurstReviewItems: [PhotoReviewItem] = []
+    @Published var lastBurstReviewItems: [PhotoReviewItem] = []
     /// The single most recent capture (single shot or last burst frame),
     /// used to open the post-capture review sheet.
-    var lastPhotoReviewItem: PhotoReviewItem?
+    @Published var lastPhotoReviewItem: PhotoReviewItem?
     /// Bumped every time a fresh capture (single or burst) finishes, so the
     /// UI can open the review sheet exactly once per capture via onChange.
-    var photoReviewToken: Int = 0
+    @Published var photoReviewToken: Int = 0
     /// Full-resolution bursts are a sequence of still captures. Cancellation
     /// finishes the current still cleanly, then restores the preview format.
-    var burstCancellationRequested = false
+    @Published var burstCancellationRequested = false
 
     // Thermal state
-    var thermalState: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState
+    @Published var thermalState: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState
 
     // Level Telemetry & Physical Orientation
-    var physicalOrientation: PhysicalOrientation = .portrait
-    var uiRotationAngle: Double = 0
-    var isLevel: Bool = false
-    var rollAngle: Double = 0
-    var notice: String?
+    @Published var physicalOrientation: PhysicalOrientation = .portrait
+    @Published var uiRotationAngle: Double = 0
+    @Published var isLevel: Bool = false
+    @Published var rollAngle: Double = 0
+    @Published var notice: String?
 
     /// Fired the instant the sensor actually captures the photo (from
     /// AVCapturePhotoOutput's willCapturePhotoFor delegate callback), so the
     /// UI's screen-flash overlay is synced to the real capture moment
     /// instead of firing early on button tap.
-    var onWillCapturePhoto: (() -> Void)?
+    @Published var onWillCapturePhoto: (() -> Void)?
 
     let session = AVCaptureSession()
 
