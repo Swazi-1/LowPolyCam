@@ -7,7 +7,6 @@
 //
 
 import SwiftUI
-import Observation
 
 // MARK: - Lightweight label style (keeps List scrolling smooth on A10)
 
@@ -32,7 +31,7 @@ struct SettingsLabelStyle: LabelStyle {
 
 struct SettingsScreen: View {
 
-    @Bindable var settings: AppSettings
+    @ObservedObject var settings: AppSettings
     /// Recorder is only used for one-shot capability checks + format updates.
     /// We intentionally do NOT observe live battery/free-space ticks while the
     /// sheet is open — that was the main source of scroll stutter in photo / slo-mo.
@@ -63,7 +62,7 @@ struct SettingsScreen: View {
     private var plan: EncodePlan { Encoder.plan(for: settings) }
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             List {
                 summarySection
 
@@ -112,9 +111,9 @@ struct SettingsScreen: View {
             .animation(nil, value: appliedPresetId)
             .transaction { $0.animation = nil }
             .navigationTitle("Settings")
-            .toolbarTitleDisplayMode(.inline)
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Button(action: { dismiss() }) {
                         Text("Done")
                             .font(.system(size: 16, weight: .bold))
@@ -138,7 +137,7 @@ struct SettingsScreen: View {
         .onAppear {
             syncCapabilitiesFromRecorder()
         }
-        .onChange(of: settings.slowMoResolution) { _, newRes in
+        .onChange(of: settings.slowMoResolution) { newRes in
             // Instantly re-scope FPS chips to the newly selected slow-mo resolution
             // without waiting for the async format-apply round-trip.
             let rates = recorder.slowRatesByResolution[newRes] ?? []
@@ -148,7 +147,7 @@ struct SettingsScreen: View {
             }
             recorder.updateCaptureFormat()
         }
-        .onChange(of: settings.resolution) { _, newRes in
+        .onChange(of: settings.resolution) { newRes in
             // Same fix as slow-mo above: re-scope the video fps chips to the
             // newly selected resolution right away, from the already-known
             // per-resolution map — instead of leaving the previous
@@ -503,7 +502,7 @@ struct SettingsScreen: View {
     }
 
     private var presetsSheet: some View {
-        NavigationStack {
+        NavigationView {
             List {
                 ForEach(CapturePreset.all.filter { preset in
                     // Front camera: no 4K, and no 60 fps if the lens can't do it.
@@ -549,9 +548,9 @@ struct SettingsScreen: View {
             }
             .listStyle(.insetGrouped)
             .navigationTitle("Quick Presets")
-            .toolbarTitleDisplayMode(.inline)
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Cancel") { showPresetsSheet = false }
                 }
             }
@@ -886,7 +885,7 @@ struct SettingsScreen: View {
     }
 
     private var hudSheet: some View {
-        NavigationStack {
+        NavigationView {
             List {
                 Section(header: sectionHeader("Camera HUD", icon: "camera.viewfinder"),
                         footer: Text("Hide anything you don't want cluttering the viewfinder. The shutter and this Settings button always stay visible.")) {
@@ -913,9 +912,9 @@ struct SettingsScreen: View {
             }
             .listStyle(.insetGrouped)
             .navigationTitle("Camera HUD")
-            .toolbarTitleDisplayMode(.inline)
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Done") { showHUDSheet = false }
                 }
             }
@@ -936,7 +935,7 @@ struct SettingsScreen: View {
                 Label("Shutter & dial sounds", systemImage: "speaker.wave.2.fill")
                     .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
             }
-            .onChange(of: settings.shutterSoundEnabled) { _, _ in
+            .onChange(of: settings.shutterSoundEnabled) { _ in
                 fireSettingsToggleHaptic(settings)
             }
 
@@ -944,7 +943,7 @@ struct SettingsScreen: View {
                 Label("Haptic feedback", systemImage: "hand.tap.fill")
                     .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
             }
-            .onChange(of: settings.hapticFeedbackEnabled) { _, isOn in
+            .onChange(of: settings.hapticFeedbackEnabled) { isOn in
                 // Only buzz on the way to "on" — buzzing after switching it
                 // off would be confusing (and pointless).
                 guard isOn else { return }
@@ -1050,7 +1049,7 @@ struct SettingsScreen: View {
     }
 
     private var aboutSheet: some View {
-        NavigationStack {
+        NavigationView {
             List {
                 aboutRow(icon: "shield.lefthalf.filled",
                          title: "Crash Safe",
@@ -1073,9 +1072,9 @@ struct SettingsScreen: View {
             }
             .listStyle(.insetGrouped)
             .navigationTitle("Good to Know")
-            .toolbarTitleDisplayMode(.inline)
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Done") { showAboutSheet = false }
                 }
             }
@@ -1162,7 +1161,7 @@ struct SettingsScreen: View {
     }
 
     private var customColorSheet: some View {
-        NavigationStack {
+        NavigationView {
             List {
                 Section(footer: Text("Pick any color for the shutter ring, highlights, and controls throughout the camera UI.")) {
                     ColorPicker(selection: Binding(
@@ -1179,9 +1178,9 @@ struct SettingsScreen: View {
             }
             .listStyle(.insetGrouped)
             .navigationTitle("Custom Color")
-            .toolbarTitleDisplayMode(.inline)
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Done") { showCustomColorSheet = false }
                 }
             }
@@ -1286,7 +1285,7 @@ struct SettingsScreen: View {
                 Label("Review after capture", systemImage: "eye.fill")
                     .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
             }
-            .onChange(of: settings.photoReviewAfterCapture) { _, _ in
+            .onChange(of: settings.photoReviewAfterCapture) { _ in
                 fireSettingsToggleHaptic(settings)
             }
         }
