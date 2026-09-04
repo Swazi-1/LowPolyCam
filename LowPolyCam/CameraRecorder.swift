@@ -1,15 +1,24 @@
+//
+//  CameraRecorder.swift
+//  LowPolyCam
+//
+//  Updated for iOS 27 / Xcode 27 / Swift 6.4.
+//  Swift 6 complete concurrency · Observation · Liquid Glass · RotationCoordinator
+//
+
 import AVFoundation
 import UIKit
 import Photos
 import MediaPlayer
 import CoreMotion
-import Combine
+import Observation
 import AudioToolbox
 import ImageIO
 import CoreImage
 import VideoToolbox
 
-final class CameraRecorder: NSObject, ObservableObject {
+@Observable
+final class CameraRecorder: NSObject {
 
     // MARK: Tunables
 
@@ -30,31 +39,31 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     // MARK: Published state
 
-    @Published var isRecording = false
-    @Published var isSaving = false
-    @Published var isSessionRunning = false
-    @Published var permissionDenied = false
-    @Published var elapsed: TimeInterval = 0
-    @Published var clipsThisSession = 0
-    @Published var droppedFrames = 0
+    var isRecording = false
+    var isSaving = false
+    var isSessionRunning = false
+    var permissionDenied = false
+    var elapsed: TimeInterval = 0
+    var clipsThisSession = 0
+    var droppedFrames = 0
     /// 📊 Live recording stats (measured FPS, dropped-frame rate, bitrate).
     /// Fed from the existing sample-buffer/elapsed path in
     /// CameraSampleBuffers.swift — see RecordingStatsSystem.swift.
-    @Published var recordingStats = RecordingStatsSnapshot()
-    @Published var freeBytes: Int64 = 0
-    @Published var hasTorch = false
-    @Published var torchOn = false
+    var recordingStats = RecordingStatsSnapshot()
+    var freeBytes: Int64 = 0
+    var hasTorch = false
+    var torchOn = false
     /// Front camera has no physical torch. This drives a screen-illumination
     /// "flash" for selfies instead (see CameraScreen's performFrontFlashCapture),
     /// same idea as the stock Camera app's selfie flash.
-    @Published var frontFlashEnabled = false
-    @Published var isFrontCamera = false
-    @Published var isSwitchingCamera = false
+    var frontFlashEnabled = false
+    var isFrontCamera = false
+    var isSwitchingCamera = false
     /// True while changing Video / Photo / Slow-Mo formats. The UI uses this
     /// to cover the unavoidable sensor renegotiation with a short fade.
-    @Published var isSwitchingMode = false
-    @Published var stabilizationSupported = true
-    @Published var availableFrameRates: [FrameRate] = FrameRate.allCases
+    var isSwitchingMode = false
+    var stabilizationSupported = true
+    var availableFrameRates: [FrameRate] = FrameRate.allCases
     /// Per-resolution map of video FPS support, built once from a full scan of
     /// every format the lens offers (not just whichever resolution happened to
     /// be selected when the scan ran). `availableFrameRates` above is only a
@@ -65,71 +74,71 @@ final class CameraRecorder: NSObject, ObservableObject {
     /// entire capability. This map fixes that by keeping every resolution's
     /// support independent, same idea as `slowRatesByResolution` below.
     var frameRatesByResolution: [Resolution: Set<FrameRate>] = [:]
-    @Published var availableResolutions: [Resolution] = Resolution.allCases
-    @Published var availableSlowMoRates: [SlowMoFrameRate] = SlowMoFrameRate.allCases
-    @Published var availableSlowMoResolutions: [Resolution] = [.p1080, .p720]
+    var availableResolutions: [Resolution] = Resolution.allCases
+    var availableSlowMoRates: [SlowMoFrameRate] = SlowMoFrameRate.allCases
+    var availableSlowMoResolutions: [Resolution] = [.p1080, .p720]
     /// Per-resolution map of slow-mo FPS support. Used so selecting e.g. 1080p
     /// only offers FPS rates the hardware can actually deliver at that size
     /// (iPhone 7: 240 fps is available at 720p but not at 1080p).
     var slowRatesByResolution: [Resolution: Set<SlowMoFrameRate>] = [:]
-    @Published var isSlowMoSupportedOnCurrentLens = true
-    @Published var batteryPercent: Int = -1
-    @Published var batteryCharging = false
-    @Published var zoomFactor: CGFloat = 1
-    @Published var maxZoomFactor: CGFloat = 1
-    @Published var minZoomFactor: CGFloat = 1
+    var isSlowMoSupportedOnCurrentLens = true
+    var batteryPercent: Int = -1
+    var batteryCharging = false
+    var zoomFactor: CGFloat = 1
+    var maxZoomFactor: CGFloat = 1
+    var minZoomFactor: CGFloat = 1
     /// Zoom factor (UI units, 1x = the physical wide lens) beyond which the
     /// image is no longer coming straight off the sensor at native
     /// resolution but is being digitally cropped/interpolated. iPhone 7 has
     /// a single physical (wide) lens, so this is always 1x — there is no
     /// second optical lens for the system to switch to.
-    @Published var opticalZoomCeiling: CGFloat = 1
+    var opticalZoomCeiling: CGFloat = 1
     /// True while focus is locked at a fixed point (tap-and-hold on the
     /// preview) instead of continuously re-focusing.
-    @Published var focusLocked = false
+    var focusLocked = false
     /// True while exposure is locked at a fixed point (two-finger
     /// tap-and-hold on the preview) instead of continuously re-metering.
-    @Published var exposureLocked = false
-    @Published var audioLevel: Float = 0
-    @Published var lastClipThumbnail: UIImage?
-    @Published var lastClipURL: URL?
+    var exposureLocked = false
+    var audioLevel: Float = 0
+    var lastClipThumbnail: UIImage?
+    var lastClipURL: URL?
 
     // Photo mode
-    @Published var isCapturingPhoto = false
-    @Published var availablePhotoMegapixels: [PhotoMegapixels] = PhotoMegapixels.allCases
-    @Published var lastPhotoThumbnail: UIImage?
+    var isCapturingPhoto = false
+    var availablePhotoMegapixels: [PhotoMegapixels] = PhotoMegapixels.allCases
+    var lastPhotoThumbnail: UIImage?
     // MARK: Photo 2.0 — Burst mode
     /// True while a burst sequence is actively firing frames.
-    @Published var isBursting = false
+    var isBursting = false
     /// Frames captured so far in the current burst (for the on-screen counter).
-    @Published var burstShotsTaken = 0
+    var burstShotsTaken = 0
     /// Total frames requested for the current burst (settings.burstCount at
     /// the moment the burst started — snapshotted so a mid-burst settings
     /// change can't desync the counter).
-    @Published var burstShotsTotal = 0
+    var burstShotsTotal = 0
     /// URLs (Files) or nothing (Photos, which has no stable local URL) for
     /// the most recently completed burst, freshest first. Used to seed the
     /// post-capture review sheet with "swipe through this burst".
-    @Published var lastBurstReviewItems: [PhotoReviewItem] = []
+    var lastBurstReviewItems: [PhotoReviewItem] = []
     /// The single most recent capture (single shot or last burst frame),
     /// used to open the post-capture review sheet.
-    @Published var lastPhotoReviewItem: PhotoReviewItem?
+    var lastPhotoReviewItem: PhotoReviewItem?
     /// Bumped every time a fresh capture (single or burst) finishes, so the
     /// UI can open the review sheet exactly once per capture via onChange.
-    @Published var photoReviewToken: Int = 0
+    var photoReviewToken: Int = 0
     /// Full-resolution bursts are a sequence of still captures. Cancellation
     /// finishes the current still cleanly, then restores the preview format.
     var burstCancellationRequested = false
 
     // Thermal state
-    @Published var thermalState: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState
+    var thermalState: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState
 
     // Level Telemetry & Physical Orientation
-    @Published var physicalOrientation: PhysicalOrientation = .portrait
-    @Published var uiRotationAngle: Double = 0
-    @Published var isLevel: Bool = false
-    @Published var rollAngle: Double = 0
-    @Published var notice: String?
+    var physicalOrientation: PhysicalOrientation = .portrait
+    var uiRotationAngle: Double = 0
+    var isLevel: Bool = false
+    var rollAngle: Double = 0
+    var notice: String?
 
     /// Fired the instant the sensor actually captures the photo (from
     /// AVCapturePhotoOutput's willCapturePhotoFor delegate callback), so the
@@ -399,7 +408,7 @@ final class CameraRecorder: NSObject, ObservableObject {
 
     @objc private func handleThermalStateChanged() {
         let state = ProcessInfo.processInfo.thermalState
-        DispatchQueue.main.async { [weak self] in
+        Task { @MainActor [weak self] in
             self?.applyThermalState(state)
         }
     }
@@ -487,7 +496,7 @@ final class CameraRecorder: NSObject, ObservableObject {
     @objc private func refreshBattery() {
         let level = UIDevice.current.batteryLevel
         let state = UIDevice.current.batteryState
-        DispatchQueue.main.async {
+        Task { @MainActor in
             self.batteryPercent = level < 0 ? -1 : Int((level * 100).rounded())
             self.batteryCharging = (state == .charging || state == .full)
         }
@@ -503,7 +512,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         if type == .began {
             // Stop a clean segment rather than leaving a truncated/corrupt file
             // when a call, Siri, or another audio client interrupts.
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 self.audioLevel = 0
                 if self.isRecording {
                     self.stopRecording(notice: "Recording stopped (audio interrupted)")
@@ -578,7 +587,7 @@ final class CameraRecorder: NSObject, ObservableObject {
             }
             self.lastRawRollAngle = angle
 
-            // Throttle @Published rollAngle updates to avoid rebuilding the
+            // Throttle Observable rollAngle updates to avoid rebuilding the
             // entire camera UI at 6 Hz on A10. Publish when the gauge is on
             // and the angle moved enough to matter visually.
             let newUnwrapped = self.unwrappedRollAngle
@@ -612,23 +621,23 @@ final class CameraRecorder: NSObject, ObservableObject {
     // MARK: Volume Monitoring Control
 
     func pauseVolumeMonitoring() {
-        DispatchQueue.main.async {
+        Task { @MainActor in
             self.volumeObserver?.stop()
         }
     }
 
     func suppressVolumeTriggerBriefly(duration: TimeInterval = 1.0) {
-        DispatchQueue.main.async {
+        Task { @MainActor in
             self.volumeObserver?.ignoreTemporarily(duration: duration)
         }
     }
 
     func resumeVolumeMonitoring() {
-        DispatchQueue.main.async {
+        Task { @MainActor in
             if self.volumeObserver == nil {
                 let obs = VolumeButtonObserver()
                 obs.onVolumeTrigger = { [weak self] in
-                    DispatchQueue.main.async {
+                    Task { @MainActor in
                         guard let self = self else { return }
                         self.performVolumeButtonAction()
                     }
@@ -685,18 +694,16 @@ final class CameraRecorder: NSObject, ObservableObject {
             self?.refreshFreeSpace()
         }
 
-        requestAccess { [weak self] granted in
-            guard let self = self else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            let granted = await self.requestAccess()
             DebugLog.write("start() requestAccess granted=\(granted)")
             guard granted else {
-                DispatchQueue.main.async { self.permissionDenied = true }
+                await MainActor.run { self.permissionDenied = true }
                 return
             }
             self.sessionQueue.async {
                 if !self.isConfigured {
-                    // Reopen on whichever camera was last active instead of
-                    // always resetting to the rear camera, when opted in.
-                    // Must happen before configureSession() reads `position`.
                     if self.settings.keepLastCamera {
                         self.position = self.settings.lastCameraPosition.avPosition
                     }
@@ -725,14 +732,14 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
         let running = session.isRunning
         DebugLog.write("start() post-startRunning isRunning=\(running) attempt=\(attempt)")
-        DispatchQueue.main.async {
+        Task { @MainActor in
             self.isSessionRunning = running
             self.resumeVolumeMonitoring()
         }
         guard !running, attempt < maxAttempts else {
             if !running {
                 DebugLog.write("❌ start() gave up after \(attempt) attempts, session still not running")
-                DispatchQueue.main.async { self.notice = "Camera failed to start" }
+                Task { @MainActor in self.notice = "Camera failed to start" }
             }
             return
         }
@@ -754,7 +761,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         setTorch(on: false)
         sessionQueue.async {
             if self.session.isRunning { self.session.stopRunning() }
-            DispatchQueue.main.async { self.isSessionRunning = false }
+            Task { @MainActor in self.isSessionRunning = false }
         }
     }
 
@@ -765,7 +772,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         let code = (error?.code).map { AVError.Code(rawValue: $0) }
         DebugLog.write("❌ AVCaptureSessionRuntimeError: \(error?.localizedDescription ?? "unknown") code=\(String(describing: code))")
 
-        DispatchQueue.main.async { [weak self] in
+        Task { @MainActor [weak self] in
             guard let self = self else { return }
             if self.isRecording {
                 self.stopRecording(notice: "Recording stopped (camera error)")
@@ -811,7 +818,7 @@ final class CameraRecorder: NSObject, ObservableObject {
             }
         }
         DebugLog.write("⚠️ AVCaptureSessionWasInterrupted reason=\(reasonText) isRecording=\(isRecording)")
-        DispatchQueue.main.async { [weak self] in
+        Task { @MainActor [weak self] in
             guard let self = self else { return }
             self.isSessionRunning = false
             if self.isRecording {
@@ -848,7 +855,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         setTorch(on: false)
         sessionQueue.async {
             if self.session.isRunning { self.session.stopRunning() }
-            DispatchQueue.main.async { self.isSessionRunning = false }
+            Task { @MainActor in self.isSessionRunning = false }
         }
     }
 
@@ -859,7 +866,7 @@ final class CameraRecorder: NSObject, ObservableObject {
             if !self.session.isRunning { self.session.startRunning() }
             self.applyActiveFormat(forRecording: false)
             self.applyStabilization()
-            DispatchQueue.main.async { self.isSessionRunning = self.session.isRunning }
+            Task { @MainActor in self.isSessionRunning = self.session.isRunning }
         }
         startMotionUpdates()
         resumeVolumeMonitoring()
@@ -878,26 +885,18 @@ final class CameraRecorder: NSObject, ObservableObject {
         }
     }
 
-    func requestAccess(_ done: @escaping (Bool) -> Void) {
+    func requestAccess() async -> Bool {
         // Camera → Mic → Photos (add-only). Photos is requested up front so the
         // first Save-to-Photos recording never hits an unexpected auth path.
-        AVCaptureDevice.requestAccess(for: .video) { videoOK in
-            guard videoOK else { done(false); return }
-            let afterAudio = {
-                let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
-                if status == .notDetermined {
-                    PHPhotoLibrary.requestAuthorization(for: .addOnly) { _ in
-                        done(true)
-                    }
-                } else {
-                    done(true)
-                }
-            }
-            if self.settings.recordAudio {
-                AVCaptureDevice.requestAccess(for: .audio) { _ in afterAudio() }
-            } else {
-                afterAudio()
-            }
+        let videoOK = await AVCaptureDevice.requestAccess(for: .video)
+        guard videoOK else { return false }
+        if settings.recordAudio {
+            _ = await AVCaptureDevice.requestAccess(for: .audio)
         }
+        let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
+        if status == .notDetermined {
+            _ = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
+        }
+        return true
     }
 }
