@@ -7,7 +7,6 @@
 //
 
 import SwiftUI
-import Observation
 import UIKit
 
 // MARK: - Settings row kit
@@ -87,12 +86,6 @@ struct SettingsToggleRow: View {
         )) {
             Label(spec.title, systemImage: spec.icon)
                 .labelStyle(SettingsLabelStyle(color: accentColor))
-        }
-        .sensoryFeedback(
-            .impact(weight: settings.hapticIntensity.sensoryWeight, intensity: settings.hapticIntensity.sensoryIntensity),
-            trigger: spec.isOn.wrappedValue
-        ) { _, _ in
-            settings.hapticFeedbackEnabled
         }
     }
 }
