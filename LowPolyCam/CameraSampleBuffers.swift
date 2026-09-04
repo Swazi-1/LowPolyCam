@@ -1,9 +1,17 @@
+//
+//  CameraSampleBuffers.swift
+//  LowPolyCam
+//
+//  Updated for iOS 27 / Xcode 27 / Swift 6.4.
+//  Swift 6 complete concurrency · Observation · Liquid Glass · RotationCoordinator
+//
+
 import AVFoundation
 import UIKit
 import Photos
 import MediaPlayer
 import CoreMotion
-import Combine
+import Observation
 import AudioToolbox
 import ImageIO
 import CoreImage
@@ -298,7 +306,7 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
         lastElapsedPush = pts
 
         if freeBytesSnapshot <= Self.reserveBytes {
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 self.stopRecording(notice: "Storage full · Recording stopped")
             }
             return
@@ -322,14 +330,14 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
 
         // Auto-stop when max duration is reached
         if let limit = self.settings.maxDuration.seconds, seconds >= limit {
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 self.elapsed = seconds
                 self.stopRecording(notice: "Max duration reached · Recording stopped")
             }
             return
         }
 
-        DispatchQueue.main.async {
+        Task { @MainActor in
             self.elapsed = seconds
             if self.droppedFrames != drops { self.droppedFrames = drops }
             self.audioLevel = level
