@@ -11,7 +11,6 @@ import UIKit
 import Photos
 import MediaPlayer
 import CoreMotion
-import Observation
 import AudioToolbox
 import ImageIO
 
