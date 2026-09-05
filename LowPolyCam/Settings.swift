@@ -1093,10 +1093,13 @@ enum Encoder {
         .fps60: 1.30
     ]
 
-    static func plan(for settings: AppSettings) -> EncodePlan {
+    static func plan(for settings: AppSettings,
+                     fpsOverride: Int? = nil,
+                     resolutionOverride: Resolution? = nil,
+                     isFrontCamera: Bool = false) -> EncodePlan {
         let isSlow = settings.cameraMode == .slowMo
-        let res = isSlow ? settings.slowMoResolution : settings.resolution
-        let fps = isSlow ? settings.slowMoFrameRate.value : settings.frameRate.value
+        let res = resolutionOverride ?? (isSlow ? settings.slowMoResolution : settings.resolution)
+        let fps = fpsOverride ?? (isSlow ? settings.slowMoFrameRate.value : settings.frameRate.value)
         let px = res.pixels
 
         let baseKbps = videoKbps[res]?[settings.quality] ?? 600
@@ -1105,7 +1108,7 @@ enum Encoder {
         if isSlow {
             fpsFactor = fps >= 240 ? 4.2 : 2.5
         } else {
-            fpsFactor = fpsMultiplier[settings.frameRate] ?? 1.0
+            fpsFactor = max(0.5, Double(fps) / 30.0)
         }
 
         var kbps = Double(baseKbps) * codecMultiplier * fpsFactor
@@ -1145,6 +1148,10 @@ enum Encoder {
         if !isSlow {
             kbps *= profile.videoBitrateMultiplier
         }
+        // Front sensors generally have lower detail/noise bandwidth than the
+        // rear sensor. Keep a distinct, conservative-but-not-starved ladder
+        // so High remains strong while front 120/240 avoids encoder pressure.
+        kbps *= isFrontCamera ? (isSlow ? 0.90 : 0.85) : 1.0
 
         // GOP length. Slow-mo needs more frequent I-frames so motion stays
         // sharp when played back at 1/4–1/8 speed; a 4–6 s GOP at 240 fps
@@ -1183,9 +1190,14 @@ enum Encoder {
         )
     }
 
-    static func videoSettings(for plan: EncodePlan, writer: AVAssetWriter) -> [String: Any] {
+    struct ResolvedVideoSettings {
+        let settings: [String: Any]
+        let plan: EncodePlan
+    }
 
-        func build(_ codec: AVVideoCodecType) -> [String: Any] {
+    static func videoSettings(for plan: EncodePlan, writer: AVAssetWriter) -> ResolvedVideoSettings {
+
+        func build(_ codec: AVVideoCodecType, plan: EncodePlan) -> [String: Any] {
             // Real-time path: no B-frame reordering, which keeps latency and
             // encoder queue depth predictable at 120/240fps.
             var compression: [String: Any] = [
@@ -1211,9 +1223,17 @@ enum Encoder {
 
         // Try preferred codec, then H.264, then bare minimum.
         for codec in [plan.codec, AVVideoCodecType.h264] {
-            let settings = build(codec)
+            var resolvedPlan = plan
+            // H.264 needs materially more bits than HEVC for the same quality.
+            // Recalculate the effective plan rather than silently reusing an
+            // HEVC-sized bitrate after writer capability fallback.
+            if codec == .h264, plan.codec != .h264 {
+                resolvedPlan.codec = .h264
+                resolvedPlan.videoBitrate = Int((Double(plan.videoBitrate) * h264Multiplier).rounded())
+            }
+            let settings = build(codec, plan: resolvedPlan)
             if writer.canApply(outputSettings: settings, forMediaType: .video) {
-                return settings
+                return ResolvedVideoSettings(settings: settings, plan: resolvedPlan)
             }
         }
         // Last resort: no compression property dictionary.
@@ -1223,9 +1243,12 @@ enum Encoder {
             AVVideoHeightKey: plan.height
         ]
         if writer.canApply(outputSettings: bare, forMediaType: .video) {
-            return bare
+            var fallbackPlan = plan
+            fallbackPlan.codec = .h264
+            if plan.codec != .h264 { fallbackPlan.videoBitrate = Int((Double(plan.videoBitrate) * h264Multiplier).rounded()) }
+            return ResolvedVideoSettings(settings: bare, plan: fallbackPlan)
         }
-        return bare
+        return ResolvedVideoSettings(settings: bare, plan: plan)
     }
 }
 

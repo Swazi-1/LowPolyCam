@@ -372,7 +372,7 @@ struct CameraScreen: View {
                         recorder.toggleTorch()
                     }
                     .transition(settings.hudMotion.transition)
-                } else if settings.hudShowFlashButton, recorder.isFrontCamera {
+                } else if settings.hudShowFlashButton, recorder.isFrontCamera, settings.cameraMode == .photo {
                     // No physical torch on the front camera — this toggles the
                     // screen-illumination flash used at capture time instead
                     // (see performFrontFlashCapture), same idea as stock Camera.
@@ -1339,15 +1339,14 @@ struct CameraScreen: View {
             modeTransitionOpacity = 1
         }
 
-        // Let the cover reach opacity before the sensor starts negotiating its
-        // new format. This makes Video ⇄ Photo ⇄ Slow-Mo feel intentional on
-        // iPhone 7 rather than showing the preview's transient frozen frame.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+        // The cover is already opaque in this transaction. Start configuring
+        // next run-loop instead of paying a fixed delay on every mode tap.
+        DispatchQueue.main.async {
             recorder.activeSensorFPS = 0
             settings.cameraMode = mode
             recorder.updateCaptureFormat {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.10) {
-                    withAnimation(.easeIn(duration: 0.20)) {
+                DispatchQueue.main.async {
+                    withAnimation(.easeIn(duration: 0.14)) {
                         modeTransitionOpacity = 0
                     }
                     recorder.isSwitchingMode = false

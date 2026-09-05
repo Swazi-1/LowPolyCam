@@ -92,7 +92,7 @@ extension CameraRecorder {
         // extra photo/burst right after starting a recording.
         suppressVolumeTriggerBriefly(duration: 1.2)
 
-        var newPlan = Encoder.plan(for: settings)
+        var newPlan = Encoder.plan(for: settings, isFrontCamera: isFrontCamera)
         let captureAngle = physicalOrientation.captureVideoRotationAngle
 
         stopRequested = false
@@ -144,7 +144,27 @@ extension CameraRecorder {
                 Task { @MainActor in self.stopRecording(notice: "Camera frame rate unavailable") }
                 return
             }
-            newPlan.frameRate = max(1, Int((1 / duration).rounded()))
+            let actualFPS = max(1, Int((1 / duration).rounded()))
+            let sensorDimensions = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
+            var resolvedSlowResolution: Resolution?
+            if self.settings.cameraMode == .slowMo,
+               (Int(sensorDimensions.width) < newPlan.width || Int(sensorDimensions.height) < newPlan.height) {
+                resolvedSlowResolution = Resolution.allCases
+                    .filter { $0 != .p2160 && $0.captureDimensions.w <= Int(sensorDimensions.width)
+                        && $0.captureDimensions.h <= Int(sensorDimensions.height) }
+                    .max { $0.captureDimensions.w * $0.captureDimensions.h < $1.captureDimensions.w * $1.captureDimensions.h }
+                if let resolvedSlowResolution {
+                    Task { @MainActor in
+                        self.settings.slowMoResolution = resolvedSlowResolution
+                        self.notice = "Slow-Mo recording at \(resolvedSlowResolution.label)"
+                    }
+                }
+            }
+            // The negotiated FPS changes bitrate and GOP as well as the label.
+            newPlan = Encoder.plan(for: self.settings,
+                                   fpsOverride: actualFPS,
+                                   resolutionOverride: resolvedSlowResolution,
+                                   isFrontCamera: self.isFrontCamera)
             newPlan.hasAudio = newPlan.hasAudio && self.micInput != nil
             self.applyStabilization(forceRecording: true)
 
@@ -441,7 +461,9 @@ extension CameraRecorder {
             w.movieFragmentInterval = CMTime(seconds: Self.fragmentSeconds, preferredTimescale: 600)
             w.metadata = Self.captureMetadataItems()
 
-            let videoSettings = Encoder.videoSettings(for: plan, writer: w)
+            let resolvedVideo = Encoder.videoSettings(for: plan, writer: w)
+            let videoSettings = resolvedVideo.settings
+            self.plan = resolvedVideo.plan
             DebugLog.write("[3] video settings=\(videoSettings)")
             let sourceHint = firstSampleBuffer.flatMap { CMSampleBufferGetFormatDescription($0) }
             let v = AVAssetWriterInput(

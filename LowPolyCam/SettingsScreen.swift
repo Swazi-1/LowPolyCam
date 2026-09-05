@@ -43,7 +43,6 @@ struct SettingsScreen: View {
     @State private var showHUDSheet = false
     @State private var showAboutSheet = false
     @State private var showCustomColorSheet = false
-    @State private var hapticStrengthExpanded = false
     @State private var presetHaptic = UISelectionFeedbackGenerator()
     @State private var freeBytesSnapshot: Int64 = 0
     @State private var isFrontSnapshot = false
@@ -973,72 +972,11 @@ struct SettingsScreen: View {
         }
     }
 
-    /// Custom "Haptic strength" row. This intentionally does NOT use
-    /// `SettingsPickerRow` (a plain SwiftUI `Picker`) — inside a List that
-    /// pushes to a separate selection screen and pops back the instant you
-    /// tap an option, so you'd have to reopen it to compare strengths.
-    /// Here it expands in place, fires a real haptic of that strength the
-    /// moment you tap it (so you can *feel* the difference), and stays open
-    /// so you can try Light / Standard / Strong back to back — it only
-    /// collapses when you tap the row again.
     private var hapticStrengthRow: some View {
-        VStack(spacing: 0) {
-            Button(action: {
-                withAnimation(.easeInOut(duration: 0.18)) {
-                    hapticStrengthExpanded.toggle()
-                }
-            }) {
-                HStack {
-                    Label("Haptic strength", systemImage: "waveform.path")
-                        .labelStyle(SettingsLabelStyle(color: settings.accentColor.color))
-                    Spacer()
-                    Text(settings.hapticIntensity.label)
-                        .font(.system(size: 15, design: .rounded))
-                        .foregroundColor(.secondary)
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(.secondary.opacity(0.5))
-                        .rotationEffect(.degrees(hapticStrengthExpanded ? 90 : 0))
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            if hapticStrengthExpanded {
-                VStack(spacing: 6) {
-                    ForEach(HapticIntensity.allCases) { intensity in
-                        Button(action: {
-                            settings.hapticIntensity = intensity
-                            // Preview this exact strength right away — this is
-                            // the whole point of the row, so it needs its own
-                            // generator (not the shared selection one) and it
-                            // does NOT close the row afterward.
-                            UIImpactFeedbackGenerator(style: intensity.scaled(.medium)).impactOccurred()
-                        }) {
-                            HStack {
-                                Text(intensity.label)
-                                    .font(.system(size: 15, design: .rounded))
-                                Text(intensity.detail)
-                                    .font(.system(size: 12, design: .rounded))
-                                    .foregroundColor(.secondary)
-                                Spacer()
-                                if settings.hapticIntensity == intensity {
-                                    Image(systemName: "checkmark")
-                                        .font(.system(size: 13, weight: .semibold))
-                                        .foregroundColor(settings.accentColor.color)
-                                }
-                            }
-                            .padding(.leading, 40)
-                            .padding(.vertical, 10)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.top, 4)
-                .transition(.opacity.combined(with: .move(edge: .top)))
-            }
-        }
+        SettingsPickerRow(title: "Haptic Strength", icon: "waveform.path",
+                          accentColor: settings.accentColor.color,
+                          selection: $settings.hapticIntensity,
+                          label: { Text($0.label) })
     }
 
     // MARK: - Good to Know entry + sheet

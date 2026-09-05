@@ -117,7 +117,10 @@ extension CameraRecorder {
         let targetDevice: AVCaptureDevice?
         if mode == .slowMo, position == .back {
             let requestedZoom = zoomFactor > 0 ? zoomFactor : 1
-            targetDevice = slowMoPhysicalDevice(for: requestedZoom)
+            targetDevice = physicalDevice(for: requestedZoom)
+                ?? Self.camera(at: position, mode: mode, preferPhysical: true)
+        } else if mode == .video, position == .back, normalVideoNeedsPhysicalRoute(), !isRecording {
+            targetDevice = physicalDevice(for: zoomFactor > 0 ? zoomFactor : 1)
                 ?? Self.camera(at: position, mode: mode, preferPhysical: true)
         } else {
             targetDevice = Self.camera(at: position, mode: mode, preferPhysical: wantsPhysicalWideLens)
@@ -130,6 +133,13 @@ extension CameraRecorder {
     /// dual-wide device does not expose the high-frame-rate formats, so 0.5x
     /// cannot be reached by changing `videoZoomFactor` alone.
     func slowMoPhysicalDevice(for displayedZoom: CGFloat, resetToWide: Bool = false) -> AVCaptureDevice? {
+        physicalDevice(for: displayedZoom, resetToWide: resetToWide)
+    }
+
+    /// Physical routing is required only when a rear virtual device cannot
+    /// expose the selected high-FPS format. Route both 0.5x and 1x, instead of
+    /// always falling back to physical wide and silently deleting 0.5x.
+    func physicalDevice(for displayedZoom: CGFloat, resetToWide: Bool = false) -> AVCaptureDevice? {
         guard position == .back else {
             return AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position)
         }
@@ -139,11 +149,26 @@ extension CameraRecorder {
             reset: resetToWide)
             ? .builtInUltraWideCamera : .builtInWideAngleCamera
         guard let device = AVCaptureDevice.default(type, for: .video, position: .back) else { return nil }
-        let dims = settings.slowMoResolution.captureDimensions
-        let fps = Double(settings.slowMoFrameRate.value)
-        return CameraFormatSelector.bestSlowMoAwareFormat(
+        let dims = settings.cameraMode == .slowMo
+            ? settings.slowMoResolution.captureDimensions : settings.resolution.captureDimensions
+        let fps = settings.cameraMode == .slowMo
+            ? Double(settings.slowMoFrameRate.value) : Double(settings.frameRate.value)
+        return CameraFormatSelector.bestVideoFormat(
             for: device, width: dims.w, height: dims.h, fps: fps
         ) == nil ? nil : device
+    }
+
+    func normalVideoNeedsPhysicalRoute() -> Bool {
+        guard settings.cameraMode == .video, position == .back,
+              let virtual = Self.virtualBackCamera() else { return false }
+        let dims = settings.resolution.captureDimensions
+        let fps = Double(settings.frameRate.value)
+        guard CameraFormatSelector.bestVideoFormat(for: virtual, width: dims.w, height: dims.h, fps: fps) == nil else {
+            return false
+        }
+        return AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back).map {
+            CameraFormatSelector.bestVideoFormat(for: $0, width: dims.w, height: dims.h, fps: fps) != nil
+        } ?? false
     }
 
     func switchCameraInput(to targetDevice: AVCaptureDevice) {
@@ -267,11 +292,11 @@ extension CameraRecorder {
            position == .back,
            settings.cameraMode == .video,
            targetFPS >= 59,
-           let physicalWide = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
-           let physicalFormat = CaptureModeFormatRouter.selectFormat(device: physicalWide, request: request) {
-            switchCameraInput(to: physicalWide)
-            guard cameraInput?.device.uniqueID == physicalWide.uniqueID else { return false }
-            device = physicalWide
+           let routedDevice = physicalDevice(for: zoomFactor > 0 ? zoomFactor : 1),
+           let physicalFormat = CaptureModeFormatRouter.selectFormat(device: routedDevice, request: request) {
+            switchCameraInput(to: routedDevice)
+            guard cameraInput?.device.uniqueID == routedDevice.uniqueID else { return false }
+            device = routedDevice
             format = physicalFormat
         }
 
@@ -761,10 +786,32 @@ extension CameraRecorder {
             self.volumeObserver?.stop()
             self.isSwitchingCamera = true
             self.setTorch(on: false)
-            self.sessionQueue.async {
+            // The UI sets the cover before calling into this method. Give it a
+            // single short frame to become opaque before changing the graph.
+            self.sessionQueue.asyncAfter(deadline: .now() + 0.10) {
                 let next: AVCaptureDevice.Position = (self.position == .back) ? .front : .back
                 DebugLog.write("flipCamera() \(self.position) -> \(next) mode=\(self.settings.cameraMode)")
-                guard let device = Self.camera(at: next, mode: self.settings.cameraMode, preferPhysical: self.wantsPhysicalWideLens),
+                let requestedZoom = self.zoomFactor > 0 ? self.zoomFactor : 1
+                let routePhysicalVideo = next == .back && self.settings.cameraMode == .video
+                    && Self.virtualBackCamera().map {
+                        CameraFormatSelector.bestVideoFormat(for: $0,
+                            width: self.settings.resolution.captureDimensions.w,
+                            height: self.settings.resolution.captureDimensions.h,
+                            fps: Double(self.settings.frameRate.value)) == nil
+                    } == true
+                let routedType: AVCaptureDevice.DeviceType = requestedZoom < 1
+                    ? .builtInUltraWideCamera : .builtInWideAngleCamera
+                let routedCandidate = routePhysicalVideo
+                    ? AVCaptureDevice.default(routedType, for: .video, position: .back) : nil
+                let routedDevice = routedCandidate.flatMap { candidate in
+                    CameraFormatSelector.bestVideoFormat(for: candidate,
+                        width: self.settings.resolution.captureDimensions.w,
+                        height: self.settings.resolution.captureDimensions.h,
+                        fps: Double(self.settings.frameRate.value)) == nil ? nil : candidate
+                } ?? (routePhysicalVideo
+                    ? AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back)
+                    : nil)
+                guard let device = routedDevice ?? Self.camera(at: next, mode: self.settings.cameraMode, preferPhysical: self.wantsPhysicalWideLens),
                       let input = try? AVCaptureDeviceInput(device: device) else {
                     DebugLog.write("❌ flipCamera() could not resolve/create input for \(next)")
                     finishFlipUI()
@@ -832,6 +879,13 @@ extension CameraRecorder {
 
     var wantsPhysicalWideForFrameRate: Bool {
         false
+    }
+
+    static func virtualBackCamera() -> AVCaptureDevice? {
+        for type: AVCaptureDevice.DeviceType in [.builtInTripleCamera, .builtInDualWideCamera, .builtInDualCamera] {
+            if let device = AVCaptureDevice.default(type, for: .video, position: .back) { return device }
+        }
+        return nil
     }
 
     var wantsPhysicalWideLens: Bool {

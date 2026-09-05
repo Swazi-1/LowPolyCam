@@ -37,7 +37,15 @@ extension CameraRecorder {
         guard !isSwitchingMode, !isSwitchingCamera, !isCapturingPhoto, !isSaving, !isStartingRecording else { return }
         sessionQueue.async {
             if preset.kelvin == nil {
-                // Auto WB is a control change, not an implicit lens change.
+                // Auto must restore the normal virtual rear camera whenever
+                // the selected format supports it; otherwise 0.5x stays lost
+                // after a temporary physical-wide custom-WB fallback.
+                self.settings.whiteBalance = preset
+                if self.position == .back, self.settings.cameraMode != .slowMo,
+                   !self.normalVideoNeedsPhysicalRoute() {
+                    self.ensureCorrectCameraDevice(for: self.settings.cameraMode)
+                    _ = self.applyActiveFormat(forRecording: false)
+                }
                 guard let device = self.cameraInput?.device else { return }
                 do {
                     try device.lockForConfiguration()
@@ -98,9 +106,7 @@ extension CameraRecorder {
                 self.refreshZoomLimits()
                 Task { @MainActor in
                     self.settings.whiteBalance = preset
-                    if lostUltraWide {
-                        self.notice = "0.5x unavailable with custom WB"
-                    }
+                    if lostUltraWide { self.notice = "Custom white balance uses this lens" }
                 }
             } catch { }
         }
@@ -268,46 +274,85 @@ extension CameraRecorder {
     func setZoom(factor: CGFloat, resetToWide: Bool = false) {
         guard factor.isFinite, !isSwitchingMode, !isSwitchingCamera,
               !isCapturingPhoto, !isStartingRecording, !isSaving else { return }
-        sessionQueue.async {
-            guard var device = self.cameraInput?.device else { return }
 
-            // Cross the 0.5x/1x boundary by changing physical lenses in
-            // Slow-Mo. High-FPS formats are not available through the virtual
-            // dual-wide input on this hardware.
-            if self.settings.cameraMode == .slowMo,
-               self.position == .back,
-               let target = self.slowMoPhysicalDevice(for: factor, resetToWide: resetToWide),
-               target.uniqueID != device.uniqueID {
-                self.switchCameraInput(to: target)
-                guard self.cameraInput?.device.uniqueID == target.uniqueID else { return }
-                device = target
-                let dims = self.settings.slowMoResolution.captureDimensions
-                let fps = Double(self.settings.slowMoFrameRate.value)
-                if let format = CameraFormatSelector.bestSlowMoAwareFormat(
-                    for: target, width: dims.w, height: dims.h, fps: fps
-                ) {
-                    guard self.applyUnifiedHardwareConfiguration(to: target, format: format, targetFPS: fps) else { return }
-                    self.lastAppliedFormatKey = Self.formatKey(device: target, format: format, fps: fps)
-                    self.refreshZoomLimits()
-                }
+        // Gesture updates can arrive every display frame. Keep only the newest
+        // intent; stale values must never sit in front of a flip/mode request.
+        zoomRequestLock.lock()
+        pendingZoomRequest = (factor, resetToWide)
+        let shouldSchedule = !zoomWorkScheduled
+        zoomWorkScheduled = true
+        zoomRequestLock.unlock()
+        guard shouldSchedule else { return }
+        sessionQueue.async { [weak self] in self?.applyLatestZoomRequest() }
+    }
+
+    private func applyLatestZoomRequest() {
+        zoomRequestLock.lock()
+        guard let request = pendingZoomRequest else {
+            zoomWorkScheduled = false
+            zoomRequestLock.unlock()
+            return
+        }
+        pendingZoomRequest = nil
+        zoomRequestLock.unlock()
+
+        guard var device = cameraInput?.device else {
+            finishZoomRequest()
+            return
+        }
+
+        let isPhysicalVideoRoute = settings.cameraMode == .video
+            && position == .back
+            && normalVideoNeedsPhysicalRoute()
+        let needsPhysicalLens = settings.cameraMode == .slowMo || isPhysicalVideoRoute
+        if needsPhysicalLens, position == .back, !isRecording,
+           let target = physicalDevice(for: request.factor, resetToWide: request.resetToWide),
+           target.uniqueID != device.uniqueID {
+            switchCameraInput(to: target)
+            guard cameraInput?.device.uniqueID == target.uniqueID else {
+                finishZoomRequest()
+                return
             }
+            device = target
+            let dims = settings.cameraMode == .slowMo
+                ? settings.slowMoResolution.captureDimensions : settings.resolution.captureDimensions
+            let fps = settings.cameraMode == .slowMo
+                ? Double(settings.slowMoFrameRate.value) : Double(settings.frameRate.value)
+            if let format = CameraFormatSelector.bestVideoFormat(
+                for: target, width: dims.w, height: dims.h, fps: fps
+            ), applyUnifiedHardwareConfiguration(to: target, format: format, targetFPS: fps) {
+                lastAppliedFormatKey = Self.formatKey(device: target, format: format, fps: fps)
+                refreshZoomLimits()
+            }
+        }
 
-            let baseline = CameraFormatSelector.wideAngleBaseline(for: device)
-            let rawFloor = device.minAvailableVideoZoomFactor
-            let rawCeiling = min(device.activeFormat.videoMaxZoomFactor, baseline * 8)
-            let raw = factor * baseline
-            let clamped = max(rawFloor, min(raw, rawCeiling))
-            do {
-                try device.lockForConfiguration()
-                device.videoZoomFactor = clamped
-                device.unlockForConfiguration()
-                self.zoomBaselineSnapshot = baseline
-                self.rawMinZoomSnapshot = rawFloor
-                self.rawMaxZoomSnapshot = rawCeiling
-                Task { @MainActor in
-                    self.zoomFactor = clamped / baseline
-                }
-            } catch { }
+        let baseline = CameraFormatSelector.wideAngleBaseline(for: device)
+        let rawFloor = device.minAvailableVideoZoomFactor
+        let rawCeiling = min(device.activeFormat.videoMaxZoomFactor, baseline * 8)
+        let desired = ZoomPolicy.clamp(Double(request.factor),
+                                       minimum: Double(rawFloor / baseline),
+                                       maximum: Double(rawCeiling / baseline))
+        do {
+            try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
+            device.videoZoomFactor = CGFloat(desired) * baseline
+            zoomBaselineSnapshot = baseline
+            rawMinZoomSnapshot = rawFloor
+            rawMaxZoomSnapshot = rawCeiling
+            Task { @MainActor in self.zoomFactor = CGFloat(desired) }
+        } catch {
+            Task { @MainActor in self.notice = "Zoom unavailable" }
+        }
+        finishZoomRequest()
+    }
+
+    private func finishZoomRequest() {
+        zoomRequestLock.lock()
+        let hasNewerRequest = pendingZoomRequest != nil
+        if !hasNewerRequest { zoomWorkScheduled = false }
+        zoomRequestLock.unlock()
+        if hasNewerRequest {
+            sessionQueue.async { [weak self] in self?.applyLatestZoomRequest() }
         }
     }
 

@@ -41,19 +41,22 @@ enum CaptureModeFormatRouter {
     static func selectFormat(device: AVCaptureDevice, request: CaptureFormatRequest) -> AVCaptureDevice.Format? {
         switch request.policy {
         case .photo:
-            // Live preview stays on a smooth video-sized format; full 12MP
-            // stills are obtained by a brief swap inside photo capture.
-            return CameraFormatSelector.bestPhotoStillFormat(
-                for: device, maxPreviewHeight: 1080, fps: request.fps
+            // Full-resolution still format is selected only at shutter time.
+            // The viewfinder must use a sharp video-sized format.
+            return CameraFormatSelector.bestVideoFormat(
+                for: device, width: request.width, height: request.height, fps: request.fps
             )
         case .video:
             return CameraFormatSelector.bestVideoFormat(
                 for: device, width: request.width, height: request.height, fps: request.fps
             )
         case .slowMo:
+            // Do not silently choose any high-FPS format here. The caller can
+            // then resolve/publish the actual lower resolution instead of
+            // upscaling a smaller sensor stream into the requested output.
             return CameraFormatSelector.bestSlowMoAwareFormat(
                 for: device, width: request.width, height: request.height, fps: request.fps
-            ) ?? CameraFormatSelector.bestSlowMoFormat(for: device, fps: request.fps)
+            )
         }
     }
 

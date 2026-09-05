@@ -90,11 +90,11 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
         if isVideo {
             if needsNewSegment {
                 DebugLog.write("first video frame arrived, dispatching startSegment to ioQueue")
-                startSegment(at: pts, firstSampleBuffer: sampleBuffer)
+                ioQueue.async { [weak self] in self?.startSegment(at: pts, firstSampleBuffer: sampleBuffer) }
                 return
             }
             if needsRotate {
-                rotateSegment(at: pts, firstSampleBuffer: sampleBuffer)
+                ioQueue.async { [weak self] in self?.rotateSegment(at: pts, firstSampleBuffer: sampleBuffer) }
                 return
             }
             // Writer still spinning up — buffer this frame instead of

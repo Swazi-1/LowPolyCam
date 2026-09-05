@@ -49,6 +49,9 @@ final class CameraRecorder: NSObject, ObservableObject {
     var previewReadyCompletion: (() -> Void)? // ioQueue owned
     var previewExpectedDimensions: CMVideoDimensions? // ioQueue owned
     var zoomObservation: NSKeyValueObservation?
+    private let zoomRequestLock = NSLock()
+    private var pendingZoomRequest: (factor: CGFloat, resetToWide: Bool)?
+    private var zoomWorkScheduled = false
     @Published var isSaving = false
     @Published var isSessionRunning = false
     @Published var permissionDenied = false
@@ -172,11 +175,10 @@ final class CameraRecorder: NSObject, ObservableObject {
     // rotation), which is what made Photos report a non-30 average fps
     // (24.64, 26.51, etc.) even though the file's wall-clock duration was
     // correct — the frame *count* was just short.
-    // All writer appends, segment changes and terminal operations share one
-    // executor. A lock around references alone cannot protect append from
-    // racing markAsFinished after that lock has been released.
-    var videoQueue: DispatchQueue { ioQueue }
-    var audioQueue: DispatchQueue { ioQueue }
+    // Never run writer setup/finalization on the callback queues. At 240 fps
+    // that makes the next source frame wait behind AVAssetWriter creation.
+    let videoQueue = DispatchQueue(label: "lowpolycam.video", qos: .userInteractive)
+    let audioQueue = DispatchQueue(label: "lowpolycam.audio", qos: .userInitiated)
     let ioQueue = DispatchQueue(label: "lowpolycam.io", qos: .userInitiated)
     /// Dedicated stop/finalize lane. Stop completion must not wait behind
     /// camera/storage work queued on ioQueue, especially at 120/240fps.
