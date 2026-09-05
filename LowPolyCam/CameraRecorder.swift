@@ -50,9 +50,9 @@ final class CameraRecorder: NSObject, ObservableObject {
     var previewExpectedDimensions: CMVideoDimensions? // ioQueue owned
     var zoomObservation: NSKeyValueObservation?
     // Shared with the camera-hardware extension in CameraHardware.swift.
-    fileprivate let zoomRequestLock = NSLock()
-    fileprivate var pendingZoomRequest: (factor: CGFloat, resetToWide: Bool)?
-    fileprivate var zoomWorkScheduled = false
+    let zoomRequestLock = NSLock()
+    var pendingZoomRequest: (factor: CGFloat, resetToWide: Bool)?
+    var zoomWorkScheduled = false
     @Published var isSaving = false
     @Published var isSessionRunning = false
     @Published var permissionDenied = false
