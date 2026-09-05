@@ -22,6 +22,16 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
                        didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
 
+        if output === videoOutput, previewReadyCompletion != nil,
+           let expected = previewExpectedDimensions,
+           let description = CMSampleBufferGetFormatDescription(sampleBuffer) {
+            let received = CMVideoFormatDescriptionGetDimensions(description)
+            if received.width == expected.width && received.height == expected.height {
+                finishPreviewReadiness(success: true)
+            }
+            return
+        }
+
         // Hard stop only after drain finished.
         if stopRequested {
             return
@@ -80,11 +90,11 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
         if isVideo {
             if needsNewSegment {
                 DebugLog.write("first video frame arrived, dispatching startSegment to ioQueue")
-                ioQueue.async { [weak self] in self?.startSegment(at: pts, firstSampleBuffer: sampleBuffer) }
+                startSegment(at: pts, firstSampleBuffer: sampleBuffer)
                 return
             }
             if needsRotate {
-                ioQueue.async { [weak self] in self?.rotateSegment(at: pts, firstSampleBuffer: sampleBuffer) }
+                rotateSegment(at: pts, firstSampleBuffer: sampleBuffer)
                 return
             }
             // Writer still spinning up — buffer this frame instead of
@@ -283,7 +293,12 @@ extension CameraRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
         let sourceImage = CIImage(cvPixelBuffer: sourceBuffer)
         let scaleX = CGFloat(plan.width) / CGFloat(sourceWidth)
         let scaleY = CGFloat(plan.height) / CGFloat(sourceHeight)
-        let scaledImage = sourceImage.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
+        let scale = max(scaleX, scaleY)
+        let scaledImage = sourceImage
+            .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+            .transformed(by: CGAffineTransform(
+                translationX: (CGFloat(plan.width) - CGFloat(sourceWidth) * scale) / 2,
+                y: (CGFloat(plan.height) - CGFloat(sourceHeight) * scale) / 2))
         scaleContext.render(scaledImage, to: destinationBuffer)
 
         return adaptor.append(destinationBuffer, withPresentationTime: CMSampleBufferGetPresentationTimeStamp(sampleBuffer))

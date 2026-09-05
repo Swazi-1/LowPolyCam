@@ -16,7 +16,8 @@ extension CameraRecorder {
     /// stream. This preserves the selected megapixel limit, correct 4:3 photo
     /// aspect, mirroring, and orientation on both iPhone 7 cameras.
     func startBurstCapture() {
-        guard !isBursting, !isCapturingPhoto, !isRecording, !isSwitchingCamera else { return }
+        guard isSessionRunning, !isBursting, !isCapturingPhoto, !isRecording,
+              !isStartingRecording, !isSaving, !isSwitchingMode, !isSwitchingCamera else { return }
         guard freeBytes > Self.reserveBytes else {
             notice = "Low storage · Free space needed"
             return
@@ -114,7 +115,12 @@ extension CameraRecorder {
         capturePhotoInternal(isBurstFrame: true) { [weak self] in
             Task { @MainActor in
                 guard let self = self else { return }
-                self.burstShotsTaken += 1
+                let savedCount = self.lastBurstReviewItems.count
+                guard savedCount > self.burstShotsTaken else {
+                    self.finishHighResolutionBurst()
+                    return
+                }
+                self.burstShotsTaken = savedCount
 
                 if self.burstCancellationRequested || self.burstShotsTaken >= self.burstShotsTotal {
                     self.finishHighResolutionBurst()

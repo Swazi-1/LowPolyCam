@@ -39,6 +39,16 @@ final class CameraRecorder: NSObject, ObservableObject {
     // MARK: Published state
 
     @Published var isRecording = false
+    @Published var isStartingRecording = false
+    var didRecoverAtLaunch = false
+    var previewPaused = false // sessionQueue owned
+    var applicationActive = true // sessionQueue owned
+    var focusGeneration = 0 // sessionQueue owned
+    var exposureGeneration = 0 // sessionQueue owned
+    var previewReadyToken = UUID() // ioQueue owned
+    var previewReadyCompletion: (() -> Void)? // ioQueue owned
+    var previewExpectedDimensions: CMVideoDimensions? // ioQueue owned
+    var zoomObservation: NSKeyValueObservation?
     @Published var isSaving = false
     @Published var isSessionRunning = false
     @Published var permissionDenied = false
@@ -162,8 +172,11 @@ final class CameraRecorder: NSObject, ObservableObject {
     // rotation), which is what made Photos report a non-30 average fps
     // (24.64, 26.51, etc.) even though the file's wall-clock duration was
     // correct — the frame *count* was just short.
-    let videoQueue = DispatchQueue(label: "lowpolycam.video", qos: .userInteractive)
-    let audioQueue = DispatchQueue(label: "lowpolycam.audio", qos: .userInitiated)
+    // All writer appends, segment changes and terminal operations share one
+    // executor. A lock around references alone cannot protect append from
+    // racing markAsFinished after that lock has been released.
+    var videoQueue: DispatchQueue { ioQueue }
+    var audioQueue: DispatchQueue { ioQueue }
     let ioQueue = DispatchQueue(label: "lowpolycam.io", qos: .userInitiated)
     /// Dedicated stop/finalize lane. Stop completion must not wait behind
     /// camera/storage work queued on ioQueue, especially at 120/240fps.
@@ -369,7 +382,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         refreshBattery()
 
         NotificationCenter.default.addObserver(
-            self, selector: #selector(subjectAreaDidChange),
+            self, selector: #selector(subjectAreaDidChange(_:)),
             name: .AVCaptureDeviceSubjectAreaDidChange, object: nil)
 
         NotificationCenter.default.addObserver(
@@ -634,21 +647,10 @@ final class CameraRecorder: NSObject, ObservableObject {
     }
 
     func resumeVolumeMonitoring() {
-        Task { @MainActor in
-            if self.volumeObserver == nil {
-                let obs = VolumeButtonObserver()
-                obs.onVolumeTrigger = { [weak self] in
-                    Task { @MainActor in
-                        guard let self = self else { return }
-                        self.performVolumeButtonAction()
-                    }
-                }
-                obs.start()
-                self.volumeObserver = obs
-            } else {
-                self.volumeObserver?.start()
-            }
-        }
+        // Native AVCaptureEventInteraction is installed by CameraScreen.
+        // Output-volume KVO cannot distinguish hardware presses from route,
+        // Control Center, or shutter-sound volume changes.
+        volumeObserver?.stop()
     }
 
     /// Dispatches a volume-button press per the user's chosen behavior.
@@ -679,7 +681,10 @@ final class CameraRecorder: NSObject, ObservableObject {
     func start() {
         DebugLog.write("===== CameraRecorder.start() called (isConfigured=\(isConfigured)) =====")
         refreshFreeSpace()
-        recoverInterruptedRecording()
+        if !didRecoverAtLaunch {
+            didRecoverAtLaunch = true
+            recoverInterruptedRecording()
+        }
         loadLastSavedClip()
         // Motion updates always run (regardless of the level-gauge UI toggle):
         // they're also what drives physicalOrientation, which photo capture
@@ -713,6 +718,10 @@ final class CameraRecorder: NSObject, ObservableObject {
                     self.isConfigured = true
                     DebugLog.write("start() configureSession() done, inputs=\(self.session.inputs.count) outputs=\(self.session.outputs.count)")
                 }
+                Task { @MainActor in
+                    self.permissionDenied = false
+                    self.isFrontCamera = self.cameraInput?.device.position == .front
+                }
                 self.startRunningWithRetry(attempt: 1)
             }
         }
@@ -727,6 +736,7 @@ final class CameraRecorder: NSObject, ObservableObject {
     /// Retrying a couple of times with a short backoff clears that without
     /// needing the user to do anything.
     private func startRunningWithRetry(attempt: Int, maxAttempts: Int = 3) {
+        guard !previewPaused, applicationActive, isConfigured else { return }
         if !session.isRunning {
             DebugLog.write("start() calling session.startRunning() attempt=\(attempt)")
             session.startRunning()
@@ -855,6 +865,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         stopMotionUpdates()
         setTorch(on: false)
         sessionQueue.async {
+            self.previewPaused = true
             if self.session.isRunning { self.session.stopRunning() }
             Task { @MainActor in self.isSessionRunning = false }
         }
@@ -864,6 +875,8 @@ final class CameraRecorder: NSObject, ObservableObject {
     func resumePreviewSession() {
         volumeObserver?.ignoreTemporarily(duration: 1.5)
         sessionQueue.async {
+            self.previewPaused = false
+            guard self.applicationActive, self.isConfigured else { return }
             if !self.session.isRunning { self.session.startRunning() }
             self.applyActiveFormat(forRecording: false)
             self.applyStabilization()

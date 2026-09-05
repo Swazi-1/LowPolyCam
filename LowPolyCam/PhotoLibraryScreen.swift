@@ -20,6 +20,7 @@ import UniformTypeIdentifiers
 /// of the original file(s), and a swipeable full-screen viewer instead of a
 /// single locked preview.
 struct PhotoLibraryScreen: View {
+    @StateObject private var libraryChanges = PhotoLibraryChanges()
     @Environment(\.dismiss) private var dismiss
 
     @State private var assets: [PHAsset] = []
@@ -70,6 +71,8 @@ struct PhotoLibraryScreen: View {
         }
         .tint(Palette.violet)
         .onAppear(perform: requestAccessAndLoad)
+        .onReceive(libraryChanges.$revision.dropFirst()) { _ in requestAccessAndLoad() }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in requestAccessAndLoad() }
         .fullScreenCover(item: $previewSelection) { selection in
             PhotoLibraryPreview(
                 assets: assets,
@@ -306,6 +309,7 @@ struct PhotoLibraryScreen: View {
     private func exportForSharing(_ assets: [PHAsset], completion: @escaping ([URL]) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async {
             let group = DispatchGroup()
+            let slots = DispatchSemaphore(value: 2)
             var results: [Int: URL] = [:]
             let lock = NSLock()
 
@@ -317,6 +321,7 @@ struct PhotoLibraryScreen: View {
                     .appendingPathExtension(ext)
 
                 group.enter()
+                slots.wait()
                 let options = PHAssetResourceRequestOptions()
                 options.isNetworkAccessAllowed = true
                 PHAssetResourceManager.default().writeData(for: resource, toFile: tmpURL, options: options) { error in
@@ -326,6 +331,7 @@ struct PhotoLibraryScreen: View {
                         lock.unlock()
                     }
                     group.leave()
+                    slots.signal()
                 }
             }
 
@@ -467,7 +473,7 @@ private struct PhotoLibraryPreview: View {
 
             TabView(selection: $index) {
                 ForEach(Array(assets.enumerated()), id: \.element.localIdentifier) { i, asset in
-                    PhotoLibraryPreviewPage(asset: asset)
+                    PhotoLibraryPreviewPage(asset: asset, isCurrent: i == index)
                         .tag(i)
                 }
             }
@@ -535,9 +541,6 @@ private struct PhotoLibraryPreview: View {
         // The parent view removes the asset from its own array; here we
         // just make sure paging past the deleted item doesn't run off the
         // end of the (now stale, one item too long) local `assets` array.
-        if assets.count <= 1 {
-            dismiss()
-        }
     }
 
     private func shareCurrent() {
@@ -577,6 +580,7 @@ private struct PreviewShareRequest: Identifiable {
 /// instead of leaving audio running behind the next page.
 private struct PhotoLibraryPreviewPage: View {
     let asset: PHAsset
+    let isCurrent: Bool
     @State private var image: UIImage?
     @State private var player: AVPlayer?
 
@@ -584,7 +588,8 @@ private struct PhotoLibraryPreviewPage: View {
         ZStack {
             if asset.mediaType == .video, let player = player {
                 VideoPlayer(player: player)
-                    .onAppear { player.play() }
+                    .onAppear { if isCurrent { player.play() } }
+                    .onChange(of: isCurrent) { _, active in active ? player.play() : player.pause() }
                     .onDisappear { player.pause() }
             } else if let image = image {
                 Image(uiImage: image)
@@ -638,7 +643,13 @@ private struct ShareSheet: UIViewControllerRepresentable {
     let items: [URL]
 
     func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: items, applicationActivities: nil)
+        let controller = UIActivityViewController(activityItems: items, applicationActivities: nil)
+        controller.completionWithItemsHandler = { _, _, _, _ in
+            for url in items where url.deletingLastPathComponent() == FileManager.default.temporaryDirectory {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+        return controller
     }
 
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}

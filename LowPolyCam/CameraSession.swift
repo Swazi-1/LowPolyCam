@@ -102,7 +102,6 @@ extension CameraRecorder {
             _ = forceRecording // retained for call-site compatibility
             // Stab at 120/240fps is not viable on A10 and can break the writer.
             let wantStab = settings.stabilization
-                && settings.resolution != .p2160
                 && settings.cameraMode != .photo
                 && settings.cameraMode != .slowMo
             c.preferredVideoStabilizationMode = wantStab ? .auto : .off
@@ -130,11 +129,14 @@ extension CameraRecorder {
     /// Slow-Mo needs explicit physical-lens routing on iPhone 11. Its virtual
     /// dual-wide device does not expose the high-frame-rate formats, so 0.5x
     /// cannot be reached by changing `videoZoomFactor` alone.
-    func slowMoPhysicalDevice(for displayedZoom: CGFloat) -> AVCaptureDevice? {
+    func slowMoPhysicalDevice(for displayedZoom: CGFloat, resetToWide: Bool = false) -> AVCaptureDevice? {
         guard position == .back else {
             return AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position)
         }
-        let type: AVCaptureDevice.DeviceType = displayedZoom < 0.75
+        let type: AVCaptureDevice.DeviceType = ZoomPolicy.useUltraWide(
+            zoom: Double(displayedZoom),
+            currentlyUltraWide: cameraInput?.device.deviceType == .builtInUltraWideCamera,
+            reset: resetToWide)
             ? .builtInUltraWideCamera : .builtInWideAngleCamera
         guard let device = AVCaptureDevice.default(type, for: .video, position: .back) else { return nil }
         let dims = settings.slowMoResolution.captureDimensions
@@ -164,6 +166,7 @@ extension CameraRecorder {
         if session.canAddInput(input) {
             session.addInput(input)
             cameraInput = input
+            lastAppliedFormatKey = nil
             // The previous input may have left maxPhotoDimensions set to a
             // value the replacement lens cannot provide (notably 4K60 wide →
             // Photo dual-wide). Update it before committing the new graph.
@@ -196,7 +199,11 @@ extension CameraRecorder {
         var dims: (w: Int, h: Int)
         let fullFPS: Double
 
-        if isSlow {
+        if settings.cameraMode == .photo {
+            // Photo preview must not inherit a persisted 4K60 video request.
+            dims = (1920, 1080)
+            fullFPS = 30
+        } else if isSlow {
             let selectedRate: SlowMoFrameRate
             if !availableSlowMoRates.contains(settings.slowMoFrameRate) {
                 let fallback = availableSlowMoRates.first ?? .fps120
@@ -228,7 +235,7 @@ extension CameraRecorder {
         // lighter idle format is worth the trade-off — Longevity Mode,
         // critical thermal, and (gently) constrained hardware all feed into
         // it. See PerformanceProfile.swift.
-        let targetFPS: Double
+        var targetFPS: Double
         // Slow-Mo must run at its final high frame rate before the user taps
         // Record. Letting idle preview fall back to 30 fps forced a second
         // sensor renegotiation at record start, which produced the brief
@@ -263,6 +270,7 @@ extension CameraRecorder {
            let physicalWide = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
            let physicalFormat = CaptureModeFormatRouter.selectFormat(device: physicalWide, request: request) {
             switchCameraInput(to: physicalWide)
+            guard cameraInput?.device.uniqueID == physicalWide.uniqueID else { return false }
             device = physicalWide
             format = physicalFormat
         }
@@ -270,6 +278,7 @@ extension CameraRecorder {
         if format == nil && targetFPS == 60 {
             format = CameraFormatSelector.bestVideoFormat(for: device, width: dims.w, height: dims.h, fps: 30)
             if format != nil {
+                targetFPS = 30
                 Task { @MainActor in
                     self.settings.frameRate = .fps30
                     self.notice = "60 fps unavailable · Switched to 30 fps"
@@ -322,16 +331,29 @@ extension CameraRecorder {
 
     @discardableResult
     func applyUnifiedHardwareConfiguration(to device: AVCaptureDevice, format: AVCaptureDevice.Format, targetFPS: Double) -> Bool {
+        // Unsupported durations raise Objective-C exceptions, not Swift
+        // errors. Validate before touching either the graph or the device.
+        guard targetFPS.isFinite, targetFPS > 0,
+              format.videoSupportedFrameRateRanges.contains(where: {
+                  $0.minFrameRate - 0.5 <= targetFPS && targetFPS <= $0.maxFrameRate + 0.5
+              }) else {
+            Task { @MainActor in self.notice = "This camera format does not support the requested frame rate" }
+            return false
+        }
         // AVFoundation batches active-format and duration changes atomically;
         // the preview sees one graph update instead of partially-applied state.
         session.beginConfiguration()
         defer { session.commitConfiguration() }
         do {
             try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
             
             // 1. Format & Frame Rate — lock min AND max to the same duration so
             // the sensor runs at a fixed rate (prevents VFR / under-target fps files).
             device.activeFormat = format
+            if format.supportedColorSpaces.contains(.sRGB) { device.activeColorSpace = .sRGB }
+            focusGeneration += 1
+            exposureGeneration += 1
             // Keep the photo output's dimensions in the same atomic session
             // transaction as its backing format. This avoids the 4K60 crash
             // caused by briefly pairing an old still dimension with a new
@@ -387,6 +409,7 @@ extension CameraRecorder {
             if device.isExposureModeSupported(.continuousAutoExposure) {
                 device.exposureMode = .continuousAutoExposure
             }
+            Task { @MainActor in self.focusLocked = false; self.exposureLocked = false }
             device.isSubjectAreaChangeMonitoringEnabled = true
 
             // 3. Pro Settings (Exposure & White Balance)
@@ -425,7 +448,6 @@ extension CameraRecorder {
             }
             device.videoZoomFactor = min(max(desiredRaw, floor), ceiling)
 
-            device.unlockForConfiguration()
             return true
         } catch {
             DebugLog.write("❌ applyActiveFormat() lockForConfiguration failed: \(error.localizedDescription)")
@@ -436,28 +458,16 @@ extension CameraRecorder {
 
     func updateCaptureFormat(completion: (() -> Void)? = nil) {
         sessionQueue.async {
-            self.refreshCapabilitiesThenApplyFormat()
-            let finish: () -> Void = {
-                Task { @MainActor in
-                    completion?()
-                }
-            }
-            // A format change briefly restarts auto exposure. Keep the UI's
-            // transition cover up until that settles so it fades into a live,
-            // correctly exposed preview rather than a dark first frame.
-            if let device = self.cameraInput?.device {
-                self.waitForExposureSettled(device: device, timeout: 0.25, completion: finish)
-            } else {
-                finish()
-            }
+            self.refreshCapabilitiesThenApplyFormat(completion: completion)
         }
     }
 
-    func refreshCapabilitiesThenApplyFormat() {
+    func refreshCapabilitiesThenApplyFormat(completion: (() -> Void)? = nil) {
         DebugLog.write("refreshCapabilitiesThenApplyFormat() mode=\(settings.cameraMode) position=\(position)")
         ensureCorrectCameraDevice(for: settings.cameraMode)
         guard let device = cameraInput?.device else {
             DebugLog.write("❌ refreshCapabilitiesThenApplyFormat() no cameraInput.device after ensureCorrectCameraDevice")
+            Task { @MainActor in completion?() }
             return
         }
 
@@ -676,16 +686,20 @@ extension CameraRecorder {
             // while the sensor was already running at another slow-mo rate.
             self.sessionQueue.async {
                 self.applyActiveFormat(forRecording: false)
+                let finish: () -> Void = {
+                    self.waitForPreviewFrame(completion: completion)
+                }
+                if let appliedDevice = self.cameraInput?.device {
+                    self.waitForExposureSettled(device: appliedDevice, timeout: 0.25, completion: finish)
+                } else {
+                    finish()
+                }
             }
         }
     }
 
     func syncMicInput() {
-        // Audio is always required
-        if !settings.recordAudio {
-            settings.recordAudio = true
-        }
-        if AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
+        if settings.recordAudio && AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
             Task { [weak self] in
                 _ = await AVCaptureDevice.requestAccess(for: .audio)
                 self?.addOrRemoveMic()
@@ -698,7 +712,7 @@ extension CameraRecorder {
     func addOrRemoveMic() {
         sessionQueue.async {
             Task { @MainActor in self.volumeObserver?.ignoreTemporarily() }
-            let want = true // always record sound
+            let want = self.settings.recordAudio && AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
             if want, self.micInput == nil {
                 guard let mic = AVCaptureDevice.default(for: .audio),
                       let input = try? AVCaptureDeviceInput(device: mic) else { return }
@@ -720,7 +734,8 @@ extension CameraRecorder {
     func flipCamera() {
         // Flipping mid-record is not supported (would tear down the writer
         // session). Guard is the single source of truth — no dead branches.
-        guard !isRecording, !isSwitchingCamera else { return }
+        guard !isRecording, !isStartingRecording, !isSaving, !isCapturingPhoto,
+              !isBursting, !isSwitchingMode, !isSwitchingCamera else { return }
 
         let finishFlipUI: () -> Void = {
             Task { @MainActor in
@@ -764,6 +779,8 @@ extension CameraRecorder {
                     self.session.addInput(input)
                     self.cameraInput = input
                     self.position = next
+                    self.configurePhotoOutput(for: device)
+                    self.lastAppliedFormatKey = nil
                 } else if let old = old, self.session.canAddInput(old) {
                     // Restore the previous camera if the replacement is rejected.
                     self.session.addInput(old)
@@ -779,10 +796,9 @@ extension CameraRecorder {
                 self.refreshTorchState()
 
                 // Capability scan + format apply before volume shutter resumes.
-                self.refreshCapabilitiesThenApplyFormat()
+                self.refreshCapabilitiesThenApplyFormat(completion: finishFlipUI)
                 self.resetFocusAndExposureToAuto()
                 DebugLog.write("flipCamera() done, position=\(self.position)")
-                finishFlipUI()
             }
         }
 

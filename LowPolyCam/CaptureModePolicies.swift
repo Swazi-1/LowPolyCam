@@ -43,8 +43,8 @@ enum CaptureModeFormatRouter {
         case .photo:
             // Live preview stays on a smooth video-sized format; full 12MP
             // stills are obtained by a brief swap inside photo capture.
-            return CameraFormatSelector.bestVideoFormat(
-                for: device, width: request.width, height: request.height, fps: request.fps
+            return CameraFormatSelector.bestPhotoStillFormat(
+                for: device, maxPreviewHeight: 1080, fps: request.fps
             )
         case .video:
             return CameraFormatSelector.bestVideoFormat(

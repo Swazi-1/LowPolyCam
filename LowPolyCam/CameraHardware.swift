@@ -34,9 +34,10 @@ extension CameraRecorder {
     }
 
     func setWhiteBalance(_ preset: WhiteBalancePreset) {
+        guard !isSwitchingMode, !isSwitchingCamera, !isCapturingPhoto, !isSaving, !isStartingRecording else { return }
         sessionQueue.async {
             if preset.kelvin == nil {
-                self.ensureCorrectCameraDevice(for: self.settings.cameraMode)
+                // Auto WB is a control change, not an implicit lens change.
                 guard let device = self.cameraInput?.device else { return }
                 do {
                     try device.lockForConfiguration()
@@ -57,7 +58,20 @@ extension CameraRecorder {
 
             if let d = device, !d.isLockingWhiteBalanceWithCustomDeviceGainsSupported {
                 if let fallback = Self.camera(at: self.position, mode: self.settings.cameraMode, preferPhysical: true) {
+                    guard !self.wantsRecording else {
+                        Task { @MainActor in self.notice = "Change this white balance preset before recording" }
+                        return
+                    }
+                    let fps = self.cameraInput.map { 1 / $0.device.activeVideoMinFrameDuration.seconds } ?? 30
+                    let dims = self.settings.cameraMode == .slowMo
+                        ? self.settings.slowMoResolution.captureDimensions : self.settings.resolution.captureDimensions
+                    guard let format = CameraFormatSelector.bestVideoFormat(for: fallback, width: dims.w, height: dims.h, fps: fps) else {
+                        Task { @MainActor in self.notice = "White balance preset unavailable for this format" }
+                        return
+                    }
                     self.switchCameraInput(to: fallback)
+                    guard self.cameraInput?.device.uniqueID == fallback.uniqueID,
+                          self.applyUnifiedHardwareConfiguration(to: fallback, format: format, targetFPS: fps) else { return }
                     device = self.cameraInput?.device
                     lostUltraWide = true
                 }
@@ -113,6 +127,7 @@ extension CameraRecorder {
             guard let device = self.cameraInput?.device, device.hasTorch else { return }
             do {
                 try device.lockForConfiguration()
+                defer { device.unlockForConfiguration() }
                 if on {
                     let level: Float = self.settings.torchBrightness > 0 ? self.settings.torchBrightness : 1.0
                     let targetLevel = min(level, AVCaptureDevice.maxAvailableTorchLevel)
@@ -120,7 +135,6 @@ extension CameraRecorder {
                 } else {
                     device.torchMode = .off
                 }
-                device.unlockForConfiguration()
                 Task { @MainActor in self.torchOn = on }
             } catch {
                 Task { @MainActor in self.notice = "Torch is busy" }
@@ -133,6 +147,7 @@ extension CameraRecorder {
             guard let device = self.cameraInput?.device, device.hasTorch else { return }
             do {
                 try device.lockForConfiguration()
+                defer { device.unlockForConfiguration() }
                 if level > 0.01 {
                     let maxLevel = AVCaptureDevice.maxAvailableTorchLevel
                     let targetLevel = min(level, maxLevel)
@@ -149,14 +164,13 @@ extension CameraRecorder {
                         self.torchOn = false
                     }
                 }
-                device.unlockForConfiguration()
             } catch { }
         }
     }
 
     @objc func willResignActive() {
         setTorch(on: false)
-        if isRecording {
+        if isRecording || isStartingRecording {
             stopRecording(notice: "Recording stopped (app backgrounded)")
         }
         // Stop the capture session while backgrounded. Without this the
@@ -167,6 +181,7 @@ extension CameraRecorder {
         pauseVolumeMonitoring()
         stopMotionUpdates()
         sessionQueue.async {
+            self.applicationActive = false
             if self.session.isRunning { self.session.stopRunning() }
             Task { @MainActor in self.isSessionRunning = false }
         }
@@ -175,6 +190,8 @@ extension CameraRecorder {
     @objc func didBecomeActive() {
         volumeObserver?.ignoreTemporarily(duration: 1.5)
         sessionQueue.async {
+            self.applicationActive = true
+            guard !self.previewPaused else { return }
             // On a cold launch, didBecomeActive can fire on this queue before
             // start()'s configureSession() has run (both are dispatched to
             // sessionQueue around the same moment — .onAppear vs. the app
@@ -205,6 +222,14 @@ extension CameraRecorder {
         guard let device = cameraInput?.device else { return }
 
         let baseline = CameraFormatSelector.wideAngleBaseline(for: device)
+        zoomObservation?.invalidate()
+        zoomObservation = device.observe(\.videoZoomFactor, options: [.new]) { [weak self] observed, _ in
+            self?.sessionQueue.async {
+                guard let self, self.cameraInput?.device.uniqueID == observed.uniqueID else { return }
+                let actual = observed.videoZoomFactor / baseline
+                Task { @MainActor in self.zoomFactor = actual }
+            }
+        }
         let rawCeiling = min(device.activeFormat.videoMaxZoomFactor, baseline * 8)
         let rawFloor = device.minAvailableVideoZoomFactor
         let hasSlowMoUltraWide = settings.cameraMode == .slowMo
@@ -240,7 +265,9 @@ extension CameraRecorder {
         }
     }
 
-    func setZoom(factor: CGFloat) {
+    func setZoom(factor: CGFloat, resetToWide: Bool = false) {
+        guard factor.isFinite, !isSwitchingMode, !isSwitchingCamera,
+              !isCapturingPhoto, !isStartingRecording, !isSaving else { return }
         sessionQueue.async {
             guard var device = self.cameraInput?.device else { return }
 
@@ -249,16 +276,17 @@ extension CameraRecorder {
             // dual-wide input on this hardware.
             if self.settings.cameraMode == .slowMo,
                self.position == .back,
-               let target = self.slowMoPhysicalDevice(for: factor),
+               let target = self.slowMoPhysicalDevice(for: factor, resetToWide: resetToWide),
                target.uniqueID != device.uniqueID {
                 self.switchCameraInput(to: target)
+                guard self.cameraInput?.device.uniqueID == target.uniqueID else { return }
                 device = target
                 let dims = self.settings.slowMoResolution.captureDimensions
                 let fps = Double(self.settings.slowMoFrameRate.value)
                 if let format = CameraFormatSelector.bestSlowMoAwareFormat(
                     for: target, width: dims.w, height: dims.h, fps: fps
                 ) {
-                    _ = self.applyUnifiedHardwareConfiguration(to: target, format: format, targetFPS: fps)
+                    guard self.applyUnifiedHardwareConfiguration(to: target, format: format, targetFPS: fps) else { return }
                     self.lastAppliedFormatKey = Self.formatKey(device: target, format: format, fps: fps)
                     self.refreshZoomLimits()
                 }
@@ -310,12 +338,19 @@ extension CameraRecorder {
         // once that rack finishes so brightness keeps following the scene.
         // Without this, a single tap could leave the front camera looking dark
         // for the rest of a slow-motion take.
-        sessionQueue.asyncAfter(deadline: .now() + 0.7) { [weak self] in
-            guard let self, !self.focusLocked, !self.exposureLocked else { return }
-            self.applyFocusAndExposure(at: clamped,
-                                       focus: .continuousAutoFocus,
-                                       exposure: .continuousAutoExposure,
-                                       monitorSubjectArea: true)
+        sessionQueue.async {
+            let focusIntent = self.focusGeneration
+            let exposureIntent = self.exposureGeneration
+            let deviceID = self.cameraInput?.device.uniqueID
+            self.sessionQueue.asyncAfter(deadline: .now() + 0.7) {
+                guard self.focusGeneration == focusIntent,
+                      self.exposureGeneration == exposureIntent,
+                      self.cameraInput?.device.uniqueID == deviceID else { return }
+                self.applyFocusAndExposure(at: clamped,
+                                           focus: .continuousAutoFocus,
+                                           exposure: .continuousAutoExposure,
+                                           monitorSubjectArea: true)
+            }
         }
     }
 
@@ -336,6 +371,8 @@ extension CameraRecorder {
     func lockFocus(at point: CGPoint) {
         let clamped = CGPoint(x: min(max(point.x, 0), 1), y: min(max(point.y, 0), 1))
         sessionQueue.async {
+            self.focusGeneration += 1
+            let intent = self.focusGeneration
             guard let device = self.cameraInput?.device else { return }
             do {
                 try device.lockForConfiguration()
@@ -352,7 +389,8 @@ extension CameraRecorder {
             // point before freezing it in place — locking immediately would
             // just freeze whatever distance it happened to be sitting at.
             self.sessionQueue.asyncAfter(deadline: .now() + 0.35) {
-                guard let device = self.cameraInput?.device else { return }
+                guard self.focusGeneration == intent,
+                      self.cameraInput?.device.uniqueID == device.uniqueID else { return }
                 do {
                     try device.lockForConfiguration()
                     if device.isFocusModeSupported(.locked) {
@@ -371,6 +409,8 @@ extension CameraRecorder {
 
     func unlockFocus() {
         sessionQueue.async {
+            self.focusGeneration += 1
+            let intent = self.focusGeneration
             guard let device = self.cameraInput?.device else { return }
             do {
                 try device.lockForConfiguration()
@@ -394,6 +434,8 @@ extension CameraRecorder {
     func lockExposure(at point: CGPoint) {
         let clamped = CGPoint(x: min(max(point.x, 0), 1), y: min(max(point.y, 0), 1))
         sessionQueue.async {
+            self.exposureGeneration += 1
+            let intent = self.exposureGeneration
             guard let device = self.cameraInput?.device else { return }
             do {
                 try device.lockForConfiguration()
@@ -407,7 +449,8 @@ extension CameraRecorder {
             } catch { }
 
             self.sessionQueue.asyncAfter(deadline: .now() + 0.35) {
-                guard let device = self.cameraInput?.device else { return }
+                guard self.exposureGeneration == intent,
+                      self.cameraInput?.device.uniqueID == device.uniqueID else { return }
                 do {
                     try device.lockForConfiguration()
                     if device.isExposureModeSupported(.locked) {
@@ -423,6 +466,8 @@ extension CameraRecorder {
 
     func unlockExposure() {
         sessionQueue.async {
+            self.exposureGeneration += 1
+            let intent = self.exposureGeneration
             guard let device = self.cameraInput?.device else { return }
             do {
                 try device.lockForConfiguration()
@@ -446,6 +491,8 @@ extension CameraRecorder {
                                        exposure: AVCaptureDevice.ExposureMode,
                                        monitorSubjectArea: Bool) {
         sessionQueue.async {
+            self.focusGeneration += 1
+            self.exposureGeneration += 1
             guard let device = self.cameraInput?.device else { return }
             do {
                 try device.lockForConfiguration()
@@ -492,8 +539,13 @@ extension CameraRecorder {
         }
     }
 
-    @objc func subjectAreaDidChange() {
-        resetFocusAndExposureToAuto()
+    @objc func subjectAreaDidChange(_ notification: Notification) {
+        guard let source = notification.object as? AVCaptureDevice else { return }
+        sessionQueue.async {
+            guard source.uniqueID == self.cameraInput?.device.uniqueID,
+                  source.focusMode != .locked, source.exposureMode != .locked else { return }
+            self.resetFocusAndExposureToAuto()
+        }
     }
 
 

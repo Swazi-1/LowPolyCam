@@ -23,11 +23,10 @@ enum DebugLog {
     private static var handle: FileHandle?
 
     static func write(_ message: String) {
-        let stamp = dateFormatter.string(from: Date())
-        let line = "[\(stamp)] \(message)\n"
-        print(line, terminator: "")
-        guard let data = line.data(using: .utf8) else { return }
         ioQueue.async {
+            let stamp = dateFormatter.string(from: Date())
+            let line = "[\(stamp)] \(message)\n"
+            guard let data = line.data(using: .utf8) else { return }
             if handle == nil {
                 let path = url.path
                 if !FileManager.default.fileExists(atPath: path) {
@@ -37,7 +36,8 @@ enum DebugLog {
             }
             guard let h = handle else { return }
             do {
-                try h.seekToEnd()
+                let size = try h.seekToEnd()
+                if size > 2_000_000 { try h.truncate(atOffset: 0); try h.seek(toOffset: 0) }
                 try h.write(contentsOf: data)
             } catch {
                 // Keep logging best-effort — a failed write must never crash capture.
@@ -46,7 +46,7 @@ enum DebugLog {
     }
 
     static func reset() {
-        ioQueue.sync {
+        ioQueue.async {
             try? handle?.close()
             handle = nil
             try? FileManager.default.removeItem(at: url)

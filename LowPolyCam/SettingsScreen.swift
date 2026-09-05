@@ -35,7 +35,7 @@ struct SettingsScreen: View {
     /// Recorder is only used for one-shot capability checks + format updates.
     /// We intentionally do NOT observe live battery/free-space ticks while the
     /// sheet is open — that was the main source of scroll stutter in photo / slo-mo.
-    let recorder: CameraRecorder
+    @ObservedObject var recorder: CameraRecorder
     @Environment(\.dismiss) private var dismiss
 
     @State private var appliedPresetId: String? = nil
@@ -83,7 +83,7 @@ struct SettingsScreen: View {
                     slowMoFrameRateSection
                     slowMoResolutionSection
                     videoQualitySection
-                    slowMoOutputSection
+                    outputSection
                     hudEntrySection
                     slowMoAssistSection
                     advancedSection
@@ -98,6 +98,16 @@ struct SettingsScreen: View {
                     photoAssistSection
                 }
 
+                if settings.cameraMode != .photo {
+                    Section("Audio") {
+                        Toggle("Record sound", isOn: $settings.recordAudio)
+                            .onChange(of: settings.recordAudio) { _, _ in recorder.syncMicInput() }
+                    }
+                }
+                Section("Capture behavior") {
+                    Toggle("Save selfies unmirrored", isOn: $settings.saveSelfiesUnmirrored)
+                    Toggle("Capture flash confirmation", isOn: $settings.captureFlashConfirmation)
+                }
                 feedbackSection
                 appearanceSection
 
@@ -137,6 +147,13 @@ struct SettingsScreen: View {
         .onAppear {
             syncCapabilitiesFromRecorder()
         }
+        .onReceive(recorder.$frameRatesByResolution) { _ in
+            DispatchQueue.main.async { syncCapabilitiesFromRecorder() }
+        }
+        .onReceive(recorder.$slowRatesByResolution) { _ in
+            DispatchQueue.main.async { syncCapabilitiesFromRecorder() }
+        }
+        .onReceive(recorder.$freeBytes) { freeBytesSnapshot = $0 }
         .onChange(of: settings.slowMoResolution) { _, newRes in
             // Instantly re-scope FPS chips to the newly selected slow-mo resolution
             // without waiting for the async format-apply round-trip.
@@ -1319,7 +1336,6 @@ struct SettingsScreen: View {
                                  enabled: available,
                                  selected: settings.slowMoResolution == r) {
                     settings.slowMoResolution = r
-                    recorder.updateCaptureFormat()
                 }
             })
         }

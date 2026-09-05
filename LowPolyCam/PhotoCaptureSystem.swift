@@ -21,6 +21,11 @@ final class PhotoCaptureProcessor: NSObject, AVCapturePhotoCaptureDelegate, @unc
     private let targetMegapixels: Double
     private let willCapture: () -> Void
     private let completion: (UIImage?, Data?, [String: Any]?, String?) -> Void
+    private var processedImage: UIImage?
+    private var processedData: Data?
+    private var processedMetadata: [String: Any]?
+    private var processingError: String?
+    private var completed = false
 
     init(targetMegapixels: Double,
          willCapture: @escaping () -> Void,
@@ -41,11 +46,11 @@ final class PhotoCaptureProcessor: NSObject, AVCapturePhotoCaptureDelegate, @unc
                      didFinishProcessingPhoto photo: AVCapturePhoto,
                      error: Error?) {
         if let error = error {
-            completion(nil, nil, nil, error.localizedDescription)
+            processingError = error.localizedDescription
             return
         }
         guard let data = photo.fileDataRepresentation(), let image = UIImage(data: data) else {
-            completion(nil, nil, nil, "Could not read photo data")
+            processingError = "Could not read photo data"
             return
         }
         // If no downscale is needed, keep the camera's original bytes
@@ -62,7 +67,22 @@ final class PhotoCaptureProcessor: NSObject, AVCapturePhotoCaptureDelegate, @unc
             scaled = resized
             passThrough = nil
         }
-        completion(scaled, passThrough, photo.metadata, nil)
+        processedImage = scaled
+        processedData = passThrough
+        processedMetadata = photo.metadata
+    }
+
+    func photoOutput(_ output: AVCapturePhotoOutput,
+                     didFinishCaptureFor resolvedSettings: AVCaptureResolvedPhotoSettings,
+                     error: Error?) {
+        // Processing is not terminal: the capture can still fail afterwards.
+        // Retain this delegate and the capture reservation until this callback.
+        guard !completed else { return }
+        completed = true
+        let failure = error?.localizedDescription ?? processingError
+        completion(failure == nil ? processedImage : nil,
+                   processedData, processedMetadata,
+                   failure ?? (processedImage == nil ? "Camera returned no photo" : nil))
     }
 
     /// Downscales while keeping aspect ratio and orientation. Never upscales.

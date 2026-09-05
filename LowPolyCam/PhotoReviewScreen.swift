@@ -8,6 +8,7 @@
 
 import SwiftUI
 import UIKit
+import Photos
 
 // MARK: - Photo 2.0: Post-Capture Review
 //
@@ -34,6 +35,7 @@ struct PhotoReviewScreen: View {
     @State private var deletedIDs: Set<UUID> = []
     @State private var shareItem: ShareableImage?
     @State private var showDeleteConfirm = false
+    @State private var deleteError: String?
 
     /// The frames actually available to browse. A burst review shows every
     /// frame from that burst; a single-shot review shows just the one item.
@@ -55,7 +57,7 @@ struct PhotoReviewScreen: View {
                     VStack(spacing: 0) {
                         TabView(selection: $selection) {
                             ForEach(Array(frames.enumerated()), id: \.element.id) { index, frame in
-                                Image(uiImage: frame.image)
+                                Image(uiImage: frame.url.flatMap { UIImage(contentsOfFile: $0.path) } ?? frame.image)
                                     .resizable()
                                     .scaledToFit()
                                     .tag(index)
@@ -86,6 +88,10 @@ struct PhotoReviewScreen: View {
             }
         }
         .tint(settings.accentColor.color)
+        .alert("Could not delete photo", isPresented: Binding(
+            get: { deleteError != nil }, set: { if !$0 { deleteError = nil } })) {
+            Button("OK") { deleteError = nil }
+        } message: { Text(deleteError ?? "") }
         .sheet(item: $shareItem) { wrapper in
             PhotoReviewShareSheet(items: [wrapper.image])
         }
@@ -110,7 +116,7 @@ struct PhotoReviewScreen: View {
             }
             reviewButton(title: "Share", icon: "square.and.arrow.up", tint: .white) {
                 guard let frame = currentFrame else { return }
-                shareItem = ShareableImage(image: frame.image)
+                shareItem = ShareableImage(image: frame.url.flatMap { UIImage(contentsOfFile: $0.path) } ?? frame.image)
             }
             reviewButton(title: "Keep", icon: "checkmark", tint: settings.accentColor.bright) {
                 dismiss()
@@ -165,14 +171,38 @@ struct PhotoReviewScreen: View {
 
     private func deleteCurrentFrame() {
         guard let frame = currentFrame else { return }
-        if let url = frame.url {
-            try? FileManager.default.removeItem(at: url)
+        func removeLocalAndFinish() {
+            do {
+                if let url = frame.url, FileManager.default.fileExists(atPath: url.path) {
+                    try FileManager.default.removeItem(at: url)
+                }
+                deletedIDs.insert(frame.id)
+                if frames.isEmpty { dismiss() }
+                else { selection = min(selection, frames.count - 1) }
+            } catch { deleteError = error.localizedDescription }
         }
-        deletedIDs.insert(frame.id)
-        if frames.isEmpty {
-            dismiss()
+        if let identifier = frame.assetIdentifier {
+            PHPhotoLibrary.requestAuthorization(for: .readWrite) { status in
+                guard status == .authorized || status == .limited else {
+                    DispatchQueue.main.async { deleteError = "Photos access is required to delete this photo." }
+                    return
+                }
+                let assets = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil)
+                guard assets.count > 0 else {
+                    DispatchQueue.main.async { deleteError = "This photo is not accessible in Photos. Grant access before deleting." }
+                    return
+                }
+                PHPhotoLibrary.shared().performChanges {
+                    PHAssetChangeRequest.deleteAssets(assets)
+                } completionHandler: { success, error in
+                    DispatchQueue.main.async {
+                        if success { removeLocalAndFinish() }
+                        else { deleteError = error?.localizedDescription ?? "Could not delete photo" }
+                    }
+                }
+            }
         } else {
-            selection = min(selection, frames.count - 1)
+            removeLocalAndFinish()
         }
     }
 }

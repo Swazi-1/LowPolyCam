@@ -23,7 +23,7 @@ jobs:
         id: build
         continue-on-error: true
         run: |
-          set -x
+          set -euxo pipefail
           exec > >(tee ci.log) 2>&1
 
           echo "### xcodes available"
@@ -54,6 +54,10 @@ jobs:
 
           echo "### generate"
           xcodegen generate
+
+          echo "### policy regression tests"
+          swiftc LowPolyCam/ZoomPolicy.swift Tests/main.swift -o /tmp/lowpolycam-policy-tests
+          /tmp/lowpolycam-policy-tests
 
           echo "### after generate"
           ls -la

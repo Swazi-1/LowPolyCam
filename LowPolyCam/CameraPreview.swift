@@ -58,7 +58,14 @@ final class PreviewView: UIView {
             .compactMap({ $0 as? AVCaptureDeviceInput })
             .first(where: { $0.device.hasMediaType(.video) }) else { return }
 
-        if rotationCoordinator?.device?.uniqueID == input.device.uniqueID { return }
+        if let coordinator = rotationCoordinator, coordinator.device?.uniqueID == input.device.uniqueID {
+            // The same device may have a new connection after graph recovery.
+            if let connection = previewLayer.connection,
+               connection.isVideoRotationAngleSupported(coordinator.videoRotationAngleForHorizonLevelPreview) {
+                connection.videoRotationAngle = coordinator.videoRotationAngleForHorizonLevelPreview
+            }
+            return
+        }
         rotationObservation?.invalidate()
 
         let coordinator = AVCaptureDevice.RotationCoordinator(

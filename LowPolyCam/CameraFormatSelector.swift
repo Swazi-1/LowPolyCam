@@ -28,30 +28,10 @@ enum CameraFormatSelector {
 
     /// Ranked slow-mo candidates that also respect zoom baseline (physical wide).
     static func bestSlowMoAwareFormat(for device: AVCaptureDevice, width: Int, height: Int, fps: Double) -> AVCaptureDevice.Format? {
-        let ranked = scoredVideoCandidates(in: device.formats, width: width, height: height, fps: fps)
-        guard let fallback = ranked.first else { return nil }
-        guard ranked.count > 1 else { return fallback }
-
-        let baseline = wideAngleBaseline(for: device)
-        guard baseline > 1 else { return fallback }
-
-        guard (try? device.lockForConfiguration()) != nil else { return fallback }
-        let originalFormat = device.activeFormat
-        // Probing a virtual camera's zoom range requires temporarily selecting
-        // formats, but this helper is only a selector. Always put the hardware
-        // back; applyActiveFormat() performs the one real configuration change.
-        defer {
-            device.activeFormat = originalFormat
-            device.unlockForConfiguration()
-        }
-
-        for candidate in ranked {
-            device.activeFormat = candidate
-            if device.minAvailableVideoZoomFactor <= baseline * 1.05 {
-                return candidate
-            }
-        }
-        return fallback
+        // Capability discovery must never mutate the live camera. Selecting
+        // activeFormat resets durations and other hardware state even when
+        // the original format is subsequently restored.
+        scoredVideoCandidates(in: device.formats, width: width, height: height, fps: fps).first
     }
 
     /// Fallback: any format that can hit the slow-mo fps, largest area wins.

@@ -25,6 +25,7 @@ struct PhotoReviewItem: Identifiable, Equatable {
     let id = UUID()
     let image: UIImage
     let url: URL?
+    var assetIdentifier: String? = nil
     let capturedAt = Date()
 
     static func == (lhs: PhotoReviewItem, rhs: PhotoReviewItem) -> Bool { lhs.id == rhs.id }
@@ -37,8 +38,8 @@ extension CameraRecorder {
     /// Center-crops a full-frame still to a 1:1 square when the user has
     /// selected the Square aspect setting. No-op for `.full`. Runs on the
     /// already-downscaled image, so this is cheap even on A10.
-    func applyPhotoAspect(_ image: UIImage) -> UIImage {
-        guard settings.photoAspect == .square, let cg = image.cgImage else { return image }
+    func applyPhotoAspect(_ image: UIImage, square: Bool) -> UIImage {
+        guard square, let cg = image.cgImage else { return image }
         let w = cg.width
         let h = cg.height
         let side = min(w, h)
@@ -54,7 +55,8 @@ extension CameraRecorder {
     }
 
     func capturePhotoInternal(isBurstFrame: Bool, completion: (() -> Void)?) {
-        guard !isCapturingPhoto, !isRecording, !isSwitchingCamera else {
+        guard isSessionRunning, !isCapturingPhoto, !isRecording, !isStartingRecording,
+              !isSaving, !isSwitchingMode, !isSwitchingCamera else {
             completion?()
             return
         }
@@ -77,6 +79,7 @@ extension CameraRecorder {
         suppressVolumeTriggerBriefly(duration: 1.2)
 
         isCapturingPhoto = true
+        if !isBurstFrame { lastBurstReviewItems = []; lastPhotoReviewItem = nil }
 
         // Burst frames skip the per-shot haptic (10-15 buzzes in ~1.5s feels
         // like a jackhammer, not a shutter) and use a single lighter tick
@@ -102,6 +105,8 @@ extension CameraRecorder {
         // the chosen megapixel target when encoding.
         let targetMP = settings.photoMegapixels.megapixels
         let destination = settings.saveLocation
+        let square = settings.photoAspect == .square
+        let jpeg = settings.photoFormat == .jpeg
         // Front camera preview is mirrored by default (like a real mirror). Some people
         // want the SAVED photo mirrored back too (so text/writing reads correctly),
         // others want it saved exactly as the sensor sees it. New setting controls this.
@@ -176,7 +181,6 @@ extension CameraRecorder {
                             self.applyActiveFormat(forRecording: false)
                         }
                     }
-                    Task { @MainActor in self.isCapturingPhoto = false }
                     // The processor is registered on sessionQueue. Remove it on
                     // that same queue because AVCapturePhotoOutput may invoke this
                     // completion on a different thread.
@@ -185,7 +189,10 @@ extension CameraRecorder {
                     }
 
                     guard let image = image else {
-                        Task { @MainActor in self.notice = errorMessage ?? "Photo capture failed" }
+                        Task { @MainActor in
+                            self.isCapturingPhoto = false
+                            self.notice = errorMessage ?? "Photo capture failed"
+                        }
                         completion?()
                         return
                     }
@@ -194,12 +201,13 @@ extension CameraRecorder {
                     // Square aspect or force a different save format, those
                     // original bytes no longer match the image we're about
                     // to save, so they must not be used in that case.
-                    let aspected = self.applyPhotoAspect(image)
-                    let needsReencode = self.settings.photoAspect == .square || self.settings.photoFormat == .jpeg
+                    let aspected = self.applyPhotoAspect(image, square: square)
+                    let needsReencode = square || jpeg
                     self.savePhoto(aspected,
                                     originalData: needsReencode ? nil : originalData,
                                     metadata: metadata,
                                     to: destination,
+                                    jpeg: jpeg,
                                     isBurstFrame: isBurstFrame,
                                     completion: completion)
                 })
@@ -220,91 +228,41 @@ extension CameraRecorder {
                     originalData: Data? = nil,
                     metadata: [String: Any]?,
                     to destination: SaveLocation,
+                    jpeg: Bool,
                     isBurstFrame: Bool = false,
                     completion: (() -> Void)? = nil) {
-        Task { @MainActor in self.lastPhotoThumbnail = image }
-
-        // Prefer the camera's original file bytes when we did not downscale
-        // AND the user's format setting still matches (HEIC) — re-encoding
-        // otherwise makes photos look worse than stock Camera and can even
-        // increase file size.
-        let wantsJPEG = settings.photoFormat == .jpeg
-        let encoded: (data: Data?, isHEIC: Bool) = {
-            if !wantsJPEG, let originalData = originalData { return (originalData, true) }
-            if wantsJPEG {
-                return (PhotoEncoder.encodeJPEG(image, metadata: metadata), false)
-            }
-            if let data = PhotoEncoder.encodeHEIC(image, metadata: metadata) {
-                return (data, true)
-            }
-            return (PhotoEncoder.encodeJPEG(image, metadata: metadata), false)
-        }()
-        let resolvedData = encoded.data
-        let photoExtension = encoded.isHEIC ? "heic" : "jpg"
-        let photoFileName = CaptureFileNamer.nextFileName(extension: photoExtension)
-
-        func finishReview(url: URL?) {
+        let wantsJPEG = jpeg
+        let heicData = wantsJPEG ? nil : (originalData ?? PhotoEncoder.encodeHEIC(image, metadata: metadata))
+        let data = heicData ?? PhotoEncoder.encodeJPEG(image, metadata: metadata)
+        guard let data else {
             Task { @MainActor in
-                let item = PhotoReviewItem(image: image, url: url)
-                if isBurstFrame {
-                    self.lastBurstReviewItems.insert(item, at: 0)
-                } else {
-                    self.lastPhotoReviewItem = item
-                    self.photoReviewToken += 1
-                }
+                self.notice = "Photo encoding failed"
+                self.isCapturingPhoto = false
+                completion?()
             }
-            completion?()
+            return
         }
-
-        guard destination == .photos else {
-            ioQueue.async {
-                guard let data = resolvedData else {
-                    Task { @MainActor in self.notice = "Photo failed to save" }
-                    completion?()
-                    return
-                }
-                let url = Self.clipsDirectory.appendingPathComponent(photoFileName)
-                do {
-                    try data.write(to: url, options: .atomic)
-                    Task { @MainActor in
-                        self.notice = isBurstFrame ? nil : "Photo saved to Files"
-                        self.refreshFreeSpace()
+        let isHEIC = heicData != nil
+        let name = CaptureFileNamer.nextFileName(extension: isHEIC ? "heic" : "jpg")
+        let thumbnail = PhotoPersistence.thumbnail(image)
+        PhotoPersistence.save(data: data, name: name, destination: destination) { url, assetID, error in
+            Task { @MainActor in
+                self.isCapturingPhoto = false
+                self.notice = error
+                if let url {
+                    self.lastPhotoThumbnail = thumbnail
+                    self.lastClipThumbnail = nil
+                    let item = PhotoReviewItem(image: thumbnail, url: url, assetIdentifier: assetID)
+                    if isBurstFrame {
+                        self.lastBurstReviewItems.append(item)
+                    } else {
+                        self.lastPhotoReviewItem = item
+                        self.photoReviewToken += 1
                     }
-                    finishReview(url: url)
-                } catch {
-                    Task { @MainActor in self.notice = "Photo failed to save" }
-                    completion?()
+                    self.refreshFreeSpace()
                 }
+                completion?()
             }
-            return
-        }
-
-        let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
-        guard status == .authorized || status == .limited else {
-            Task { @MainActor in self.notice = "Enable Photos access in Settings to save" }
-            completion?()
-            return
-        }
-
-        guard let data = resolvedData else {
-            Task { @MainActor in self.notice = "Photo failed to save" }
-            completion?()
-            return
-        }
-
-        PHPhotoLibrary.shared().performChanges({
-            let request = PHAssetCreationRequest.forAsset()
-            let options = PHAssetResourceCreationOptions()
-            options.originalFilename = photoFileName
-            request.addResource(with: .photo, data: data, options: options)
-        }) { [weak self] success, _ in
-            Task { @MainActor in
-                self?.notice = isBurstFrame ? nil : (success ? "Photo saved to Photos" : "Could not save photo")
-            }
-            // Photos-library saves have no stable local file URL to reopen
-            // for review — the sheet falls back to showing the in-memory
-            // `image` only (see PhotoReviewItem.url == nil handling in the UI).
-            finishReview(url: nil)
         }
     }
 

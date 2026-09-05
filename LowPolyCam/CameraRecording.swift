@@ -18,6 +18,7 @@ import VideoToolbox
 enum CaptureFileNamer {
     private static let lock = NSLock()
     private static let sequenceKey = "nextIMGSequence"
+    private static var scannedLibrary = false
 
     static func nextFileName(extension fileExtension: String) -> String {
         lock.lock()
@@ -40,7 +41,8 @@ enum CaptureFileNamer {
         }
 
         let photoStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
-        if photoStatus == .authorized || photoStatus == .limited {
+        if !scannedLibrary && (photoStatus == .authorized || photoStatus == .limited) {
+            scannedLibrary = true
             let assets = PHAsset.fetchAssets(with: nil)
             assets.enumerateObjects { asset, _, _ in
                 PHAssetResource.assetResources(for: asset).forEach {
@@ -60,13 +62,14 @@ extension CameraRecorder {
     // MARK: Recording control
 
     func toggleRecording() {
-        isRecording ? stopRecording(notice: nil) : startRecording()
+        (isRecording || isStartingRecording) ? stopRecording(notice: nil) : startRecording()
     }
 
     func startRecording() {
         // Never start while a previous clip is still finishing — that path
         // used to orphan the prior AVAssetWriter (token mismatch → no finishWriting).
-        guard !isRecording, !isSaving else { return }
+        guard isSessionRunning, !isRecording, !isStartingRecording, !isSaving,
+              !isCapturingPhoto, !isBursting, !isSwitchingMode, !isSwitchingCamera else { return }
         // A fast burst temporarily owns the video output's delegate (see
         // BurstCaptureEngine.swift) — never start a recording while one is
         // still collecting frames, or the two would fight over that delegate.
@@ -80,6 +83,7 @@ extension CameraRecorder {
         }
 
         if settings.saveLocation == .photos { ensurePhotosAccess() }
+        isStartingRecording = true
 
         // Same audio-route/KVO-noise guard as photo capture (see
         // CameraPhoto.swift): the start/stop shutter sounds below can cause
@@ -89,6 +93,7 @@ extension CameraRecorder {
         suppressVolumeTriggerBriefly(duration: 1.2)
 
         var newPlan = Encoder.plan(for: settings)
+        let captureAngle = physicalOrientation.captureVideoRotationAngle
 
         stopRequested = false
         writerLock.lock()
@@ -130,6 +135,17 @@ extension CameraRecorder {
             guard self.recordingSessionToken == myToken, !self.stopRequested else { return }
             let formatChanged = self.applyActiveFormat(forRecording: true)
             guard self.recordingSessionToken == myToken, !self.stopRequested else { return }
+            guard let device = self.cameraInput?.device else {
+                Task { @MainActor in self.stopRecording(notice: "Camera unavailable") }
+                return
+            }
+            let duration = device.activeVideoMinFrameDuration.seconds
+            guard duration.isFinite, duration > 0 else {
+                Task { @MainActor in self.stopRecording(notice: "Camera frame rate unavailable") }
+                return
+            }
+            newPlan.frameRate = max(1, Int((1 / duration).rounded()))
+            newPlan.hasAudio = newPlan.hasAudio && self.micInput != nil
             self.applyStabilization(forceRecording: true)
 
             // Keep the selected output dimensions. The active camera format is
@@ -142,24 +158,18 @@ extension CameraRecorder {
                 width: newPlan.width,
                 height: newPlan.height,
                 isFront: self.isFrontCamera,
-                mirrorFront: !self.settings.saveSelfiesUnmirrored
+                mirrorFront: !self.settings.saveSelfiesUnmirrored,
+                angle: captureAngle
             )
 
             Task { @MainActor in
                 guard self.recordingSessionToken == myToken, !self.stopRequested else { return }
                 self.isRecording = true
+                self.isStartingRecording = false
                 UIApplication.shared.isIdleTimerDisabled = true
                 self.recordWallStart = Date()
                 self.recordElapsedTimer?.invalidate()
-                let token = myToken
-                self.recordElapsedTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
-                    guard let self = self, self.isRecording, self.recordingSessionToken == token,
-                          let start = self.recordWallStart else { return }
-                    self.elapsed = Date().timeIntervalSince(start)
-                }
-                if let timer = self.recordElapsedTimer {
-                    RunLoop.main.add(timer, forMode: .common)
-                }
+                self.recordElapsedTimer = nil // elapsed comes from the media timeline
             }
 
             let beginCapture: () -> Void = {
@@ -169,6 +179,7 @@ extension CameraRecorder {
                 self.audioOutput.setSampleBufferDelegate(self, queue: self.audioQueue)
 
                 self.ioQueue.async {
+                    guard self.recordingSessionToken == myToken, !self.stopRequested else { return }
                     self.plan = newPlan
                     self.recordingDestination = self.settings.saveLocation
                     self.clipTransform = transform
@@ -207,7 +218,15 @@ extension CameraRecorder {
     }
 
     func stopRecording(notice message: String?) {
-        guard isRecording else { return }
+        guard isRecording || isStartingRecording else { return }
+        if isStartingRecording && !isRecording {
+            recordingSessionToken += 1
+            stopRequested = true
+            isStartingRecording = false
+            notice = message
+            return
+        }
+        isStartingRecording = false
 
         let myToken = recordingSessionToken
         DebugLog.write("===== stopRecording() called token=\(myToken) =====")
@@ -293,15 +312,9 @@ extension CameraRecorder {
         DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) { [weak self] in
             guard let self = self, self.isSaving, self.recordingSessionToken == myToken else { return }
             DebugLog.write("❌ stopRecording watchdog: isSaving still true 4s after Stop (token=\(myToken)) — force-recovering UI")
-            self.isSaving = false
-            self.notice = "Recording didn't save · Try again"
-            self.writerLock.lock()
-            self.isStopDraining = false
-            self.wantsRecording = false
-            self.pendingStopToken = 0
-            self.writerLock.unlock()
-            self.stopRequested = true
-            self.refreshFreeSpace()
+            // Never release the reservation while a writer still owns its
+            // file. The writer's terminal callback owns cleanup and readiness.
+            self.notice = "Still finishing your recording…"
         }
     }
 
@@ -421,7 +434,7 @@ extension CameraRecorder {
             UserDefaults.standard.set(url.lastPathComponent, forKey: Self.inProgressKey)
             // Persist the destination that was active for this segment so
             // recovery after an interruption does not use a later user change.
-            UserDefaults.standard.set(recordingDestination.rawValue, forKey: Self.inProgressDestinationKey)
+            RecordingRecoveryJournal.record(url, destination: recordingDestination)
 
             let w = try AVAssetWriter(outputURL: url, fileType: .mov)
             DebugLog.write("[2] AVAssetWriter created OK")
@@ -647,8 +660,7 @@ extension CameraRecorder {
         func failIncomplete(_ reason: String) {
             let bytes = fileByteSize(url)
             DebugLog.write("❌ finishSegment \(reason) fileBytes=\(bytes) (incomplete — not sending to Photos)")
-            UserDefaults.standard.removeObject(forKey: Self.inProgressKey)
-            UserDefaults.standard.removeObject(forKey: Self.inProgressDestinationKey)
+            RecordingRecoveryJournal.remove(url)
             try? FileManager.default.removeItem(at: url)
             Task { @MainActor in
                 self.notice = "Clip failed to save"
@@ -702,11 +714,12 @@ extension CameraRecorder {
                 DebugLog.write("❌ finishWriting watchdog fired (no callback within 20s), status=\(w.status.rawValue)")
                 let bytes = fileByteSize(url)
                 DebugLog.write("   fileBytes=\(bytes)")
-                UserDefaults.standard.removeObject(forKey: Self.inProgressKey)
-                UserDefaults.standard.removeObject(forKey: Self.inProgressDestinationKey)
-                try? FileManager.default.removeItem(at: url)
+                // Cancel before relinquishing ownership; retain the failed
+                // file for recovery rather than deleting a potentially live MOV.
+                if w.status == .writing || w.status == .unknown { w.cancelWriting() }
+                RecordingRecoveryJournal.remove(url)
                 Task { @MainActor in
-                    self.notice = "Clip failed to save"
+                    self.notice = "Recording interrupted · Local file retained"
                     self.refreshFreeSpace()
                 }
                 completion?()
@@ -715,8 +728,7 @@ extension CameraRecorder {
 
         w.finishWriting {
             finishOnce {
-                UserDefaults.standard.removeObject(forKey: Self.inProgressKey)
-                UserDefaults.standard.removeObject(forKey: Self.inProgressDestinationKey)
+                RecordingRecoveryJournal.remove(url)
 
                 if w.status == .completed {
                     self.generateThumbnail(for: url)
@@ -784,6 +796,7 @@ extension CameraRecorder {
                     }
                     return
                 }
+                RecordingRecoveryJournal.remove(oldUrl)
                 self.generateThumbnail(for: oldUrl)
                 // 📊 Keep average-bitrate math accurate across segment
                 // rotation on long takes: fold the finished segment's bytes
@@ -828,34 +841,32 @@ extension CameraRecorder {
     // MARK: Recovering interrupted recordings
 
     func recoverInterruptedRecording() {
-        let defaults = UserDefaults.standard
-        guard let name = defaults.string(forKey: Self.inProgressKey) else { return }
-
-        let url = Self.clipsDirectory.appendingPathComponent(name)
-        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-
-        guard size > 0 else {
-            defaults.removeObject(forKey: Self.inProgressKey)
-            defaults.removeObject(forKey: Self.inProgressDestinationKey)
-            try? FileManager.default.removeItem(at: url)
-            return
+        var entries = RecordingRecoveryJournal.entries
+        if let legacy = UserDefaults.standard.string(forKey: Self.inProgressKey), entries[legacy] == nil {
+            entries[legacy] = UserDefaults.standard.string(forKey: Self.inProgressDestinationKey) ?? SaveLocation.files.rawValue
         }
-
-        // Prefer the destination that was active when the clip was started
-        // (stored at segment start). Fall back to current setting only if
-        // the key is missing (older builds / interrupted before the key was added).
-        let destRaw = defaults.string(forKey: Self.inProgressDestinationKey)
-        let destination = destRaw.flatMap { SaveLocation(rawValue: $0) } ?? settings.saveLocation
-
-        defaults.removeObject(forKey: Self.inProgressKey)
-        defaults.removeObject(forKey: Self.inProgressDestinationKey)
-        generateThumbnail(for: url)
-        deliver(url, to: destination) { [weak self] in
-            Task { @MainActor in
-                self?.notice = "Recovered interrupted clip"
-                self?.refreshFreeSpace()
+        for (name, rawDestination) in entries {
+            guard name == URL(fileURLWithPath: name).lastPathComponent else { continue }
+            let url = Self.clipsDirectory.appendingPathComponent(name)
+            Task {
+                let asset = AVURLAsset(url: url)
+                let playable = (try? await asset.load(.isPlayable)) ?? false
+                guard playable else {
+                    await MainActor.run { self.notice = "Interrupted recording kept in Files for recovery" }
+                    continueRecovery(url)
+                    return
+                }
+                generateThumbnail(for: url)
+                deliver(url, to: SaveLocation(rawValue: rawDestination) ?? .files) {
+                    RecordingRecoveryJournal.remove(url)
+                }
             }
         }
+    }
+
+    private func continueRecovery(_ url: URL) {
+        // Retain damaged bytes; do not repeatedly attempt a Photos import.
+        RecordingRecoveryJournal.remove(url)
     }
 
     // MARK: Delivering finished clips & Thumbnails
@@ -1005,18 +1016,15 @@ extension CameraRecorder {
 
     // MARK: Video Matrix Orientation
 
-    static func transform(width: Int, height: Int, isFront: Bool, mirrorFront: Bool) -> CGAffineTransform {
-        let h = CGFloat(height)
-
-        if !isFront || !mirrorFront {
-            return CGAffineTransform(translationX: h, y: 0).rotated(by: .pi / 2)
-        } else {
-            // Front buffers already use the opposite sensor mounting. The old
-            // -90° transform mirrored them *and* added another half-turn,
-            // producing upside-down selfie slow-mo. This is the portrait
-            // mirror matrix (the same visual direction as the preview).
-            return CGAffineTransform(a: 0, b: 1, c: 1, d: 0, tx: 0, ty: 0)
+    static func transform(width: Int, height: Int, isFront: Bool, mirrorFront: Bool, angle: CGFloat = 90) -> CGAffineTransform {
+        var rotation = CGAffineTransform(rotationAngle: angle * .pi / 180)
+        let bounds = CGRect(x: 0, y: 0, width: width, height: height).applying(rotation)
+        rotation.tx -= bounds.minX
+        rotation.ty -= bounds.minY
+        if isFront && mirrorFront {
+            rotation = rotation.concatenating(CGAffineTransform(a: -1, b: 0, c: 0, d: 1, tx: bounds.width, ty: 0))
         }
+        return rotation
     }
 
     enum RecorderError: LocalizedError {

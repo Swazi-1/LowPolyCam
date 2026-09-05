@@ -1123,7 +1123,17 @@ enum Encoder {
             } else {
                 slowMoTargetKbps = 14000
             }
-            kbps = slowMoTargetKbps * (settings.useHEVC ? 1.0 : 1.35)
+            let qualityScale: Double
+            switch settings.quality {
+            case .high: qualityScale = 1
+            case .medium: qualityScale = 0.72
+            case .low: qualityScale = 0.48
+            case .ultraLow: qualityScale = 0.30
+            }
+            let size = res.captureDimensions
+            let resolutionScale = min(1, Double(size.w * size.h) / Double(1280 * 720))
+            kbps = slowMoTargetKbps * qualityScale * max(0.08, resolutionScale)
+                * (settings.useHEVC ? 1.0 : 1.35)
         }
 
         // Longevity Mode: gentle bitrate cut for normal video. For slow-mo
@@ -1161,8 +1171,7 @@ enum Encoder {
                 if isSlow {
                     return settings.useHEVC ? AVVideoCodecType.hevc : AVVideoCodecType.h264
                 }
-                if settings.useHEVC && px.h >= 720 { return AVVideoCodecType.hevc }
-                return AVVideoCodecType.h264
+                return settings.useHEVC ? AVVideoCodecType.hevc : AVVideoCodecType.h264
             }(),
             // 240fps on A10: audio previously caused finishWriting failures when
             // combined with the video track — restored per user request. If audio

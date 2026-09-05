@@ -10,14 +10,14 @@ import SwiftUI
 
 @main
 struct LowPolyCamApp: App {
-    @State private var settings = AppSettings.shared
-    @State private var recorder: CameraRecorder
+    @StateObject private var settings: AppSettings
+    @StateObject private var recorder: CameraRecorder
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
         let settings = AppSettings.shared
-        _settings = State(initialValue: settings)
-        _recorder = State(initialValue: CameraRecorder(settings: settings))
+        _settings = StateObject(wrappedValue: settings)
+        _recorder = StateObject(wrappedValue: CameraRecorder(settings: settings))
     }
 
     var body: some Scene {
@@ -25,11 +25,6 @@ struct LowPolyCamApp: App {
             CameraScreen(settings: settings, recorder: recorder)
                 .preferredColorScheme(.dark)
                 .tint(settings.accentColor.color)
-        }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active {
-                recorder.start()
-            }
         }
     }
 }

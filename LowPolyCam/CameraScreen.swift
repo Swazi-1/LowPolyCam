@@ -23,6 +23,7 @@ struct CameraScreen: View {
     @State private var showPhotoReview = false
     @State private var reviewedPhotoReviewToken = 0
     @State private var dimmed = false
+    @State private var lastWakeElapsed: TimeInterval = 0
     @State private var savedBrightness: CGFloat = UIScreen.main.brightness
     @State private var blink = false
 
@@ -98,6 +99,15 @@ struct CameraScreen: View {
             .tint(settings.accentColor.color)
             .onAppear(perform: handleAppear)
             .onDisappear(perform: handleDisappear)
+            .onCameraCaptureEvent(isEnabled: recorder.isSessionRunning && !showSettings && !showGallery
+                && !showPhotoReview && !showPlayer && !recorder.isSwitchingMode && !recorder.isSwitchingCamera) { event in
+                guard event.phase == .ended else { return }
+                switch settings.volumeButtonAction {
+                case .shutter: handleShutterTap()
+                case .burst: recorder.startBurstCapture()
+                case .recording: recorder.toggleRecording()
+                }
+            }
             .onChange(of: settings.hapticIntensity) { _, _ in
                 applyHapticIntensity()
             }
@@ -107,34 +117,34 @@ struct CameraScreen: View {
                 }
             }
             .onChange(of: recorder.isRecording) { _, isRecording in
+                if isRecording { lastWakeElapsed = 0 }
                 if !isRecording && dimmed {
                     leaveDim()
                 }
             }
             .onChange(of: recorder.elapsed) { _, sec in
                 let delay = PerformanceProfile.current(settings: settings).autoDimDelaySeconds
-                if settings.autoDimOnRecord && recorder.isRecording && !dimmed && sec >= delay {
+                if settings.autoDimOnRecord && recorder.isRecording && !dimmed && sec - lastWakeElapsed >= delay {
                     enterDim()
                 }
             }
             .onChange(of: recorder.notice) { _, newNotice in
                 handleNoticeChange(newNotice)
             }
-            .onChange(of: showSettings) { _, isPresented in
+            .onChange(of: showSettings || showPlayer || showGallery || showPhotoReview) { _, isPresented in
                 if isPresented {
-                    recorder.pausePreviewSession()
-                } else {
-                    recorder.resumePreviewSession()
-                }
-            }
-            .onChange(of: showPlayer) { _, isPresented in
-                if isPresented {
+                    cancelCountdown()
                     recorder.pausePreviewSession()
                 } else {
                     recorder.resumePreviewSession()
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
+                cancelCountdown()
+                if screenFlashIlluminating {
+                    screenFlashIlluminating = false
+                    UIScreen.main.brightness = frontFlashSavedBrightness
+                }
                 if dimmed { leaveDim() }
             }
             .sheet(isPresented: $showSettings) {
@@ -147,7 +157,11 @@ struct CameraScreen: View {
                 }
             }
             .sheet(isPresented: $showGallery) {
-                PhotoLibraryScreen()
+                TabView {
+                    PhotoLibraryScreen().tabItem { Label("Photos", systemImage: "photo.on.rectangle") }
+                    ClipGalleryScreen(settings: settings).tabItem { Label("Files", systemImage: "folder") }
+                }
+                .tint(settings.accentColor.color)
             }
             .sheet(isPresented: $showPhotoReview) {
                 PhotoReviewScreen(
@@ -949,7 +963,7 @@ struct CameraScreen: View {
             }
         }
         .tint(settings.accentColor.color)
-        .presentationDetents([.height(410)])
+        .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
     }
 
@@ -968,10 +982,10 @@ struct CameraScreen: View {
                     .transition(settings.hudMotion.transition)
             }
 
-            if settings.hudShowModeSelector, !recorder.isRecording && !recorder.isSaving {
+            if settings.hudShowModeSelector {
                 modeSelector
-                    .disabled(recorder.isSwitchingCamera || recorder.isBursting)
-                    .opacity((recorder.isSwitchingCamera || recorder.isBursting) ? 0.35 : 1)
+                    .disabled(recorder.isSwitchingCamera || recorder.isBursting || recorder.isRecording || recorder.isSaving || recorder.isStartingRecording || recorder.isCapturingPhoto)
+                    .opacity((recorder.isRecording || recorder.isSaving) ? 0.35 : 1)
                     .frame(maxWidth: .infinity, alignment: .center)
                     // Sit a bit lower above the shutter (same size/design).
                     .padding(.top, 6)
@@ -1060,7 +1074,9 @@ struct CameraScreen: View {
     }
 
     private func handleShutterTap() {
-        guard !recorder.isSwitchingCamera, !isPinching, !recorder.isCapturingPhoto, !recorder.isSaving else { return }
+        guard recorder.isSessionRunning, !recorder.isSwitchingMode, !recorder.isStartingRecording,
+              !screenFlashIlluminating, !recorder.isSwitchingCamera, !isPinching,
+              !recorder.isCapturingPhoto, !recorder.isSaving else { return }
         let now = Date()
         guard now.timeIntervalSince(lastRecordButtonTap) > 0.4 else { return }
         lastRecordButtonTap = now
@@ -1255,7 +1271,7 @@ struct CameraScreen: View {
                     guard settings.cameraMode != mode else { return }
                     let previous = settings.cameraMode
                     DebugLog.write("modeSelector: \(previous) -> \(mode)")
-                    modeHaptic.selectionChanged()
+                    if settings.hapticFeedbackEnabled { modeHaptic.selectionChanged() }
                     switchCaptureMode(to: mode)
                 } label: {
                     Text(mode.label)
@@ -1309,6 +1325,10 @@ struct CameraScreen: View {
 
     private func switchCaptureMode(to mode: CameraMode) {
         guard !recorder.isSwitchingMode,
+              mode != settings.cameraMode,
+              !recorder.isStartingRecording,
+              !recorder.isSwitchingCamera,
+              !recorder.isCapturingPhoto,
               !recorder.isRecording,
               !recorder.isSaving,
               !recorder.isBursting else { return }
@@ -1316,7 +1336,7 @@ struct CameraScreen: View {
         recorder.isSwitchingMode = true
         modeTransitionLabel = mode.label
         withAnimation(.easeOut(duration: 0.12)) {
-            modeTransitionOpacity = 0.68
+            modeTransitionOpacity = 1
         }
 
         // Let the cover reach opacity before the sensor starts negotiating its
@@ -1440,6 +1460,7 @@ struct CameraScreen: View {
     }
 
     private func performFrontFlashCapture() {
+        guard !screenFlashIlluminating else { return }
         frontFlashSavedBrightness = UIScreen.main.brightness
         UIScreen.main.brightness = 1.0
         screenFlashIlluminating = true
@@ -1458,6 +1479,11 @@ struct CameraScreen: View {
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+            guard screenFlashIlluminating, recorder.isSessionRunning,
+                  !recorder.isSwitchingMode, !recorder.isSwitchingCamera else {
+                recorder.onWillCapturePhoto = previousHook
+                return
+            }
             recorder.capturePhoto()
             // Safety: if willCapture never fires, still restore after 2s.
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
@@ -1471,13 +1497,18 @@ struct CameraScreen: View {
     }
 
     private func startCountdown() {
+        let mode = settings.cameraMode
+        let front = recorder.isFrontCamera
         countdownRemaining = settings.countdownTimer.rawValue
         let haptic = UIImpactFeedbackGenerator(style: settings.hapticIntensity.scaled(.heavy))
         haptic.prepare()
 
         countdownTimer?.invalidate()
         let timer = Timer(timeInterval: 1.0, repeats: true) { _ in
-            haptic.impactOccurred()
+            guard recorder.isSessionRunning, settings.cameraMode == mode,
+                  recorder.isFrontCamera == front, !showSettings, !showGallery,
+                  !recorder.isSwitchingMode, !recorder.isSwitchingCamera else { cancelCountdown(); return }
+            if settings.hapticFeedbackEnabled { haptic.impactOccurred() }
             if countdownRemaining > 1 {
                 countdownRemaining -= 1
             } else {
@@ -1488,7 +1519,7 @@ struct CameraScreen: View {
                 if settings.cameraMode == .photo {
                     triggerPhotoCapture()
                 } else {
-                    startHaptic.impactOccurred()
+                    if settings.hapticFeedbackEnabled { startHaptic.impactOccurred() }
                     recorder.startRecording()
                 }
             }
@@ -1698,82 +1729,14 @@ struct CameraScreen: View {
     /// screen size. A tap that doesn't move never changes the zoom — only
     /// dragging does, so an accidental tap never resets your zoom.
     private var zoomControl: some View {
-        GeometryReader { geo in
-            // Half the pad's width is the travel available from the center
-            // (where the finger typically starts) out to one edge; dividing
-            // that by log2(max) gives the exact points-per-doubling needed
-            // so reaching the edge reaches 8x, not something short of it.
-            let halfWidth = max(geo.size.width / 2, 60)
-            let doublingsNeeded = log2(zoomDialMaxFactor / zoomDialMinFactor)
-            let pointsPerDoubling = halfWidth / doublingsNeeded
-
-            HStack(spacing: 8) {
-                if recorder.minZoomFactor <= 0.51 {
-                    Button {
-                        recorder.setZoom(factor: 0.5)
-                        if settings.hapticFeedbackEnabled { zoomHaptic.selectionChanged() }
-                    } label: {
-                        Text("0.5x")
-                            .font(.system(size: 12, weight: .bold, design: .rounded))
-                            .foregroundColor(abs(recorder.zoomFactor - 0.5) < 0.08 ? settings.accentColor.bright : .white.opacity(0.72))
-                            .padding(.horizontal, 11)
-                            .padding(.vertical, 7)
-                            .background(Capsule().fill(Palette.panel.opacity(0.78)))
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                Button {
-                    recorder.setZoom(factor: 1)
-                    if settings.hapticFeedbackEnabled { zoomHaptic.selectionChanged() }
-                } label: {
-                    Text(zoomDialLabel(recorder.zoomFactor))
-                        .font(.system(size: 13, weight: .bold, design: .rounded))
-                        .foregroundColor(.white)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
-                        .background(
-                            Capsule()
-                                .fill(Palette.panel.opacity(0.88))
-                                .background(Capsule().fill(Palette.slateDeep.opacity(usesLightweightMaterial ? 0.55 : 0.3)))
-                        )
-                        .overlay(Capsule().stroke(Color.white.opacity(0.16), lineWidth: 1))
-                        .shadow(color: .black.opacity(0.3), radius: 8, y: 3)
-                }
-                .buttonStyle(.plain)
-            }
-            .frame(width: geo.size.width, height: geo.size.height)
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 3)
-                    .onChanged { value in
-                        if !isZoomDialDragging {
-                            isZoomDialDragging = true
-                            zoomGestureBase = recorder.zoomFactor
-                            if settings.hapticFeedbackEnabled { zoomHaptic.selectionChanged() }
-                        }
-                        recorder.suppressVolumeTriggerBriefly()
-                        // Exponential mapping (not linear) so the feel matches
-                        // native iOS: the same finger travel produces a
-                        // proportional zoom change wherever you are in the
-                        // range, instead of 1x->2x taking the same distance
-                        // as 7x->8x.
-                        let factor = zoomGestureBase * pow(2, -value.translation.width / pointsPerDoubling)
-                        let clamped = min(max(factor, zoomDialMinFactor), min(zoomDialMaxFactor, recorder.maxZoomFactor))
-                        recorder.setZoom(factor: clamped)
-                    }
-                    .onEnded { _ in
-                        // Lifting the finger never snaps back to 1x — the zoom
-                        // stays wherever you dragged it to, exactly like the
-                        // native Camera app.
-                        isZoomDialDragging = false
-                        recorder.suppressVolumeTriggerBriefly()
-                    }
-            )
-        }
-        .frame(height: 54)
+        SingleZoomControl(value: recorder.zoomFactor,
+                          minimum: zoomDialMinFactor,
+                          maximum: recorder.maxZoomFactor,
+                          enabled: recorder.isSessionRunning && !recorder.isSwitchingMode
+                            && !recorder.isSwitchingCamera && !recorder.isCapturingPhoto
+                            && !recorder.isSaving && !recorder.isStartingRecording,
+                          change: { recorder.setZoom(factor: $0) },
+                          reset: { recorder.setZoom(factor: 1, resetToWide: true) })
     }
 
     private var focusReticle: some View {
@@ -1894,6 +1857,7 @@ struct CameraScreen: View {
 
     private func leaveDim() {
         guard dimmed else { return }
+        lastWakeElapsed = recorder.elapsed
         let target = savedBrightness > 0.05 ? savedBrightness : 0.5
         UIScreen.main.brightness = target
         withAnimation(.easeOut(duration: 0.2)) { dimmed = false }
