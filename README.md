@@ -1,7 +1,7 @@
 # LowPolyCam README
 
 <p align="center">
-  <img src="LowPolyCam/Assets.xcassets/AppIcon.appiconset/icon-180.png" width="120" alt="LowPolyCam icon">
+  <img src="Resources/Assets.xcassets/AppIcon.appiconset/AppIcon.png" width="120" alt="LowPolyCam icon">
 </p>
 
 <h1 align="center">LowPolyCam</h1>
