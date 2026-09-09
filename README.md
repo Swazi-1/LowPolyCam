@@ -1,4 +1,3 @@
-# LowPolyCam README
 
 <p align="center">
   <img src="Resources/Assets.xcassets/AppIcon.appiconset/AppIcon.png" width="120" alt="LowPolyCam icon">
