@@ -1,7 +1,7 @@
+.DS_Store
 build/
 DerivedData/
-Payload/
-*.xcodeproj
-*.xcworkspace
-*.ipa
-.DS_Store
+*.xcuserstate
+xcuserdata/
+LowPolyCam.xcodeproj/
+

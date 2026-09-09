@@ -1,43 +1,26 @@
 name: LowPolyCam
-
 options:
-  bundleIdPrefix: com.mo
+  bundleIdPrefix: com.swazi
   deploymentTarget:
     iOS: "26.0"
-  createIntermediateGroups: true
-
-# XcodeGen does not generate a scheme unless one is declared here, and
-# `xcodebuild -scheme` needs one to exist.
-schemes:
-  LowPolyCam:
-    build:
-      targets:
-        LowPolyCam: all
-    run:
-      config: Debug
-    archive:
-      config: Release
-
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
 targets:
   LowPolyCam:
     type: application
     platform: iOS
     sources:
-      - path: LowPolyCam
+      - Sources
+      - path: Resources
         excludes:
           - Info.plist
     settings:
       base:
-        PRODUCT_NAME: LowPolyCam
-        PRODUCT_BUNDLE_IDENTIFIER: com.mo.lowpolycam
-        INFOPLIST_FILE: LowPolyCam/Info.plist
-        GENERATE_INFOPLIST_FILE: NO
+        PRODUCT_BUNDLE_IDENTIFIER: com.swazi.LowPolyCam
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        MARKETING_VERSION: "4.0.0"
-        CURRENT_PROJECT_VERSION: "405"
-        SWIFT_VERSION: "5.7"
-        TARGETED_DEVICE_FAMILY: "1"          # iPhone only
-        # v4 beta 3 intentionally targets the current iPhone 11+ generation.
-        IPHONEOS_DEPLOYMENT_TARGET: "26.0"
-        ENABLE_BITCODE: NO
-        CODE_SIGN_STYLE: Automatic
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: Resources/Info.plist
+        TARGETED_DEVICE_FAMILY: "1"
+    scheme:
+      testTargets: []
