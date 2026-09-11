@@ -389,3 +389,12 @@ Actual file size is determined from the bitrate used by the selected camera conf
 **Automatic Compatibility** — Unsupported options are automatically hidden, rejected or adjusted safely.
 
 ---
+
+## 🤖 Development
+
+Built with help from **OpenAI Codex**.
+
+## 👥 Contributors
+
+- **Swazi** — Creator and project owner
+- **OpenAI Codex** — Main coding partner
