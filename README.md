@@ -397,4 +397,4 @@ Built with help from **OpenAI Codex**.
 ## 👥 Contributors
 
 - **Swazi** — Creator and project owner
-- **OpenAI Codex** — Main coding partner
+- **OpenAI Codex** — Main coder and coding partner
